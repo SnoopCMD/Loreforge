@@ -1,0 +1,45 @@
+<!doctype html>
+<html lang="fr">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Loreforge</title>
+  <style>
+    :root {
+      --void: #12081F;
+      --nebula: #2A1548;
+      --arcane: #7C3AED;
+      --spirit: #67E8F9;
+      --parchment: #F3EDE4;
+      --parchment-dim: #B8AECB;
+    }
+    * { margin: 0; box-sizing: border-box; }
+    body {
+      min-height: 100vh;
+      display: grid;
+      place-items: center;
+      background: var(--void);
+      color: var(--parchment);
+      font-family: Inter, system-ui, sans-serif;
+      text-align: center;
+      padding: 2rem;
+    }
+    h1 {
+      font-size: clamp(2.5rem, 8vw, 5rem);
+      letter-spacing: 0.18em;
+      text-transform: uppercase;
+      background: linear-gradient(90deg, var(--arcane), var(--spirit));
+      -webkit-background-clip: text;
+      background-clip: text;
+      color: transparent;
+    }
+    p { color: var(--parchment-dim); margin-top: 1rem; }
+  </style>
+</head>
+<body>
+  <main>
+    <h1>Loreforge</h1>
+    <p>Vivez votre univers. — socle M0, interface à venir (M4).</p>
+  </main>
+</body>
+</html>

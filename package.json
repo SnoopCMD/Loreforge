@@ -1,0 +1,14 @@
+{
+  "name": "loreforge",
+  "private": true,
+  "workspaces": [
+    "apps/*",
+    "packages/*"
+  ],
+  "scripts": {
+    "dev": "npm run dev -w @loreforge/api",
+    "test": "npm run test -w @loreforge/api",
+    "typecheck": "npm run typecheck -w @loreforge/api",
+    "deploy": "npm run deploy -w @loreforge/api"
+  }
+}
