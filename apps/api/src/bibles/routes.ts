@@ -1,6 +1,7 @@
 import { Hono } from "hono";
 import type { AppEnv } from "../env";
 import { requireAuth } from "../auth/middleware";
+import { findOwnedBible, type BibleRow } from "./db";
 import {
   isUsableMarkdown,
   MAX_IMPORT_BYTES,
@@ -11,19 +12,6 @@ import {
 export const bibles = new Hono<AppEnv>();
 
 bibles.use("*", requireAuth);
-
-interface BibleRow {
-  id: string;
-  user_id: string;
-  title: string;
-  source_type: string;
-  r2_key: string | null;
-  canon_md: string | null;
-  tone_profile: string | null;
-  status: string;
-  created_at: number;
-  updated_at: number;
-}
 
 /** Colonnes renvoyées au client (jamais user_id ni r2_key). */
 function toPublic(row: BibleRow, withContent: boolean) {
@@ -38,17 +26,6 @@ function toPublic(row: BibleRow, withContent: boolean) {
       ? { canon_md: row.canon_md, tone_profile: row.tone_profile }
       : {}),
   };
-}
-
-async function findOwnedBible(
-  db: D1Database,
-  id: string,
-  userId: string,
-): Promise<BibleRow | null> {
-  return db
-    .prepare(`SELECT * FROM bibles WHERE id = ? AND user_id = ?`)
-    .bind(id, userId)
-    .first<BibleRow>();
 }
 
 // POST /api/bibles — multipart (champ "file", "title" optionnel)

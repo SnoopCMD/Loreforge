@@ -3,6 +3,9 @@ export interface Env {
   BUCKET: R2Bucket;
   ASSETS: Fetcher;
   ENVIRONMENT: "development" | "production";
+  // Secret (wrangler secret put ANTHROPIC_API_KEY) — absent tant que
+  // non configuré : /analyze répond alors 503 analyzer_not_configured.
+  ANTHROPIC_API_KEY?: string;
 }
 
 export interface User {

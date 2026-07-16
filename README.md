@@ -65,6 +65,28 @@ Le Markdown importé est normalisé (`canon_md` : titres ATX, un seul H1,
 lignes vides compactées) ; le fichier brut est conservé dans R2
 (`bibles/<id>/source.md`).
 
+### Indice de Richesse (M2)
+
+```sh
+curl -X POST http://localhost:8787/api/bibles/<id>/analyze -H 'cookie: lf_session=<token>'
+# → 202 { "ok": true, "status": "analyzing" }   (503 si ANTHROPIC_API_KEY absent)
+
+curl http://localhost:8787/api/bibles/<id>/richness -H 'cookie: lf_session=<token>'
+# → { "status": "analyzing" } puis
+# → { "status": "analyzed", "scores": {...}, "global": 6, "gaps": [...], "computed_at": ... }
+```
+
+L'analyse appelle l'API Anthropic (`claude-opus-4-8`, sortie JSON strict via
+structured outputs) en tâche de fond (`waitUntil`) ; le client poll `/richness`.
+La clé API est un secret Worker :
+
+```sh
+# local : créer apps/api/.dev.vars avec  ANTHROPIC_API_KEY=sk-ant-...
+npx wrangler secret put ANTHROPIC_API_KEY   # production
+```
+
+L'interface (servie sur `/`) affiche le radar 5 axes et les zones floues.
+
 ## Qualité
 
 ```sh
@@ -89,7 +111,7 @@ secrets `CLOUDFLARE_API_TOKEN` / `CLOUDFLARE_ACCOUNT_ID`.
 
 - [x] **M0 — Socle** : monorepo wrangler, Hono, migrations D1, auth magic-link, CI
 - [x] **M1 — Bibles** : import Markdown → `canon_md`, stockage R2
-- [ ] **M2 — Richesse** : endpoint analyze, JSON strict, radar UI
+- [x] **M2 — Richesse** : endpoint analyze, JSON strict, radar UI
 - [ ] **M3 — Moteur** : DO GameSession, SSE, d6 serveur, Souffle
 - [ ] **M4 — UI de session**
 - [ ] **M5 — Boucle canon**

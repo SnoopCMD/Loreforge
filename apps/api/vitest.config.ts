@@ -12,7 +12,12 @@ export default defineWorkersConfig(async () => {
         workers: {
           wrangler: { configPath: "./wrangler.jsonc" },
           miniflare: {
-            bindings: { TEST_MIGRATIONS: migrations },
+            bindings: {
+              TEST_MIGRATIONS: migrations,
+              // Clé factice : les appels Anthropic sont interceptés par
+              // fetchMock dans les tests, jamais émis réellement.
+              ANTHROPIC_API_KEY: "test-key",
+            },
           },
         },
       },
