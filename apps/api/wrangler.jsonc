@@ -16,6 +16,13 @@
       "migrations_dir": "migrations"
     }
   ],
+  "r2_buckets": [
+    {
+      "binding": "BUCKET",
+      // À créer côté Cloudflare : `wrangler r2 bucket create loreforge-files`.
+      "bucket_name": "loreforge-files"
+    }
+  ],
   "vars": {
     // Passe à "production" via `wrangler deploy --var ENVIRONMENT:production`
     // ou un environnement wrangler dédié.

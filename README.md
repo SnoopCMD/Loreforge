@@ -42,6 +42,29 @@ En `ENVIRONMENT=development`, le lien magique est renvoyé dans la réponse
 (`dev_link`) au lieu d'être envoyé par email. En production, il part dans les
 logs du Worker (fournisseur d'email à brancher plus tard).
 
+### Importer une bible (M1)
+
+```sh
+# JSON
+curl -X POST http://localhost:8787/api/bibles \
+  -H 'content-type: application/json' -H 'cookie: lf_session=<token>' \
+  -d '{"markdown":"# Mon Univers\n\nLore..."}'
+
+# ou multipart (fichier .md)
+curl -X POST http://localhost:8787/api/bibles \
+  -H 'cookie: lf_session=<token>' -F file=@ma-bible.md
+
+curl http://localhost:8787/api/bibles -H 'cookie: lf_session=<token>'        # liste
+curl http://localhost:8787/api/bibles/<id> -H 'cookie: lf_session=<token>'   # détail
+curl -X PATCH http://localhost:8787/api/bibles/<id> \
+  -H 'content-type: application/json' -H 'cookie: lf_session=<token>' \
+  -d '{"canon_md":"# Mon Univers\n\nÉdité.","tone_profile":{"registre":"sombre"}}'
+```
+
+Le Markdown importé est normalisé (`canon_md` : titres ATX, un seul H1,
+lignes vides compactées) ; le fichier brut est conservé dans R2
+(`bibles/<id>/source.md`).
+
 ## Qualité
 
 ```sh
@@ -54,8 +77,9 @@ npm run build:check -w @loreforge/api   # wrangler deploy --dry-run
 
 1. `wrangler d1 create loreforge-db` puis reporter le `database_id` dans
    `apps/api/wrangler.jsonc`.
-2. `npm run db:migrate:remote -w @loreforge/api`
-3. `npm run deploy`
+2. `wrangler r2 bucket create loreforge-files`
+3. `npm run db:migrate:remote -w @loreforge/api`
+4. `npm run deploy`
 
 La CI (GitHub Actions) exécute typecheck + tests + dry-run sur chaque PR.
 Le job `deploy` s'active avec la variable de dépôt `ENABLE_DEPLOY=true` et les
@@ -64,7 +88,7 @@ secrets `CLOUDFLARE_API_TOKEN` / `CLOUDFLARE_ACCOUNT_ID`.
 ## Milestones
 
 - [x] **M0 — Socle** : monorepo wrangler, Hono, migrations D1, auth magic-link, CI
-- [ ] **M1 — Bibles** : import Markdown → `canon_md`, stockage R2
+- [x] **M1 — Bibles** : import Markdown → `canon_md`, stockage R2
 - [ ] **M2 — Richesse** : endpoint analyze, JSON strict, radar UI
 - [ ] **M3 — Moteur** : DO GameSession, SSE, d6 serveur, Souffle
 - [ ] **M4 — UI de session**
