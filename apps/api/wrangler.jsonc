@@ -11,8 +11,7 @@
     {
       "binding": "DB",
       "database_name": "loreforge-db",
-      // Remplacer par l'id réel après `wrangler d1 create loreforge-db`.
-      "database_id": "00000000-0000-0000-0000-000000000000",
+      "database_id": "a54f4a9a-e4c1-43c8-87f8-1d9bd20596c6",
       "migrations_dir": "migrations"
     }
   ],
