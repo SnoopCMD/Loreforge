@@ -1,15 +1,19 @@
-import { fetchMock, SELF } from "cloudflare:test";
+import { SELF } from "cloudflare:test";
 import { afterEach, beforeAll, describe, expect, it } from "vitest";
+import {
+  assertAnthropicMockConsumed,
+  installAnthropicMock,
+  mockAnthropicText,
+} from "./anthropic-mock";
 
 const BASE = "http://loreforge.test";
 
 beforeAll(() => {
-  fetchMock.activate();
-  fetchMock.disableNetConnect();
+  installAnthropicMock();
 });
 
 afterEach(() => {
-  fetchMock.assertNoPendingInterceptors();
+  assertAnthropicMockConsumed();
 });
 
 async function login(email: string): Promise<string> {
@@ -35,25 +39,9 @@ async function createBible(cookie: string): Promise<string> {
   return id;
 }
 
-/** Intercepte le prochain POST /v1/messages et renvoie `body` (texte JSON). */
+/** Mocke le prochain POST /v1/messages avec `bodyText` (texte JSON). */
 function mockAnthropic(bodyText: string) {
-  fetchMock
-    .get("https://api.anthropic.com")
-    .intercept({ method: "POST", path: "/v1/messages" })
-    .reply(
-      200,
-      JSON.stringify({
-        id: "msg_test",
-        type: "message",
-        role: "assistant",
-        model: "claude-opus-4-8",
-        content: [{ type: "text", text: bodyText }],
-        stop_reason: "end_turn",
-        stop_sequence: null,
-        usage: { input_tokens: 500, output_tokens: 120 },
-      }),
-      { headers: { "content-type": "application/json" } },
-    );
+  mockAnthropicText(bodyText);
 }
 
 async function pollRichness(

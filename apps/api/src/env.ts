@@ -2,6 +2,9 @@ export interface Env {
   DB: D1Database;
   BUCKET: R2Bucket;
   ASSETS: Fetcher;
+  /** Cache chaud de l'état des sessions de jeu (purgé en fin de session). */
+  CACHE: KVNamespace;
+  GAME_SESSIONS: DurableObjectNamespace;
   ENVIRONMENT: "development" | "production";
   // Secret (wrangler secret put ANTHROPIC_API_KEY) — absent tant que
   // non configuré : /analyze répond alors 503 analyzer_not_configured.

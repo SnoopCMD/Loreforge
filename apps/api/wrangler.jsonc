@@ -15,6 +15,27 @@
       "migrations_dir": "migrations"
     }
   ],
+  "kv_namespaces": [
+    {
+      // Cache chaud de l'état des sessions de jeu (SPEC §2).
+      "binding": "CACHE",
+      "id": "c62c5a6e3a44462d9219649ef9a9d6ee"
+    }
+  ],
+  "durable_objects": {
+    "bindings": [
+      {
+        "name": "GAME_SESSIONS",
+        "class_name": "GameSession"
+      }
+    ]
+  },
+  "migrations": [
+    {
+      "tag": "v1",
+      "new_sqlite_classes": ["GameSession"]
+    }
+  ],
   "r2_buckets": [
     {
       "binding": "BUCKET",

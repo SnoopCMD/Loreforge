@@ -1,26 +1,27 @@
 import {
-  defineWorkersConfig,
+  cloudflareTest,
   readD1Migrations,
-} from "@cloudflare/vitest-pool-workers/config";
+} from "@cloudflare/vitest-pool-workers";
+import { defineConfig } from "vitest/config";
 
-export default defineWorkersConfig(async () => {
+export default defineConfig(async () => {
   const migrations = await readD1Migrations("migrations");
   return {
-    test: {
-      setupFiles: ["./test/apply-migrations.ts"],
-      poolOptions: {
-        workers: {
-          wrangler: { configPath: "./wrangler.jsonc" },
-          miniflare: {
-            bindings: {
-              TEST_MIGRATIONS: migrations,
-              // Clé factice : les appels Anthropic sont interceptés par
-              // fetchMock dans les tests, jamais émis réellement.
-              ANTHROPIC_API_KEY: "test-key",
-            },
+    plugins: [
+      cloudflareTest({
+        wrangler: { configPath: "./wrangler.jsonc" },
+        miniflare: {
+          bindings: {
+            TEST_MIGRATIONS: migrations,
+            // Clé factice : les appels Anthropic sont interceptés par
+            // fetchMock dans les tests, jamais émis réellement.
+            ANTHROPIC_API_KEY: "test-key",
           },
         },
-      },
+      }),
+    ],
+    test: {
+      setupFiles: ["./test/apply-migrations.ts"],
     },
   };
 });
