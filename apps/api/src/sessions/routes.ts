@@ -120,6 +120,29 @@ sessions.post("/", async (c) => {
   return c.json({ session_id: sessionId, setup_questions }, 201);
 });
 
+// GET /api/sessions?bible_id= — sessions de l'utilisateur pour une bible.
+sessions.get("/", async (c) => {
+  const bibleId = c.req.query("bible_id");
+  if (!bibleId) return c.json({ error: "missing_bible_id" }, 400);
+
+  const user = c.get("user");
+  const bible = await findOwnedBible(c.env.DB, bibleId, user.id);
+  if (!bible) return c.json({ error: "bible_not_found" }, 404);
+
+  const { results } = await c.env.DB.prepare(
+    `SELECT gs.id, gs.character_id, ch.name AS character_name, gs.format,
+            gs.trame, gs.status, gs.created_at, gs.finished_at
+     FROM game_sessions gs
+     LEFT JOIN characters ch ON ch.id = gs.character_id
+     WHERE gs.bible_id = ? AND gs.user_id = ?
+     ORDER BY gs.created_at DESC`,
+  )
+    .bind(bible.id, user.id)
+    .all();
+
+  return c.json({ sessions: results });
+});
+
 async function loadOwnedSession(
   db: D1Database,
   id: string,
@@ -162,13 +185,22 @@ sessions.get("/:id/state", async (c) => {
   );
   if (!row) return c.json({ error: "not_found" }, 404);
 
-  const cached = await c.env.CACHE.get(sessionKvKey(row.id));
-  if (cached) {
-    return c.body(cached, 200, { "content-type": "application/json" });
+  if (row.status !== "finished") {
+    const cached = await c.env.CACHE.get(sessionKvKey(row.id));
+    if (cached) {
+      return c.body(cached, 200, { "content-type": "application/json" });
+    }
   }
 
   const stub = c.env.GAME_SESSIONS.get(
     c.env.GAME_SESSIONS.idFromString(row.id),
   );
-  return stub.fetch("https://do/state");
+  const res = await stub.fetch("https://do/state");
+  if (row.status !== "finished" || !res.ok) return res;
+
+  // Session finie : le KV est purgé et le snapshot du DO n'a pas le résumé —
+  // on le fusionne depuis D1 pour que l'écran de fin survive au refresh.
+  const snapshot = (await res.json()) as Record<string, unknown>;
+  snapshot.summary_md = row.summary_md;
+  return c.json(snapshot);
 });

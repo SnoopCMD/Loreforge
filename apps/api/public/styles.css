@@ -1,0 +1,504 @@
+/* Loreforge — DA « Dark Fantasy Cosmique Moderne » (SPEC §8).
+   --arcane porte l'identité, --spirit est réservé au « vivant » (stream, dés),
+   --ember au danger et au Souffle. Jamais les trois sur un même composant. */
+
+:root {
+  --void: #12081F;
+  --nebula: #2A1548;
+  --arcane: #7C3AED;
+  --spirit: #67E8F9;
+  --ember: #F97316;
+  --parchment: #F3EDE4;
+  --parchment-dim: #B8AECB;
+  --line: #4b2f7a;
+}
+
+* { margin: 0; box-sizing: border-box; }
+
+html { scroll-behavior: smooth; }
+
+body {
+  min-height: 100vh;
+  background: var(--void);
+  color: var(--parchment);
+  font-family: Inter, system-ui, sans-serif;
+  line-height: 1.6;
+}
+
+a { color: var(--spirit); }
+
+button, input, textarea, select { font: inherit; }
+
+input[type=email], input[type=text], textarea, select {
+  width: 100%;
+  background: var(--void);
+  color: var(--parchment);
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  padding: 0.6rem 0.8rem;
+  margin-bottom: 0.75rem;
+}
+textarea { min-height: 180px; font-family: "JetBrains Mono", monospace; font-size: 0.85rem; }
+
+:focus-visible {
+  outline: 2px solid var(--spirit);
+  outline-offset: 2px;
+}
+
+button {
+  background: var(--arcane);
+  color: var(--parchment);
+  border: 0;
+  border-radius: 8px;
+  padding: 0.6rem 1.4rem;
+  font-weight: 600;
+  cursor: pointer;
+}
+button:hover { filter: brightness(1.15); }
+button.ghost { background: transparent; border: 1px solid var(--line); color: var(--parchment-dim); }
+button.danger { background: transparent; border: 1px solid var(--ember); color: var(--ember); }
+button:disabled { opacity: 0.5; cursor: wait; }
+
+h2 {
+  font-family: Cinzel, serif;
+  font-size: 1.1rem;
+  letter-spacing: 0.12em;
+  text-transform: uppercase;
+  color: var(--spirit);
+  margin: 2rem 0 1rem;
+}
+
+.panel {
+  background: var(--nebula);
+  border-radius: 12px;
+  padding: 1.25rem;
+  margin-bottom: 1rem;
+}
+.panel > h2:first-child { margin-top: 0; }
+
+.msg { color: var(--parchment-dim); font-size: 0.9rem; margin-top: 0.5rem; overflow-wrap: anywhere; }
+.error { color: var(--ember); }
+.row { display: flex; gap: 0.75rem; align-items: center; flex-wrap: wrap; }
+.spread { justify-content: space-between; }
+.hidden { display: none !important; }
+
+.mono { font-family: "JetBrains Mono", monospace; }
+
+.app { max-width: 960px; margin: 0 auto; padding: 1.5rem 1rem 4rem; }
+
+/* ── Barre supérieure ─────────────────────────────────────────────────── */
+
+.topbar {
+  display: flex; justify-content: space-between; align-items: center;
+  max-width: 960px; margin: 0 auto; padding: 1rem;
+}
+.topbar .brand {
+  font-family: Cinzel, serif;
+  letter-spacing: 0.2em;
+  text-transform: uppercase;
+  font-size: 1rem;
+  text-decoration: none;
+  background: linear-gradient(90deg, var(--arcane), var(--spirit));
+  -webkit-background-clip: text;
+  background-clip: text;
+  color: transparent;
+}
+
+/* ── Rupture diagonale (signature Gigantic, ruptures majeures seulement) ── */
+
+.diag-edge {
+  height: 3.5rem;
+  position: relative;
+  overflow: hidden;
+  margin: -1px 0;
+}
+.diag-edge::before {
+  content: "";
+  position: absolute;
+  inset: 50% -2% auto;
+  height: 2px;
+  background: var(--spirit);
+  box-shadow: 0 0 14px var(--spirit), 0 0 40px rgba(103, 232, 249, 0.4);
+  transform: rotate(-2.3deg);
+}
+
+/* ── Landing ──────────────────────────────────────────────────────────── */
+
+.hero {
+  position: relative;
+  min-height: 62vh;
+  display: flex;
+  align-items: flex-end;
+  overflow: hidden;
+  clip-path: polygon(0 0, 100% 0, 100% calc(100% - 3.5rem), 0 100%);
+}
+.hero svg.hero-art {
+  position: absolute; inset: 0;
+  width: 100%; height: 100%;
+}
+.hero-inner {
+  position: relative;
+  width: 100%;
+  max-width: 960px;
+  margin: 0 auto;
+  padding: 4rem 1rem 5rem;
+}
+.hero h1 {
+  font-family: Cinzel, serif;
+  font-weight: 700;
+  font-size: clamp(3rem, 11vw, 7rem);
+  letter-spacing: 0.14em;
+  line-height: 1;
+  text-transform: uppercase;
+  color: var(--parchment);
+  text-shadow: 0 0 40px rgba(124, 58, 237, 0.65), 0 4px 30px rgba(0, 0, 0, 0.6);
+}
+.hero .pitch {
+  max-width: 34rem;
+  margin: 1.25rem 0 2rem;
+  font-size: 1.1rem;
+  color: var(--parchment-dim);
+  text-shadow: 0 2px 12px rgba(18, 8, 31, 0.9);
+}
+.hero .cta {
+  font-family: Cinzel, serif;
+  letter-spacing: 0.1em;
+  text-transform: uppercase;
+  padding: 0.9rem 2.2rem;
+  border-radius: 10px;
+  box-shadow: 0 0 30px rgba(124, 58, 237, 0.5);
+}
+
+.landing-body { max-width: 640px; margin: 0 auto; padding: 1rem 1rem 5rem; }
+.landing-body .steps { color: var(--parchment-dim); padding-left: 1.2rem; }
+.landing-body .steps li { margin-bottom: 0.4rem; }
+.landing-body .steps b { color: var(--parchment); }
+
+/* ── Bibliothèque ─────────────────────────────────────────────────────── */
+
+.bible-card {
+  display: flex; justify-content: space-between; align-items: center;
+  gap: 1rem; cursor: pointer; transition: transform 0.15s ease, box-shadow 0.15s ease;
+}
+.bible-card:hover { transform: translateX(4px); box-shadow: 0 0 0 1px var(--line); }
+.bible-card .title { font-family: Cinzel, serif; font-size: 1.05rem; letter-spacing: 0.05em; }
+.bible-card .left { display: flex; align-items: center; gap: 1rem; min-width: 0; }
+.bible-card .mini-radar { flex: none; }
+
+.status {
+  font-family: "JetBrains Mono", monospace; font-size: 0.72rem;
+  padding: 0.15rem 0.6rem; border-radius: 99px; border: 1px solid var(--parchment-dim);
+  color: var(--parchment-dim); text-transform: uppercase; letter-spacing: 0.08em;
+  flex: none;
+}
+.status.analyzed, .status.playing { border-color: var(--spirit); color: var(--spirit); }
+.status.analyzing, .status.setup { border-color: var(--ember); color: var(--ember); }
+
+/* ── Détail bible ─────────────────────────────────────────────────────── */
+
+.radar-wrap { display: flex; gap: 2rem; flex-wrap: wrap; align-items: center; justify-content: center; }
+.global-score {
+  font-family: "JetBrains Mono", monospace; font-size: 3rem; color: var(--spirit);
+  text-align: center;
+}
+.global-score small { display: block; font-size: 0.8rem; color: var(--parchment-dim); font-family: Inter, sans-serif; }
+
+svg text { fill: var(--parchment-dim); font-family: Inter, sans-serif; font-size: 11px; }
+svg .score-label { fill: var(--spirit); font-family: "JetBrains Mono", monospace; font-size: 12px; }
+
+/* Lacunes = runes éteintes cliquables (ouvrent l'éditeur de canon). */
+.rune {
+  display: block; width: 100%; text-align: left;
+  background: rgba(124, 58, 237, 0.08);
+  border: 0; border-left: 3px solid var(--line);
+  border-radius: 0 8px 8px 0;
+  padding: 0.5rem 0.8rem; margin-bottom: 0.5rem;
+  color: var(--parchment-dim);
+  font-weight: 400;
+  cursor: pointer;
+  transition: border-color 0.15s ease, color 0.15s ease;
+}
+.rune:hover { border-left-color: var(--arcane); color: var(--parchment); filter: none; }
+.rune .axis {
+  display: block;
+  font-family: "JetBrains Mono", monospace; font-size: 0.72rem;
+  color: var(--parchment-dim); text-transform: uppercase; letter-spacing: 0.08em;
+}
+.rune:hover .axis { color: var(--arcane); }
+
+.character-card {
+  display: flex; justify-content: space-between; align-items: center; gap: 1rem;
+  background: var(--void); border: 1px solid var(--line); border-radius: 10px;
+  padding: 0.7rem 1rem; margin-bottom: 0.6rem; cursor: pointer;
+}
+.character-card:hover { border-color: var(--arcane); }
+.character-card .name { font-family: Cinzel, serif; letter-spacing: 0.05em; }
+
+.session-item {
+  display: flex; justify-content: space-between; align-items: center; gap: 1rem;
+  background: var(--void); border: 1px solid var(--line); border-radius: 10px;
+  padding: 0.7rem 1rem; margin-bottom: 0.6rem;
+}
+.session-item .when { color: var(--parchment-dim); font-size: 0.85rem; }
+
+/* ── Fiche personnage façon Morokh ────────────────────────────────────── */
+
+.fiche {
+  position: relative;
+  background: var(--parchment);
+  color: #241333;
+  border-radius: 14px;
+  padding: 2.4rem 1.5rem 1.5rem;
+  margin: 3rem 0 1.5rem;
+  overflow: visible;
+}
+.fiche::before {
+  /* La diagonale interne que le sigil chevauche. */
+  content: "";
+  position: absolute; inset: 0;
+  border-radius: 14px;
+  background: linear-gradient(172deg, var(--nebula) 0, var(--nebula) 3.2rem, transparent 3.2rem);
+  pointer-events: none;
+}
+.fiche .sigil {
+  position: absolute; top: -2.2rem; left: 1.2rem;
+  width: 4.6rem; height: 4.6rem;
+  z-index: 1;
+}
+.fiche .fiche-name {
+  position: relative;
+  font-family: Cinzel, serif;
+  font-weight: 700;
+  font-size: clamp(1.8rem, 5vw, 2.6rem);
+  letter-spacing: 0.1em;
+  text-transform: uppercase;
+  line-height: 1.1;
+  margin: 0.6rem 0 0.2rem;
+}
+.fiche .fiche-sub {
+  font-family: "JetBrains Mono", monospace;
+  font-size: 0.75rem; letter-spacing: 0.1em; text-transform: uppercase;
+  color: #6b5a80; margin-bottom: 1rem;
+}
+.fiche dl { display: grid; grid-template-columns: max-content 1fr; gap: 0.35rem 1rem; }
+.fiche dt {
+  font-family: "JetBrains Mono", monospace; font-size: 0.72rem;
+  letter-spacing: 0.1em; text-transform: uppercase; color: #7c3aed;
+  padding-top: 0.15rem;
+}
+.fiche dd { overflow-wrap: anywhere; }
+.fiche.compact { margin-top: 2.6rem; padding: 1.8rem 1rem 1rem; font-size: 0.9rem; }
+.fiche.compact .sigil { width: 3.4rem; height: 3.4rem; top: -1.6rem; left: 0.9rem; }
+.fiche.compact .fiche-name { font-size: 1.3rem; }
+
+/* ── Écran de session ─────────────────────────────────────────────────── */
+
+.session-screen {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) 300px;
+  gap: 1.5rem;
+  max-width: 1100px;
+  margin: 0 auto;
+  padding: 0 1rem 6rem;
+}
+.session-screen.rail-hidden { grid-template-columns: minmax(0, 1fr); }
+.session-screen.rail-hidden .session-rail { display: none; }
+
+.narration {
+  max-width: 68ch;
+  width: 100%;
+  margin: 0 auto;
+  font-size: 1.075rem;
+  line-height: 1.7;
+}
+.narration .gm p { margin-bottom: 1em; }
+.narration .player {
+  margin: 1.4rem 0;
+  padding: 0.6rem 1rem;
+  border-left: 3px solid var(--arcane);
+  background: rgba(124, 58, 237, 0.08);
+  border-radius: 0 10px 10px 0;
+  color: var(--parchment-dim);
+  font-style: italic;
+  white-space: pre-wrap;
+}
+
+.chunk { animation: fadein 0.45s ease both; }
+@keyframes fadein { from { opacity: 0; } to { opacity: 1; } }
+
+.caret {
+  display: inline-block;
+  width: 0.55em; height: 1.05em;
+  vertical-align: text-bottom;
+  background: var(--spirit);
+  box-shadow: 0 0 10px var(--spirit);
+  margin-left: 2px;
+  animation: caret-pulse 1s ease-in-out infinite;
+}
+@keyframes caret-pulse { 0%, 100% { opacity: 1; } 50% { opacity: 0.25; } }
+
+.scene-sep {
+  display: flex; align-items: center; gap: 1rem;
+  margin: 2.2rem 0;
+  color: var(--spirit);
+  font-family: Cinzel, serif; font-size: 0.85rem;
+  letter-spacing: 0.25em; text-transform: uppercase;
+}
+.scene-sep::before, .scene-sep::after {
+  content: ""; flex: 1; height: 1px;
+  background: linear-gradient(90deg, transparent, var(--spirit));
+  transform: rotate(-1.5deg);
+  opacity: 0.6;
+}
+.scene-sep::after { background: linear-gradient(90deg, var(--spirit), transparent); }
+
+/* Dé : roule en --spirit puis se fige (résultat en mono). */
+.roll-block {
+  display: flex; align-items: center; gap: 1rem;
+  margin: 1.4rem 0;
+  padding: 0.8rem 1rem;
+  border: 1px solid rgba(103, 232, 249, 0.35);
+  border-radius: 10px;
+  background: rgba(103, 232, 249, 0.05);
+}
+.die {
+  flex: none;
+  width: 2.6rem; height: 2.6rem;
+  display: grid; place-items: center;
+  border: 2px solid var(--spirit);
+  border-radius: 10px;
+  font-family: "JetBrains Mono", monospace;
+  font-size: 1.4rem; font-weight: 500;
+  color: var(--spirit);
+}
+.die.rolling { animation: die-roll 0.5s ease-in-out; }
+@keyframes die-roll {
+  0% { transform: rotate(0) scale(1); box-shadow: 0 0 0 rgba(103, 232, 249, 0); }
+  50% { transform: rotate(200deg) scale(1.15); box-shadow: 0 0 24px rgba(103, 232, 249, 0.7); }
+  100% { transform: rotate(360deg) scale(1); box-shadow: 0 0 0 rgba(103, 232, 249, 0); }
+}
+.roll-block .outcome { font-weight: 600; }
+.roll-block .reason { color: var(--parchment-dim); font-size: 0.88rem; }
+
+.roll-needed {
+  margin: 1.4rem 0;
+  padding: 1rem;
+  border: 1px solid var(--ember);
+  border-radius: 10px;
+  background: rgba(249, 115, 22, 0.07);
+}
+.roll-needed .reason { color: var(--parchment-dim); margin-bottom: 0.7rem; }
+
+/* Rail droit repliable. */
+.session-rail { position: relative; }
+.session-rail .rail-inner { position: sticky; top: 1rem; }
+
+.souffle { display: flex; align-items: center; gap: 0.7rem; margin: 0.6rem 0 1rem; }
+.orb {
+  width: 1.5rem; height: 1.5rem; border-radius: 50%;
+  background: radial-gradient(circle at 35% 30%, #fdba74, var(--ember) 65%);
+  box-shadow: 0 0 14px rgba(249, 115, 22, 0.8);
+  transition: opacity 0.6s ease, box-shadow 0.6s ease, filter 0.6s ease;
+}
+.orb.out {
+  filter: grayscale(1) brightness(0.45);
+  box-shadow: none;
+  opacity: 0.5;
+}
+.souffle .label {
+  font-family: "JetBrains Mono", monospace; font-size: 0.72rem;
+  letter-spacing: 0.1em; text-transform: uppercase; color: var(--parchment-dim);
+}
+
+.rail-stats {
+  font-family: "JetBrains Mono", monospace; font-size: 0.8rem;
+  color: var(--parchment-dim);
+  margin-bottom: 1rem;
+}
+.rail-facts { font-size: 0.85rem; color: var(--parchment-dim); }
+.rail-facts li { margin-bottom: 0.4rem; }
+.rail-facts ul { padding-left: 1.1rem; }
+
+/* Saisie joueur collée en bas. */
+.playbar {
+  position: fixed; bottom: 0; left: 0; right: 0;
+  background: linear-gradient(transparent, var(--void) 30%);
+  padding: 1.4rem 1rem 1rem;
+}
+.playbar .inner {
+  max-width: 68ch; margin: 0 auto;
+  display: flex; gap: 0.6rem; align-items: flex-end;
+}
+.playbar textarea {
+  min-height: 2.9rem; max-height: 9rem; resize: none;
+  font-family: Inter, sans-serif; font-size: 1rem;
+  margin: 0; flex: 1;
+  background: var(--nebula);
+}
+
+/* Fondu d'ouverture de session : le seul moment orchestré. */
+.scene-overlay {
+  position: fixed; inset: 0; z-index: 50;
+  display: grid; place-items: center;
+  background: var(--void);
+  animation: overlay-out 0.6s ease 1.2s both;
+  pointer-events: none;
+}
+.scene-overlay .scene-title {
+  font-family: Cinzel, serif; font-weight: 700;
+  font-size: clamp(1.6rem, 5vw, 3rem);
+  letter-spacing: 0.2em; text-transform: uppercase;
+  text-align: center; padding: 0 1rem;
+  animation: title-in 0.6s ease both;
+}
+@keyframes title-in { from { opacity: 0; transform: translateY(12px); } to { opacity: 1; transform: none; } }
+@keyframes overlay-out { to { opacity: 0; visibility: hidden; } }
+
+/* ── Fin de session ───────────────────────────────────────────────────── */
+
+.summary-md h2, .summary-md h3 {
+  font-family: Cinzel, serif; letter-spacing: 0.1em; text-transform: uppercase;
+  color: var(--spirit); font-size: 1rem; margin: 1.4rem 0 0.6rem;
+}
+.summary-md p { margin-bottom: 0.8rem; }
+.summary-md ul { padding-left: 1.2rem; margin-bottom: 0.8rem; }
+.summary-md li { margin-bottom: 0.3rem; }
+
+.invention-item {
+  border-left: 3px solid var(--arcane);
+  padding: 0.5rem 0.8rem; margin-bottom: 0.5rem;
+  background: rgba(124, 58, 237, 0.08); border-radius: 0 8px 8px 0;
+}
+.invention-item .axis {
+  font-family: "JetBrains Mono", monospace; font-size: 0.72rem;
+  color: var(--arcane); text-transform: uppercase; letter-spacing: 0.08em;
+}
+
+/* ── Responsive (session jouable au pouce) ────────────────────────────── */
+
+@media (max-width: 820px) {
+  .session-screen { grid-template-columns: minmax(0, 1fr); }
+  .session-rail {
+    position: fixed; inset: 0 0 0 auto; width: min(20rem, 85vw); z-index: 40;
+    background: var(--nebula);
+    padding: 1rem; overflow-y: auto;
+    box-shadow: -10px 0 40px rgba(0, 0, 0, 0.5);
+    transform: translateX(105%);
+    transition: transform 0.25s ease;
+  }
+  .session-screen.rail-open .session-rail { transform: none; }
+  .session-screen.rail-hidden .session-rail { display: block; }
+  .hero { min-height: 48vh; }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  html { scroll-behavior: auto; }
+  *, *::before, *::after {
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.01ms !important;
+  }
+  .chunk { animation: none; }
+  .caret { animation: none; }
+  .scene-overlay { animation: overlay-out 0.01ms linear 0.8s both; }
+}

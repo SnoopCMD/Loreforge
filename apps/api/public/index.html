@@ -4,474 +4,267 @@
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1" />
   <title>Loreforge</title>
+  <meta name="description" content="Vivez votre univers : sessions JDR solo narrées par IA sur la bible de votre monde." />
   <link rel="preconnect" href="https://fonts.googleapis.com" />
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
   <link href="https://fonts.googleapis.com/css2?family=Cinzel:wght@500;700&family=Inter:wght@400;500;600&family=JetBrains+Mono:wght@500&display=swap" rel="stylesheet" />
-  <style>
-    :root {
-      --void: #12081F;
-      --nebula: #2A1548;
-      --arcane: #7C3AED;
-      --spirit: #67E8F9;
-      --ember: #F97316;
-      --parchment: #F3EDE4;
-      --parchment-dim: #B8AECB;
-    }
-    * { margin: 0; box-sizing: border-box; }
-    body {
-      min-height: 100vh;
-      background: var(--void);
-      color: var(--parchment);
-      font-family: Inter, system-ui, sans-serif;
-      line-height: 1.6;
-    }
-    main { max-width: 880px; margin: 0 auto; padding: 2rem 1rem 4rem; }
-    h1 {
-      font-family: Cinzel, serif;
-      font-size: clamp(2rem, 6vw, 3.2rem);
-      letter-spacing: 0.18em;
-      text-transform: uppercase;
-      text-align: center;
-      background: linear-gradient(90deg, var(--arcane), var(--spirit));
-      -webkit-background-clip: text;
-      background-clip: text;
-      color: transparent;
-      margin-bottom: 0.25rem;
-    }
-    .tagline { text-align: center; color: var(--parchment-dim); margin-bottom: 2.5rem; }
-    h2 {
-      font-family: Cinzel, serif;
-      font-size: 1.15rem;
-      letter-spacing: 0.12em;
-      text-transform: uppercase;
-      color: var(--spirit);
-      margin: 2rem 0 1rem;
-    }
-    .panel {
-      background: var(--nebula);
-      border-radius: 12px;
-      padding: 1.25rem;
-      margin-bottom: 1rem;
-    }
-    input[type=email], input[type=text], textarea {
-      width: 100%;
-      background: var(--void);
-      color: var(--parchment);
-      border: 1px solid #4b2f7a;
-      border-radius: 8px;
-      padding: 0.6rem 0.8rem;
-      font: inherit;
-      margin-bottom: 0.75rem;
-    }
-    textarea { min-height: 180px; font-family: "JetBrains Mono", monospace; font-size: 0.85rem; }
-    input:focus-visible, textarea:focus-visible, button:focus-visible {
-      outline: 2px solid var(--spirit);
-      outline-offset: 2px;
-    }
-    button {
-      background: var(--arcane);
-      color: var(--parchment);
-      border: 0;
-      border-radius: 8px;
-      padding: 0.6rem 1.4rem;
-      font: inherit;
-      font-weight: 600;
-      cursor: pointer;
-    }
-    button:hover { filter: brightness(1.15); }
-    button.ghost { background: transparent; border: 1px solid #4b2f7a; color: var(--parchment-dim); }
-    button:disabled { opacity: 0.5; cursor: wait; }
-    .msg { color: var(--parchment-dim); font-size: 0.9rem; margin-top: 0.5rem; overflow-wrap: anywhere; }
-    .msg a { color: var(--spirit); }
-    .error { color: var(--ember); }
-    .row { display: flex; gap: 0.75rem; align-items: center; flex-wrap: wrap; }
-    .spread { justify-content: space-between; }
-
-    .bible-card {
-      display: flex; justify-content: space-between; align-items: center;
-      gap: 1rem; cursor: pointer; transition: transform 0.15s ease;
-    }
-    .bible-card:hover { transform: translateX(4px); }
-    .bible-card .title { font-family: Cinzel, serif; font-size: 1.05rem; letter-spacing: 0.05em; }
-    .status {
-      font-family: "JetBrains Mono", monospace; font-size: 0.72rem;
-      padding: 0.15rem 0.6rem; border-radius: 99px; border: 1px solid var(--parchment-dim);
-      color: var(--parchment-dim); text-transform: uppercase; letter-spacing: 0.08em;
-    }
-    .status.analyzed { border-color: var(--spirit); color: var(--spirit); }
-    .status.analyzing { border-color: var(--ember); color: var(--ember); }
-
-    .radar-wrap { display: flex; gap: 2rem; flex-wrap: wrap; align-items: center; justify-content: center; }
-    .global-score {
-      font-family: "JetBrains Mono", monospace; font-size: 3rem; color: var(--spirit);
-      text-align: center;
-    }
-    .global-score small { display: block; font-size: 0.8rem; color: var(--parchment-dim); font-family: Inter, sans-serif; }
-    .gap-item {
-      border-left: 3px solid var(--arcane);
-      padding: 0.4rem 0.8rem; margin-bottom: 0.5rem;
-      background: rgba(124, 58, 237, 0.08); border-radius: 0 8px 8px 0;
-    }
-    .gap-item .axis {
-      font-family: "JetBrains Mono", monospace; font-size: 0.72rem;
-      color: var(--spirit); text-transform: uppercase; letter-spacing: 0.08em;
-    }
-    .hidden { display: none !important; }
-    svg text { fill: var(--parchment-dim); font-family: Inter, sans-serif; font-size: 11px; }
-    svg .score-label { fill: var(--spirit); font-family: "JetBrains Mono", monospace; font-size: 12px; }
-    @media (prefers-reduced-motion: reduce) { * { transition: none !important; } }
-  </style>
+  <link rel="stylesheet" href="/styles.css" />
 </head>
 <body>
-<main>
-  <h1>Loreforge</h1>
-  <p class="tagline">Vivez votre univers.</p>
 
-  <!-- Connexion -->
-  <section id="auth-section" class="panel hidden">
-    <h2>Entrer dans la forge</h2>
-    <form id="login-form">
-      <input type="email" id="login-email" placeholder="votre@email.com" required autocomplete="email" />
-      <button type="submit">Recevoir le lien magique</button>
+<header id="topbar" class="topbar hidden">
+  <a class="brand" href="#/">Loreforge</a>
+  <button class="ghost" id="logout-btn">Se déconnecter</button>
+</header>
+
+<!-- ── Landing ─────────────────────────────────────────────────────────── -->
+<section id="screen-landing" class="hidden">
+  <div class="hero">
+    <svg class="hero-art" viewBox="0 0 1200 640" preserveAspectRatio="xMidYMid slice" aria-hidden="true">
+      <defs>
+        <linearGradient id="sky" x1="0" y1="0" x2="0" y2="1">
+          <stop offset="0%" stop-color="#12081F" />
+          <stop offset="55%" stop-color="#221040" />
+          <stop offset="100%" stop-color="#2A1548" />
+        </linearGradient>
+        <radialGradient id="moon-glow" cx="0.5" cy="0.5" r="0.5">
+          <stop offset="0%" stop-color="#7C3AED" stop-opacity="0.85" />
+          <stop offset="55%" stop-color="#7C3AED" stop-opacity="0.25" />
+          <stop offset="100%" stop-color="#7C3AED" stop-opacity="0" />
+        </radialGradient>
+        <radialGradient id="ember-glow" cx="0.5" cy="0.5" r="0.5">
+          <stop offset="0%" stop-color="#F97316" stop-opacity="0.7" />
+          <stop offset="100%" stop-color="#F97316" stop-opacity="0" />
+        </radialGradient>
+      </defs>
+      <rect width="1200" height="640" fill="url(#sky)" />
+      <!-- étoiles -->
+      <g fill="#F3EDE4">
+        <circle cx="90" cy="70" r="1.4" opacity="0.8" /><circle cx="220" cy="140" r="1" opacity="0.5" />
+        <circle cx="340" cy="60" r="1.2" opacity="0.7" /><circle cx="470" cy="180" r="1" opacity="0.4" />
+        <circle cx="610" cy="90" r="1.5" opacity="0.8" /><circle cx="760" cy="50" r="1" opacity="0.5" />
+        <circle cx="1050" cy="120" r="1.2" opacity="0.6" /><circle cx="1140" cy="60" r="1" opacity="0.5" />
+        <circle cx="160" cy="260" r="1" opacity="0.4" /><circle cx="530" cy="290" r="1.1" opacity="0.5" />
+        <circle cx="700" cy="220" r="1" opacity="0.45" /><circle cx="980" cy="280" r="1.3" opacity="0.55" />
+      </g>
+      <!-- lune arcane -->
+      <circle cx="900" cy="170" r="190" fill="url(#moon-glow)" />
+      <circle cx="900" cy="170" r="72" fill="#3b2166" />
+      <circle cx="878" cy="152" r="14" fill="#2A1548" opacity="0.8" />
+      <circle cx="922" cy="192" r="9" fill="#2A1548" opacity="0.7" />
+      <!-- mondes flottants (silhouettes) -->
+      <g fill="#0d0617">
+        <path d="M180 300 q60 -46 150 -34 q40 4 60 24 q-16 30 -84 38 q-90 10 -126 -28 z" />
+        <path d="M225 328 l18 60 l10 -58 z" opacity="0.9" />
+        <path d="M640 380 q80 -60 200 -44 q54 8 78 32 q-20 40 -110 50 q-120 12 -168 -38 z" />
+        <path d="M700 418 l24 84 l14 -80 z" opacity="0.9" />
+        <path d="M1010 330 q40 -30 100 -22 q28 4 40 16 q-12 22 -56 28 q-60 8 -84 -22 z" />
+      </g>
+      <ellipse cx="740" cy="392" rx="110" ry="26" fill="url(#ember-glow)" opacity="0.55" />
+      <ellipse cx="250" cy="308" rx="70" ry="18" fill="url(#ember-glow)" opacity="0.4" />
+      <!-- crêtes du sol -->
+      <path d="M0 560 L140 480 L300 545 L460 470 L640 555 L820 490 L1000 550 L1200 480 L1200 640 L0 640 Z" fill="#0d0617" />
+      <path d="M0 600 L200 540 L420 600 L680 545 L900 605 L1200 550 L1200 640 L0 640 Z" fill="#12081F" />
+    </svg>
+    <div class="hero-inner">
+      <h1>Loreforge</h1>
+      <p class="pitch">Importez la bible de votre univers. Une IA Maître de Jeu, fidèle à votre canon, vous y fait vivre des sessions solo — et vous propose de canoniser ce qu'elle invente.</p>
+      <button class="cta" id="cta-btn">Entrer dans la forge</button>
+    </div>
+  </div>
+  <div class="diag-edge" aria-hidden="true"></div>
+
+  <div class="landing-body">
+    <div id="login-panel" class="panel hidden">
+      <h2>Entrer dans la forge</h2>
+      <form id="login-form">
+        <input type="email" id="login-email" placeholder="votre@email.com" required autocomplete="email" />
+        <button type="submit">Recevoir le lien magique</button>
+      </form>
+      <p id="login-msg" class="msg"></p>
+    </div>
+    <h2>Comment ça marche</h2>
+    <ol class="steps">
+      <li><b>Forgez votre bible</b> — importez le Markdown de votre univers.</li>
+      <li><b>Mesurez sa richesse</b> — cinq axes, et les zones floues révélées.</li>
+      <li><b>Vivez-le</b> — sessions narrées, dés serveur, Souffle limité.</li>
+      <li><b>Canonisez</b> — les inventions du MJ enrichissent votre bible.</li>
+    </ol>
+  </div>
+</section>
+
+<!-- Dégradé partagé des radars (toujours visible, hors sections masquées). -->
+<svg width="0" height="0" style="position:absolute" aria-hidden="true">
+  <defs>
+    <linearGradient id="radar-grad" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0%" stop-color="#7C3AED" />
+      <stop offset="100%" stop-color="#67E8F9" />
+    </linearGradient>
+  </defs>
+</svg>
+
+<!-- ── Bibliothèque ────────────────────────────────────────────────────── -->
+<div class="app">
+<section id="screen-library" class="hidden">
+  <h2>Bibliothèque</h2>
+  <div id="bible-list"></div>
+  <div class="panel">
+    <h2>Importer une bible</h2>
+    <input type="text" id="import-title" placeholder="Titre (optionnel, sinon déduit du Markdown)" />
+    <textarea id="import-md" placeholder="# Mon Univers&#10;&#10;Collez ici le Markdown de votre bible…"></textarea>
+    <div class="row">
+      <button id="import-btn">Importer</button>
+      <label class="msg">ou fichier .md : <input type="file" id="import-file" accept=".md,.markdown,.txt" /></label>
+    </div>
+    <p id="import-msg" class="msg"></p>
+  </div>
+</section>
+
+<!-- ── Détail bible ────────────────────────────────────────────────────── -->
+<section id="screen-bible" class="hidden">
+  <div class="row spread">
+    <h2 id="detail-title"></h2>
+    <a class="msg" href="#/">← Bibliothèque</a>
+  </div>
+
+  <div class="panel">
+    <div class="row spread">
+      <span id="detail-status" class="status"></span>
+      <button id="analyze-btn">Analyser la richesse</button>
+    </div>
+    <p id="analyze-msg" class="msg"></p>
+    <div id="richness-block" class="hidden">
+      <div class="radar-wrap">
+        <svg id="radar" width="340" height="320" viewBox="0 0 340 320" role="img" aria-label="Radar de richesse à 5 axes">
+          <g class="radar-grid"></g>
+          <g class="radar-value"></g>
+          <g class="radar-labels"></g>
+        </svg>
+        <div class="global-score"><span id="global-score"></span><small>indice global /10</small></div>
+      </div>
+      <h2>Zones floues</h2>
+      <div id="gaps-list"></div>
+    </div>
+  </div>
+
+  <div class="panel">
+    <h2>Sessions</h2>
+    <div id="session-list"></div>
+    <div class="row" style="margin-top:0.8rem">
+      <select id="new-format" style="width:auto">
+        <option value="oneshot">One-shot</option>
+        <option value="mini">Mini-campagne</option>
+        <option value="campaign">Campagne</option>
+      </select>
+      <select id="new-character" style="width:auto"><option value="">Sans personnage</option></select>
+      <input type="text" id="new-trame" placeholder="Trame (optionnel, sinon libre)" style="width:14rem" />
+      <button id="new-session-btn">Lancer une session</button>
+    </div>
+    <p id="session-msg" class="msg"></p>
+  </div>
+
+  <div class="panel">
+    <div class="row spread">
+      <h2>Personnages</h2>
+      <button class="ghost" id="forge-character-btn">Forger un personnage</button>
+    </div>
+    <div id="character-list"></div>
+    <div id="character-fiche"></div>
+  </div>
+
+  <div class="panel">
+    <h2 id="canon-title">Canon</h2>
+    <textarea id="canon-editor"></textarea>
+    <div class="row">
+      <button id="save-canon-btn">Enregistrer</button>
+      <span id="save-msg" class="msg"></span>
+    </div>
+  </div>
+</section>
+
+<!-- ── Forge de personnage ─────────────────────────────────────────────── -->
+<section id="screen-forge" class="hidden">
+  <div class="row spread">
+    <h2>Forger un personnage</h2>
+    <a class="msg" id="forge-back" href="#/">← Retour</a>
+  </div>
+  <div class="panel">
+    <p class="msg">Quatre questions pour donner corps à votre héros. Le MJ s'appuiera sur cette fiche.</p>
+    <form id="forge-form">
+      <label>Son nom<input type="text" id="forge-name" maxlength="80" required placeholder="Kael des Cendres" /></label>
+      <label>Son pouvoir en éveil<input type="text" id="forge-power" placeholder="Entend le chant des failles entre les Mondes" /></label>
+      <label>Son tempérament<input type="text" id="forge-temper" placeholder="Curieux, loyal, incapable de laisser une porte fermée" /></label>
+      <label>Son lien &amp; ses ressources<input type="text" id="forge-bond" placeholder="Une dette envers l'Ordre ; un couteau hérité, trois pièces" /></label>
+      <button type="submit">Forger</button>
     </form>
-    <p id="login-msg" class="msg"></p>
-  </section>
+    <p id="forge-msg" class="msg"></p>
+  </div>
+  <div id="forge-fiche"></div>
+</section>
 
-  <!-- Bibliothèque -->
-  <section id="library-section" class="hidden">
-    <div class="row spread">
-      <h2>Bibliothèque</h2>
-      <button class="ghost" id="logout-btn">Se déconnecter</button>
-    </div>
-    <div id="bible-list"></div>
-    <div class="panel">
-      <h2 style="margin-top:0">Importer une bible</h2>
-      <input type="text" id="import-title" placeholder="Titre (optionnel, sinon déduit du Markdown)" />
-      <textarea id="import-md" placeholder="# Mon Univers&#10;&#10;Collez ici le Markdown de votre bible…"></textarea>
-      <div class="row">
-        <button id="import-btn">Importer</button>
-        <label class="msg">ou fichier .md : <input type="file" id="import-file" accept=".md,.markdown,.txt" /></label>
-      </div>
-      <p id="import-msg" class="msg"></p>
-    </div>
-  </section>
+<!-- ── Setup de session ────────────────────────────────────────────────── -->
+<section id="screen-setup" class="hidden">
+  <h2>Mise en place</h2>
+  <div class="panel">
+    <p class="msg" id="setup-intro">Le MJ a repéré des zones floues de votre bible. Établissez-les pour cette session — ou laissez vide pour le laisser improviser.</p>
+    <form id="setup-form"></form>
+    <p id="setup-msg" class="msg"></p>
+  </div>
+</section>
+</div>
 
-  <!-- Détail bible -->
-  <section id="detail-section" class="hidden">
-    <div class="row spread">
-      <h2 id="detail-title"></h2>
-      <button class="ghost" id="back-btn">← Bibliothèque</button>
-    </div>
-
-    <div class="panel">
-      <div class="row spread">
-        <span id="detail-status" class="status"></span>
-        <button id="analyze-btn">Analyser la richesse</button>
-      </div>
-      <p id="analyze-msg" class="msg"></p>
-      <div id="richness-block" class="hidden">
-        <div class="radar-wrap">
-          <svg id="radar" width="340" height="320" viewBox="0 0 340 320" role="img" aria-label="Radar de richesse à 5 axes">
-            <defs>
-              <linearGradient id="radar-grad" x1="0" y1="0" x2="1" y2="1">
-                <stop offset="0%" stop-color="#7C3AED" />
-                <stop offset="100%" stop-color="#67E8F9" />
-              </linearGradient>
-            </defs>
-            <g id="radar-grid"></g>
-            <g id="radar-value"></g>
-            <g id="radar-labels"></g>
-          </svg>
-          <div class="global-score"><span id="global-score"></span><small>indice global /10</small></div>
+<!-- ── Écran de session ────────────────────────────────────────────────── -->
+<section id="screen-session" class="hidden">
+  <div class="row spread" style="max-width:1100px;margin:0 auto;padding:0 1rem 1rem">
+    <span id="session-bible" class="msg"></span>
+    <button class="ghost" id="rail-toggle">Fiche &amp; Souffle</button>
+  </div>
+  <div class="session-screen" id="session-layout">
+    <div class="narration" id="feed" aria-live="polite"></div>
+    <aside class="session-rail">
+      <div class="rail-inner">
+        <div class="souffle" id="souffle-orbs" role="img" aria-label="Points de Souffle"></div>
+        <div class="rail-stats" id="rail-stats"></div>
+        <div id="rail-fiche"></div>
+        <div class="rail-facts">
+          <h2 style="margin-top:1rem;font-size:0.85rem">Faits établis</h2>
+          <ul id="rail-facts"></ul>
         </div>
-        <h2>Zones floues</h2>
-        <div id="gaps-list"></div>
+        <div class="row" style="margin-top:1.5rem">
+          <button class="danger" id="finish-btn">Terminer la session</button>
+        </div>
+        <p id="finish-msg" class="msg"></p>
       </div>
+    </aside>
+  </div>
+  <div class="playbar" id="playbar">
+    <div class="inner">
+      <textarea id="player-input" rows="1" placeholder="Que fais-tu ?" aria-label="Votre action"></textarea>
+      <button id="send-btn">Agir</button>
     </div>
+  </div>
+</section>
 
-    <div class="panel">
-      <h2 style="margin-top:0">Canon</h2>
-      <textarea id="canon-editor"></textarea>
-      <div class="row">
-        <button id="save-canon-btn">Enregistrer</button>
-        <span id="save-msg" class="msg"></span>
-      </div>
-    </div>
-  </section>
-</main>
+<!-- ── Fin de session ──────────────────────────────────────────────────── -->
+<div class="app">
+<section id="screen-end" class="hidden">
+  <h2>La session s'achève</h2>
+  <div class="panel">
+    <div class="summary-md" id="end-summary"></div>
+  </div>
+  <div class="panel" id="end-inventions-panel">
+    <h2>Propositions de canonisation</h2>
+    <p class="msg">Ce que le MJ a inventé dans les zones floues. L'intégration à la bible (accepter / rejeter) arrive bientôt.</p>
+    <div id="end-inventions"></div>
+  </div>
+  <div class="row">
+    <a class="msg" id="end-back" href="#/">← Retour à la bible</a>
+  </div>
+</section>
+</div>
 
-<script>
-const $ = (id) => document.getElementById(id);
-const api = (path, opts = {}) => fetch("/api" + path, opts);
-const json = (body) => ({
-  method: "POST",
-  headers: { "content-type": "application/json" },
-  body: JSON.stringify(body),
-});
+<div id="overlay-root"></div>
 
-const AXIS_LABELS = {
-  cosmology: "Cosmologie",
-  characters: "Personnages",
-  plots: "Trames",
-  tone: "Ton",
-  geography: "Géographie",
-};
-const AXES = Object.keys(AXIS_LABELS);
-
-let currentBible = null;
-let pollTimer = null;
-
-// ---------- Navigation ----------
-function show(section) {
-  for (const id of ["auth-section", "library-section", "detail-section"]) {
-    $(id).classList.toggle("hidden", id !== section);
-  }
-}
-
-async function boot() {
-  const me = await api("/auth/me");
-  if (me.ok) {
-    show("library-section");
-    loadLibrary();
-  } else {
-    show("auth-section");
-  }
-}
-
-// ---------- Auth ----------
-$("login-form").addEventListener("submit", async (e) => {
-  e.preventDefault();
-  const res = await api("/auth/magic-link", json({ email: $("login-email").value }));
-  const body = await res.json();
-  if (!res.ok) {
-    $("login-msg").textContent = "Email invalide.";
-    $("login-msg").className = "msg error";
-    return;
-  }
-  $("login-msg").className = "msg";
-  if (body.dev_link) {
-    $("login-msg").innerHTML =
-      'Mode dev — <a href="' + body.dev_link + '">cliquez ici pour vous connecter</a>.';
-  } else {
-    $("login-msg").textContent = "Lien magique envoyé (valable 15 minutes).";
-  }
-});
-
-$("logout-btn").addEventListener("click", async () => {
-  await api("/auth/logout", { method: "POST" });
-  show("auth-section");
-});
-
-// ---------- Bibliothèque ----------
-async function loadLibrary() {
-  const res = await api("/bibles");
-  if (!res.ok) return;
-  const { bibles } = await res.json();
-  const list = $("bible-list");
-  list.innerHTML = "";
-  if (bibles.length === 0) {
-    list.innerHTML = '<p class="msg">Aucune bible pour l’instant — importez la première ci-dessous.</p>';
-    return;
-  }
-  for (const b of bibles) {
-    const card = document.createElement("div");
-    card.className = "panel bible-card";
-    card.innerHTML =
-      '<span class="title"></span><span class="status ' + b.status + '">' + b.status + "</span>";
-    card.querySelector(".title").textContent = b.title;
-    card.addEventListener("click", () => openBible(b.id));
-    list.appendChild(card);
-  }
-}
-
-async function importBible(markdown, title) {
-  $("import-btn").disabled = true;
-  const res = await api("/bibles", json({ markdown, title: title || undefined }));
-  $("import-btn").disabled = false;
-  const body = await res.json();
-  if (!res.ok) {
-    $("import-msg").textContent = "Import refusé : " + (body.error || res.status);
-    $("import-msg").className = "msg error";
-    return;
-  }
-  $("import-msg").textContent = "";
-  $("import-md").value = "";
-  $("import-title").value = "";
-  openBible(body.id);
-}
-
-$("import-btn").addEventListener("click", () => {
-  const md = $("import-md").value;
-  if (md.trim() === "") {
-    $("import-msg").textContent = "Collez du Markdown d’abord.";
-    $("import-msg").className = "msg error";
-    return;
-  }
-  importBible(md, $("import-title").value.trim());
-});
-
-$("import-file").addEventListener("change", async (e) => {
-  const file = e.target.files[0];
-  if (!file) return;
-  const text = await file.text();
-  importBible(text, $("import-title").value.trim() || file.name.replace(/\.(md|markdown|txt)$/i, ""));
-  e.target.value = "";
-});
-
-// ---------- Détail ----------
-async function openBible(id) {
-  clearInterval(pollTimer);
-  const res = await api("/bibles/" + id);
-  if (!res.ok) return;
-  currentBible = await res.json();
-  $("detail-title").textContent = currentBible.title;
-  $("canon-editor").value = currentBible.canon_md || "";
-  $("analyze-msg").textContent = "";
-  $("save-msg").textContent = "";
-  renderStatus(currentBible.status);
-  show("detail-section");
-  refreshRichness();
-}
-
-function renderStatus(status) {
-  const el = $("detail-status");
-  el.textContent = status;
-  el.className = "status " + status;
-  $("analyze-btn").disabled = status === "analyzing";
-}
-
-$("back-btn").addEventListener("click", () => {
-  clearInterval(pollTimer);
-  show("library-section");
-  loadLibrary();
-});
-
-$("save-canon-btn").addEventListener("click", async () => {
-  const res = await api("/bibles/" + currentBible.id, {
-    method: "PATCH",
-    headers: { "content-type": "application/json" },
-    body: JSON.stringify({ canon_md: $("canon-editor").value }),
-  });
-  $("save-msg").textContent = res.ok ? "Canon enregistré." : "Échec de l’enregistrement.";
-  $("save-msg").className = res.ok ? "msg" : "msg error";
-});
-
-// ---------- Richesse ----------
-$("analyze-btn").addEventListener("click", async () => {
-  const res = await api("/bibles/" + currentBible.id + "/analyze", { method: "POST" });
-  const body = await res.json();
-  if (!res.ok) {
-    $("analyze-msg").textContent =
-      body.error === "analyzer_not_configured"
-        ? "L’analyseur n’est pas configuré côté serveur (clé Anthropic manquante)."
-        : "Analyse impossible : " + (body.error || res.status);
-    $("analyze-msg").className = "msg error";
-    return;
-  }
-  $("analyze-msg").textContent = "Analyse en cours — l’esprit examine votre monde…";
-  $("analyze-msg").className = "msg";
-  renderStatus("analyzing");
-  startPolling();
-});
-
-function startPolling() {
-  clearInterval(pollTimer);
-  pollTimer = setInterval(refreshRichness, 2500);
-}
-
-async function refreshRichness() {
-  const res = await api("/bibles/" + currentBible.id + "/richness");
-  if (!res.ok) return;
-  const body = await res.json();
-  if (body.status === "analyzing") {
-    renderStatus("analyzing");
-    if (!pollTimer) startPolling();
-    return;
-  }
-  clearInterval(pollTimer);
-  pollTimer = null;
-  if (body.status === "analyzed") {
-    renderStatus("analyzed");
-    $("analyze-msg").textContent = "";
-    $("richness-block").classList.remove("hidden");
-    renderRadar(body.scores);
-    $("global-score").textContent = body.global;
-    renderGaps(body.gaps);
-  } else {
-    // 'none' : soit jamais analysé, soit l'analyse vient d'échouer.
-    if ($("detail-status").textContent === "analyzing") {
-      $("analyze-msg").textContent = "L’analyse a échoué — réessayez.";
-      $("analyze-msg").className = "msg error";
-    }
-    renderStatus(currentBible.status === "analyzed" ? "analyzed" : "draft");
-    $("richness-block").classList.add("hidden");
-  }
-}
-
-function renderGaps(gaps) {
-  const list = $("gaps-list");
-  list.innerHTML = "";
-  if (!gaps.length) {
-    list.innerHTML = '<p class="msg">Aucune zone floue détectée.</p>';
-    return;
-  }
-  for (const gap of gaps) {
-    const div = document.createElement("div");
-    div.className = "gap-item";
-    div.innerHTML = '<span class="axis"></span><div class="desc"></div>';
-    div.querySelector(".axis").textContent = AXIS_LABELS[gap.axis] || gap.axis;
-    div.querySelector(".desc").textContent = gap.description;
-    list.appendChild(div);
-  }
-}
-
-// ---------- Radar SVG ----------
-const CX = 170, CY = 160, R = 110;
-
-function radarPoint(axisIndex, value) {
-  const angle = -Math.PI / 2 + (axisIndex * 2 * Math.PI) / AXES.length;
-  const r = (R * value) / 10;
-  return [CX + r * Math.cos(angle), CY + r * Math.sin(angle)];
-}
-
-function polygon(values) {
-  return values
-    .map((v, i) => radarPoint(i, v).map((n) => n.toFixed(1)).join(","))
-    .join(" ");
-}
-
-function renderRadar(scores) {
-  const values = AXES.map((axis) => scores[axis]);
-
-  const grid = AXES.length && [2, 4, 6, 8, 10]
-    .map(
-      (level) =>
-        '<polygon points="' + polygon(AXES.map(() => level)) +
-        '" fill="none" stroke="#4b2f7a" stroke-width="' + (level === 10 ? 1.5 : 0.6) + '" />',
-    )
-    .join("");
-  const spokes = AXES.map((_, i) => {
-    const [x, y] = radarPoint(i, 10);
-    return '<line x1="' + CX + '" y1="' + CY + '" x2="' + x.toFixed(1) + '" y2="' + y.toFixed(1) + '" stroke="#4b2f7a" stroke-width="0.6" />';
-  }).join("");
-  $("radar-grid").innerHTML = grid + spokes;
-
-  $("radar-value").innerHTML =
-    '<polygon points="' + polygon(values) +
-    '" fill="url(#radar-grad)" fill-opacity="0.55" stroke="#67E8F9" stroke-width="2" stroke-linejoin="round" />';
-
-  $("radar-labels").innerHTML = AXES.map((axis, i) => {
-    const [x, y] = radarPoint(i, 12.6);
-    const anchor = Math.abs(x - CX) < 8 ? "middle" : x > CX ? "start" : "end";
-    return (
-      '<text x="' + x.toFixed(1) + '" y="' + y.toFixed(1) + '" text-anchor="' + anchor + '">' +
-      AXIS_LABELS[axis] +
-      ' <tspan class="score-label">' + scores[axis] + "</tspan></text>"
-    );
-  }).join("");
-}
-
-boot();
-</script>
+<script src="/app.js"></script>
 </body>
 </html>

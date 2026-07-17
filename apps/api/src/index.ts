@@ -17,7 +17,14 @@ app.route("/api/bibles", bibles);
 app.route("/api/characters", characters);
 app.route("/api/sessions", sessions);
 
-app.notFound((c) => c.json({ error: "not_found" }, 404));
+// Hors /api : front statique via le binding ASSETS (en prod le runtime sert
+// les assets avant le worker ; ce fallback couvre les tests et run_worker_first).
+app.notFound((c) => {
+  if (!new URL(c.req.url).pathname.startsWith("/api/")) {
+    return c.env.ASSETS.fetch(c.req.raw);
+  }
+  return c.json({ error: "not_found" }, 404);
+});
 app.onError((err, c) => {
   console.error(err);
   return c.json({ error: "internal_error" }, 500);
