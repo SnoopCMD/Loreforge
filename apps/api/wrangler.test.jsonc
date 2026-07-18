@@ -1,4 +1,10 @@
 {
+  // Config wrangler DES TESTS (vitest-pool-workers) : identique à
+  // wrangler.jsonc SANS les bindings AI et VECTORIZE — Workers AI est
+  // toujours distant (connexion + facturation dès le démarrage) et
+  // Vectorize n'a pas de simulateur local. Le code les traite comme
+  // optionnels (src/env.ts) : sans eux, le RAG est simplement inactif.
+  // À garder en phase avec wrangler.jsonc pour tout le reste.
   "$schema": "node_modules/wrangler/config-schema.json",
   "name": "loreforge-api",
   "main": "src/index.ts",
@@ -17,7 +23,6 @@
   ],
   "kv_namespaces": [
     {
-      // Cache chaud de l'état des sessions de jeu (SPEC §2).
       "binding": "CACHE",
       "id": "c62c5a6e3a44462d9219649ef9a9d6ee"
     }
@@ -36,28 +41,13 @@
       "new_sqlite_classes": ["GameSession"]
     }
   ],
-  "ai": {
-    // Embeddings du RAG bible (M6) : @cf/baai/bge-m3, 1024 dimensions.
-    "binding": "AI"
-  },
-  "vectorize": [
-    {
-      "binding": "VECTORIZE",
-      // À créer côté Cloudflare :
-      // `wrangler vectorize create loreforge-bible --dimensions=1024 --metric=cosine`
-      "index_name": "loreforge-bible"
-    }
-  ],
   "r2_buckets": [
     {
       "binding": "BUCKET",
-      // À créer côté Cloudflare : `wrangler r2 bucket create loreforge-files`.
       "bucket_name": "loreforge-files"
     }
   ],
   "vars": {
-    // Passe à "production" via `wrangler deploy --var ENVIRONMENT:production`
-    // ou un environnement wrangler dédié.
     "ENVIRONMENT": "development"
   },
   "observability": {

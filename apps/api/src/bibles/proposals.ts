@@ -7,6 +7,7 @@ import type { AppEnv } from "../env";
 import { requireAuth } from "../auth/middleware";
 import { findOwnedBible } from "./db";
 import { mergeProposal } from "./merge";
+import { reindexBible } from "../rag/store";
 
 const STATUSES = ["pending", "accepted", "rejected"] as const;
 
@@ -108,6 +109,7 @@ proposals.post("/:id/proposals/:pid", async (c) => {
       `UPDATE canon_proposals SET status = 'accepted' WHERE id = ?`,
     ).bind(row.id),
   ]);
-  // Réindex Vectorize : M6 — pas de RAG tant que la bible tient dans le prompt.
+  // Réindex Vectorize (M6) en tâche de fond — no-op sous le seuil RAG.
+  c.executionCtx.waitUntil(reindexBible(c.env, bible.id, merged));
   return c.json({ proposal: { ...row, status: "accepted" }, canon_md: merged });
 });

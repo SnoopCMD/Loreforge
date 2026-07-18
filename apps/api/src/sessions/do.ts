@@ -24,6 +24,7 @@ import {
   type RollResult,
 } from "./rules";
 import { GmStreamParser, stripGmTags, type GmTagEvent } from "./tags";
+import { retrieveCanonExcerpts } from "../rag/store";
 import {
   buildSetupMessage,
   buildSetupQuestions,
@@ -447,7 +448,7 @@ export class GameSession extends DurableObject<Env> {
     if (!this.env.ANTHROPIC_API_KEY) {
       return json({ error: "narrator_not_configured" }, 503);
     }
-    const system = await this.systemPrompt(meta, state);
+    const system = await this.systemPrompt(meta, state, userText);
     const messages = await this.buildMessages(userText);
 
     const { readable, writable } = new TransformStream();
@@ -574,6 +575,7 @@ export class GameSession extends DurableObject<Env> {
   private async systemPrompt(
     meta: SessionMeta,
     state: GameState,
+    queryText = "",
   ): Promise<string> {
     if (this.canonCache === null) {
       const row = await this.env.DB.prepare(
@@ -583,9 +585,26 @@ export class GameSession extends DurableObject<Env> {
         .first<{ canon_md: string | null }>();
       this.canonCache = row?.canon_md ?? "";
     }
+    // RAG (M6) : bible volumineuse → top-6 d'extraits re-rankés pour ce
+    // tour ; null (bindings absents, index périmé...) → troncature.
+    const canonExcerpts = await retrieveCanonExcerpts(
+      this.env,
+      meta.bibleId,
+      this.canonCache,
+      queryText || (meta.trame ?? meta.bibleTitle),
+      {
+        trame: meta.trame,
+        names: [
+          ...(meta.characterName ? [meta.characterName] : []),
+          ...state.facts.slice(-5),
+        ],
+      },
+      (p) => this.ctx.waitUntil(p),
+    );
     return buildSystemPrompt({
       bibleTitle: meta.bibleTitle,
       canonMd: this.canonCache,
+      canonExcerpts,
       scores: meta.scores,
       gaps: meta.gaps,
       toneProfile: meta.toneProfile,

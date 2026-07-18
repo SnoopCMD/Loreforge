@@ -9,7 +9,9 @@ export default defineConfig(async () => {
   return {
     plugins: [
       cloudflareTest({
-        wrangler: { configPath: "./wrangler.jsonc" },
+        // Config sans AI/VECTORIZE : ces bindings sont distants (connexion
+        // et facturation dès le démarrage) — le RAG est inactif en test.
+        wrangler: { configPath: "./wrangler.test.jsonc" },
         miniflare: {
           bindings: {
             TEST_MIGRATIONS: migrations,

@@ -8,6 +8,7 @@ import {
   normalizeMarkdown,
   serializeToneProfile,
 } from "./normalize";
+import { reindexBible } from "../rag/store";
 
 export const bibles = new Hono<AppEnv>();
 
@@ -92,6 +93,9 @@ bibles.post("/", async (c) => {
     .bind(id, user.id, title, r2Key, canonMd, now, now)
     .run();
 
+  // RAG (M6) : indexation en tâche de fond (no-op sous le seuil).
+  c.executionCtx.waitUntil(reindexBible(c.env, id, canonMd));
+
   return c.json(
     {
       id,
@@ -173,5 +177,10 @@ bibles.patch("/:id", async (c) => {
     .run();
 
   const updated = await findOwnedBible(c.env.DB, id, user.id);
+  if (body.canon_md !== undefined) {
+    c.executionCtx.waitUntil(
+      reindexBible(c.env, id, (updated as BibleRow).canon_md ?? ""),
+    );
+  }
   return c.json(toPublic(updated as BibleRow, true));
 });

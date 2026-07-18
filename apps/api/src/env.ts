@@ -5,6 +5,10 @@ export interface Env {
   /** Cache chaud de l'état des sessions de jeu (purgé en fin de session). */
   CACHE: KVNamespace;
   GAME_SESSIONS: DurableObjectNamespace;
+  // RAG bible (M6, SPEC §2) — embeddings Workers AI + index Vectorize.
+  // Optionnels : sans eux, les grosses bibles retombent sur la troncature.
+  AI?: Ai;
+  VECTORIZE?: VectorizeIndex;
   ENVIRONMENT: "development" | "production";
   // Secret (wrangler secret put ANTHROPIC_API_KEY) — absent tant que
   // non configuré : /analyze répond alors 503 analyzer_not_configured.

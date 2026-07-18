@@ -44,6 +44,8 @@ export function buildSetupQuestions(
 export interface SystemPromptInput {
   bibleTitle: string;
   canonMd: string;
+  /** Extraits RAG (M6) : remplacent la bible entière quand elle est grosse. */
+  canonExcerpts?: string | null;
   scores: RichnessScores | null;
   gaps: RichnessGap[];
   toneProfile: string | null;
@@ -55,10 +57,18 @@ export interface SystemPromptInput {
 }
 
 export function buildSystemPrompt(input: SystemPromptInput): string {
-  let canon = input.canonMd;
-  if (canon.length > MAX_CANON_CHARS) {
-    canon =
-      canon.slice(0, MAX_CANON_CHARS) + "\n\n[... bible tronquée ...]";
+  let canon: string;
+  if (input.canonExcerpts) {
+    canon = `(Bible volumineuse : seuls les extraits pertinents pour ce tour
+sont fournis. S'ils ne suffisent pas, reste prudent et cohérent avec eux.)
+
+${input.canonExcerpts}`;
+  } else {
+    canon = input.canonMd;
+    if (canon.length > MAX_CANON_CHARS) {
+      canon =
+        canon.slice(0, MAX_CANON_CHARS) + "\n\n[... bible tronquée ...]";
+    }
   }
 
   const scoresLine = input.scores
