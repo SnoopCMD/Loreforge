@@ -18,7 +18,10 @@ import {
 // être créé en cosine/1024 : wrangler vectorize create loreforge-bible
 //   --dimensions=1024 --metric=cosine
 const EMBED_MODEL = "@cf/baai/bge-m3";
-const EMBED_BATCH = 50;
+// Limite du modèle : 60k tokens PAR APPEL, tous textes confondus, avec un
+// tokenizer ~1,6 car/token en français accentué → 20 chunks de ~2800 chars
+// ≈ 35k tokens, marge confortable (constaté en prod : 50 chunks → 87k).
+const EMBED_BATCH = 20;
 
 interface RagMeta {
   count: number;
