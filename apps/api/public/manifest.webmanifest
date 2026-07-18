@@ -1,0 +1,14 @@
+{
+  "name": "Loreforge",
+  "short_name": "Loreforge",
+  "description": "Vivez votre univers : sessions JDR solo narrées par IA sur la bible de votre monde.",
+  "start_url": "/",
+  "display": "standalone",
+  "background_color": "#12081F",
+  "theme_color": "#12081F",
+  "lang": "fr",
+  "icons": [
+    { "src": "/icon.svg", "sizes": "any", "type": "image/svg+xml", "purpose": "any" },
+    { "src": "/icon-maskable.svg", "sizes": "any", "type": "image/svg+xml", "purpose": "maskable" }
+  ]
+}

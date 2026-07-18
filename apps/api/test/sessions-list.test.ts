@@ -147,4 +147,22 @@ describe("assets du front", () => {
     expect(css.status).toBe(200);
     expect(await css.text()).toContain("--arcane");
   });
+
+  it("sert le module core et les fichiers PWA (§8.3)", async () => {
+    const core = await SELF.fetch(`${BASE}/core.js`);
+    expect(core.status).toBe(200);
+    expect(await core.text()).toContain("createSseParser");
+
+    const manifest = await SELF.fetch(`${BASE}/manifest.webmanifest`);
+    expect(manifest.status).toBe(200);
+    const parsed = (await manifest.json()) as { display: string; icons: unknown[] };
+    expect(parsed.display).toBe("standalone");
+    expect(parsed.icons.length).toBeGreaterThan(0);
+
+    const sw = await SELF.fetch(`${BASE}/sw.js`);
+    expect(sw.status).toBe(200);
+    expect(await sw.text()).toContain("addEventListener");
+
+    expect((await SELF.fetch(`${BASE}/icon.svg`)).status).toBe(200);
+  });
 });

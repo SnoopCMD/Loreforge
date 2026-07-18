@@ -48,7 +48,9 @@ richness.post("/:id/analyze", async (c) => {
 
   // L'appel Anthropic continue après la réponse HTTP ; le client poll
   // GET /api/bibles/:id/richness.
-  c.executionCtx.waitUntil(runAnalysis(c.env, bible.id, bible.canon_md));
+  c.executionCtx.waitUntil(
+    runAnalysis(c.env, bible.id, c.get("user").id, bible.canon_md),
+  );
 
   return c.json({ ok: true, status: "analyzing" }, 202);
 });
@@ -56,6 +58,7 @@ richness.post("/:id/analyze", async (c) => {
 async function runAnalysis(
   env: Env,
   bibleId: string,
+  userId: string,
   canonMd: string,
 ): Promise<void> {
   try {
@@ -87,6 +90,61 @@ async function runAnalysis(
         Date.now(),
       )
       .run();
+    // §6bis — schéma de fiche versionné + personnages canon jouables.
+    if (result.sheetSchema) {
+      const prev = await env.DB.prepare(
+        `SELECT MAX(version) AS v FROM sheet_schemas WHERE bible_id = ?`,
+      )
+        .bind(bibleId)
+        .first<{ v: number | null }>();
+      await env.DB.prepare(
+        `INSERT INTO sheet_schemas (id, bible_id, version, schema_json, created_at)
+         VALUES (?, ?, ?, ?, ?)`,
+      )
+        .bind(
+          crypto.randomUUID(),
+          bibleId,
+          (prev?.v ?? 0) + 1,
+          JSON.stringify(result.sheetSchema),
+          Date.now(),
+        )
+        .run();
+    }
+    const schemaJson = result.sheetSchema
+      ? JSON.stringify(result.sheetSchema)
+      : null;
+    for (const pc of result.playable) {
+      // Ré-analyse : on met à jour la fiche d'un canon existant (même nom)
+      // plutôt que de dupliquer — il peut être référencé par des sessions.
+      const existing = await env.DB.prepare(
+        `SELECT id FROM characters WHERE bible_id = ? AND name = ? AND is_canon = 1`,
+      )
+        .bind(bibleId, pc.name)
+        .first<{ id: string }>();
+      if (existing) {
+        await env.DB.prepare(
+          `UPDATE characters SET sheet_json = ?, sheet_schema_json = ? WHERE id = ?`,
+        )
+          .bind(JSON.stringify(pc.sheet), schemaJson, existing.id)
+          .run();
+      } else {
+        await env.DB.prepare(
+          `INSERT INTO characters
+             (id, bible_id, user_id, name, sheet_json, sheet_schema_json, origin, is_canon, created_at)
+           VALUES (?, ?, ?, ?, ?, ?, 'canon', 1, ?)`,
+        )
+          .bind(
+            crypto.randomUUID(),
+            bibleId,
+            userId,
+            pc.name,
+            JSON.stringify(pc.sheet),
+            schemaJson,
+            Date.now(),
+          )
+          .run();
+      }
+    }
     await env.DB.prepare(
       `UPDATE bibles SET status = 'analyzed', updated_at = ? WHERE id = ?`,
     )

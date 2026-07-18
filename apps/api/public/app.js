@@ -1,7 +1,11 @@
-"use strict";
-
-// Loreforge — front statique vanilla (aucun build step).
+// Loreforge — front statique vanilla (aucun build step, module ES).
 // Routage par hash, client SSE maison (POST + ReadableStream), rendu DA §8.
+// La logique sans DOM vit dans core.js (= @app/core, SPEC §8.3).
+
+import {
+  AXES, AXIS_LABELS, FORMAT_LABELS, GENERIC_FIELDS, OUTCOME_LABELS,
+  createSseParser, esc, extractActionChips, labelFor, mdToHtml,
+} from "/core.js";
 
 const $ = (id) => document.getElementById(id);
 const api = (path, opts = {}) => fetch("/api" + path, opts);
@@ -10,23 +14,6 @@ const jsonPost = (body) => ({
   headers: { "content-type": "application/json" },
   body: JSON.stringify(body),
 });
-const esc = (s) =>
-  String(s).replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
-
-const AXIS_LABELS = {
-  cosmology: "Cosmologie",
-  characters: "Personnages",
-  plots: "Trames",
-  tone: "Ton",
-  geography: "Géographie",
-};
-const AXES = Object.keys(AXIS_LABELS);
-const OUTCOME_LABELS = {
-  failure_complication: "Échec, et une complication",
-  success_cost: "Réussite, mais à un coût",
-  clean_success: "Réussite franche",
-};
-const FORMAT_LABELS = { oneshot: "One-shot", mini: "Mini-campagne", campaign: "Campagne" };
 
 // Petites persistances locales (survivent au refresh, pas au navigateur privé).
 const store = {
@@ -57,64 +44,14 @@ async function sse(path, body, handlers) {
   }
   const reader = res.body.getReader();
   const decoder = new TextDecoder();
-  let buf = "";
+  const parser = createSseParser((event, data) => {
+    if (handlers[event]) handlers[event](data);
+  });
   for (;;) {
     const { done, value } = await reader.read();
     if (done) break;
-    buf += decoder.decode(value, { stream: true });
-    let idx;
-    while ((idx = buf.indexOf("\n\n")) !== -1) {
-      const frame = buf.slice(0, idx);
-      buf = buf.slice(idx + 2);
-      let event = "message";
-      let data = "";
-      for (const line of frame.split("\n")) {
-        if (line.startsWith("event:")) event = line.slice(6).trim();
-        else if (line.startsWith("data:")) data += line.slice(5).trim();
-      }
-      if (handlers[event]) handlers[event](data ? JSON.parse(data) : {});
-    }
+    parser.push(decoder.decode(value, { stream: true }));
   }
-}
-
-// ── Mini-renderer Markdown (résumés de fin — tout est échappé) ───────────
-
-function mdToHtml(md) {
-  const inline = (s) =>
-    esc(s)
-      .replace(/\*\*([^*]+)\*\*/g, "<b>$1</b>")
-      .replace(/\*([^*]+)\*/g, "<i>$1</i>");
-  const out = [];
-  let list = null;
-  let para = [];
-  const flushPara = () => {
-    if (para.length) out.push("<p>" + inline(para.join(" ")) + "</p>");
-    para = [];
-  };
-  const flushList = () => {
-    if (list) out.push("<ul>" + list.join("") + "</ul>");
-    list = null;
-  };
-  for (const raw of String(md).split(/\r?\n/)) {
-    const line = raw.trimEnd();
-    const h = line.match(/^(#{1,3})\s+(.*)/);
-    const li = line.match(/^[-*]\s+(.*)/);
-    if (h) {
-      flushPara(); flushList();
-      const tag = h[1].length === 1 ? "h2" : "h" + h[1].length;
-      out.push(`<${tag}>${inline(h[2])}</${tag}>`);
-    } else if (li) {
-      flushPara();
-      (list = list || []).push("<li>" + inline(li[1]) + "</li>");
-    } else if (line.trim() === "") {
-      flushPara(); flushList();
-    } else {
-      flushList();
-      para.push(line);
-    }
-  }
-  flushPara(); flushList();
-  return out.join("");
 }
 
 // ── Radar (partagé détail + mini-cartes de la bibliothèque) ──────────────
@@ -174,20 +111,13 @@ function miniRadar(scores) {
 
 // ── Fiche personnage façon Morokh ────────────────────────────────────────
 
-const SHEET_LABELS = {
-  power: "Pouvoir",
-  temperament: "Tempérament",
-  bond: "Lien",
-  resources: "Ressources",
-};
-
 function ficheHtml(name, sheet, { compact = false, sub = "" } = {}) {
   const initial = (name || "?").trim().charAt(0).toUpperCase();
   const entries = Object.entries(sheet && typeof sheet === "object" ? sheet : {})
     .filter(([, v]) => v !== null && v !== "" && v !== undefined)
     .map(
       ([k, v]) =>
-        `<dt>${esc(SHEET_LABELS[k] || k)}</dt><dd>${esc(typeof v === "string" ? v : JSON.stringify(v))}</dd>`,
+        `<dt>${esc(labelFor(k))}</dt><dd>${esc(typeof v === "string" ? v : JSON.stringify(v))}</dd>`,
     )
     .join("");
   return `<div class="fiche${compact ? " compact" : ""}">
@@ -206,8 +136,8 @@ function ficheHtml(name, sheet, { compact = false, sub = "" } = {}) {
 // ── Navigation ───────────────────────────────────────────────────────────
 
 const SCREENS = [
-  "screen-landing", "screen-library", "screen-bible", "screen-forge",
-  "screen-setup", "screen-session", "screen-end",
+  "screen-landing", "screen-library", "screen-bible", "screen-embark",
+  "screen-quiz", "screen-forge", "screen-setup", "screen-session", "screen-end",
 ];
 
 function showScreen(id) {
@@ -224,6 +154,8 @@ function route() {
   if (!authed) return showLanding();
   if (parts.length === 0) return showLibrary();
   if (parts[0] === "bible" && parts[1]) {
+    if (parts[2] === "embark") return showEmbark(parts[1]);
+    if (parts[2] === "quiz") return showQuiz(parts[1]);
     if (parts[2] === "forge") return showForge(parts[1]);
     return showBible(parts[1]);
   }
@@ -428,6 +360,15 @@ async function refreshRichness() {
     $("richness-block").classList.remove("hidden");
     renderRadarInto($("radar"), body.scores, { cx: 170, cy: 160, r: 110, labels: true });
     $("global-score").textContent = body.global;
+    const scoreList = $("score-list");
+    scoreList.innerHTML = "";
+    for (const axis of AXES) {
+      const li = document.createElement("li");
+      li.innerHTML = '<span class="axis"></span><span class="mono score"></span>';
+      li.querySelector(".axis").textContent = AXIS_LABELS[axis];
+      li.querySelector(".score").textContent = body.scores[axis] + "/10";
+      scoreList.appendChild(li);
+    }
     renderGaps(body.gaps);
   } else {
     if ($("detail-status").textContent === "analyzing") {
@@ -534,9 +475,7 @@ async function loadProposals(bibleId) {
 async function loadCharacters(bibleId) {
   const res = await api("/characters?bible_id=" + encodeURIComponent(bibleId));
   const list = $("character-list");
-  const select = $("new-character");
   list.innerHTML = "";
-  select.innerHTML = '<option value="">Sans personnage</option>';
   if (!res.ok) return;
   const { characters } = await res.json();
   if (characters.length === 0) {
@@ -545,8 +484,9 @@ async function loadCharacters(bibleId) {
   for (const ch of characters) {
     const card = document.createElement("div");
     card.className = "character-card";
-    card.innerHTML = '<span class="name"></span><span class="msg">voir la fiche</span>';
+    card.innerHTML = '<span class="name"></span><span class="msg"></span>';
     card.querySelector(".name").textContent = ch.name;
+    card.querySelector(".msg").textContent = ch.is_canon ? "canon · voir la fiche" : "voir la fiche";
     card.addEventListener("click", () => {
       $("character-fiche").innerHTML = ficheHtml(ch.name, ch.sheet, {
         sub: currentBible ? currentBible.title : "",
@@ -554,10 +494,6 @@ async function loadCharacters(bibleId) {
       $("character-fiche").scrollIntoView({ block: "nearest" });
     });
     list.appendChild(card);
-    const opt = document.createElement("option");
-    opt.value = ch.id;
-    opt.textContent = ch.name;
-    select.appendChild(opt);
   }
 }
 
@@ -565,25 +501,333 @@ $("forge-character-btn").addEventListener("click", () => {
   location.hash = "#/bible/" + currentBible.id + "/forge";
 });
 
-function showForge(bibleId) {
+// ── Lancement de session : préférences puis écran « deux portes » ────────
+
+function embarkPref(bibleId) {
+  return store.get("lf:embark:" + bibleId) || { format: "oneshot", trame: null };
+}
+
+/** Recharge la bible si on arrive par refresh direct sur un sous-écran. */
+async function ensureBible(id) {
+  if (currentBible && currentBible.id === id) return currentBible;
+  const res = await api("/bibles/" + id);
+  if (res.ok) currentBible = await res.json();
+  return currentBible;
+}
+
+async function launchSession(bibleId, characterId, mode, msgEl) {
+  const pref = embarkPref(bibleId);
+  const payload = {
+    bible_id: bibleId,
+    character_id: characterId || null,
+    format: pref.format || "oneshot",
+    trame: pref.trame || null,
+  };
+  if (mode) payload.character_mode = mode;
+  if (msgEl) { msgEl.textContent = "La session se prépare…"; msgEl.className = "msg"; }
+  const res = await api("/sessions", jsonPost(payload));
+  const body = await res.json();
+  if (!res.ok) {
+    if (msgEl) {
+      msgEl.textContent = "Lancement impossible : " + (body.error || res.status);
+      msgEl.className = "msg error";
+    }
+    return;
+  }
+  store.set("lf:questions:" + body.session_id, body.setup_questions);
+  const info = currentBible && currentBible.id === bibleId
+    ? { id: bibleId, title: currentBible.title }
+    : { id: bibleId, title: "" };
+  store.set("lf:bible:" + body.session_id, info);
+  location.hash = "#/session/" + body.session_id + "/setup";
+}
+
+// ── Écran « deux portes » : Incarner / Créer (§6bis) ─────────────────────
+
+async function showEmbark(bibleId) {
+  showScreen("screen-embark");
+  $("embark-back").href = "#/bible/" + bibleId;
+  $("embark-msg").textContent = "";
+  ensureBible(bibleId);
+  $("quiz-btn").onclick = () => { location.hash = "#/bible/" + bibleId + "/quiz"; };
+  $("create-btn").onclick = () => { location.hash = "#/bible/" + bibleId + "/forge"; };
+  $("no-character-btn").onclick = () =>
+    launchSession(bibleId, null, null, $("embark-msg"));
+
+  const wrap = $("embark-characters");
+  wrap.innerHTML = '<p class="msg">Les personnages se réveillent…</p>';
+  const res = await api("/characters?bible_id=" + encodeURIComponent(bibleId));
+  if (!res.ok) {
+    wrap.innerHTML = '<p class="msg error">Personnages indisponibles.</p>';
+    return;
+  }
+  const { characters } = await res.json();
+  wrap.innerHTML = characters.length
+    ? ""
+    : '<p class="msg">Aucun personnage pour l’instant — questionnaire éclair, ou forge complète à droite.</p>';
+  for (const ch of characters) {
+    const card = document.createElement("button");
+    card.type = "button";
+    card.className = "char-pick";
+    card.innerHTML = ficheHtml(ch.name, ch.sheet, {
+      compact: true,
+      sub: ch.is_canon ? "Personnage du canon" : "Votre légende",
+    });
+    card.addEventListener("click", () => {
+      card.disabled = true;
+      launchSession(
+        bibleId,
+        ch.id,
+        ch.is_canon ? "embody_canon" : "create",
+        $("embark-msg"),
+      ).finally(() => { card.disabled = false; });
+    });
+    wrap.appendChild(card);
+  }
+}
+
+// ── Questionnaire éclair (une question par vue) ──────────────────────────
+
+async function showQuiz(bibleId) {
+  showScreen("screen-quiz");
+  $("quiz-back").href = "#/bible/" + bibleId + "/embark";
+  $("quiz-fiche").innerHTML = "";
+  $("quiz-msg").textContent = "";
+  $("quiz-msg").className = "msg";
+  $("quiz-question").textContent = "";
+  $("quiz-choices").innerHTML = "";
+  $("quiz-progress").textContent = "L’esprit compose vos questions…";
+
+  const res = await api("/characters/embody-quiz", jsonPost({ bible_id: bibleId }));
+  const body = await res.json();
+  if (!res.ok) {
+    $("quiz-progress").textContent = "";
+    $("quiz-msg").textContent =
+      body.error === "character_ai_not_configured"
+        ? "L’esprit n’est pas configuré côté serveur (clé Anthropic manquante)."
+        : "Questionnaire impossible : " + (body.error || res.status);
+    $("quiz-msg").className = "msg error";
+    return;
+  }
+
+  const questions = body.questions;
+  const answers = [];
+  let i = 0;
+
+  const submit = async () => {
+    $("quiz-question").textContent = "";
+    $("quiz-choices").innerHTML = "";
+    $("quiz-progress").textContent = "L’esprit forge votre personnage…";
+    const r = await api(
+      "/characters/embody-quiz/answers",
+      jsonPost({ bible_id: bibleId, answers }),
+    );
+    const ch = await r.json();
+    if (!r.ok) {
+      $("quiz-progress").textContent = "";
+      $("quiz-msg").textContent = "La forge a échoué : " + (ch.error || r.status);
+      $("quiz-msg").className = "msg error";
+      return;
+    }
+    $("quiz-progress").textContent = "";
+    $("quiz-fiche").innerHTML = ficheHtml(ch.name, ch.sheet, { sub: "Né du questionnaire" });
+    launchSession(bibleId, ch.id, "embody_quiz", $("quiz-msg"));
+  };
+
+  const show = () => {
+    if (i >= questions.length) { submit(); return; }
+    const q = questions[i];
+    $("quiz-progress").textContent = (i + 1) + " / " + questions.length;
+    $("quiz-question").textContent = q.question;
+    const wrap = $("quiz-choices");
+    wrap.innerHTML = "";
+    for (const choice of q.choices) {
+      const b = document.createElement("button");
+      b.type = "button";
+      b.className = "chip";
+      b.textContent = choice;
+      b.addEventListener("click", () => {
+        answers.push({ question: q.question, answer: choice });
+        i++;
+        show();
+      });
+      wrap.appendChild(b);
+    }
+    const skip = document.createElement("button");
+    skip.type = "button";
+    skip.className = "chip dim";
+    skip.textContent = "Passer";
+    skip.addEventListener("click", () => { i++; show(); });
+    wrap.appendChild(skip);
+  };
+  show();
+}
+
+// ── Forge : fiche à champs dérivés de la bible (§6bis) ───────────────────
+
+async function showForge(bibleId) {
   showScreen("screen-forge");
-  $("forge-back").href = "#/bible/" + bibleId;
+  $("forge-back").href = "#/bible/" + bibleId + "/embark";
   $("forge-form").dataset.bibleId = bibleId;
   $("forge-msg").textContent = "";
+  $("forge-msg").className = "msg";
   $("forge-fiche").innerHTML = "";
+  $("forge-issues").innerHTML = "";
+  $("forge-after").style.display = "none";
+  $("forge-form").innerHTML = '<p class="msg">La fiche de ce monde se dessine…</p>';
+
+  let fields = GENERIC_FIELDS;
+  $("forge-intro").textContent =
+    "Les champs de cette fiche sont dérivés de votre bible — les chips viennent du canon, ✨ laisse l’esprit proposer.";
+  const res = await api("/bibles/" + bibleId + "/sheet-schema");
+  if (res.ok) {
+    const body = await res.json();
+    if (body.status === "ready") {
+      fields = body.schema.fields;
+    } else {
+      $("forge-intro").textContent =
+        "Bible pas encore analysée : fiche générique. Analysez la richesse pour obtenir des champs taillés pour ce monde.";
+    }
+  }
+  buildForgeForm(bibleId, fields);
+}
+
+function buildForgeForm(bibleId, fields) {
+  const form = $("forge-form");
+  form.innerHTML = "";
+  for (const f of fields) {
+    const label = document.createElement("label");
+    label.className = "forge-field";
+    const head = document.createElement("div");
+    head.className = "row spread";
+    const title = document.createElement("p");
+    title.textContent = f.label + (f.required ? " *" : "");
+    head.appendChild(title);
+
+    let input;
+    if (f.type === "select" && f.options.length) {
+      input = document.createElement("select");
+      const empty = document.createElement("option");
+      empty.value = "";
+      empty.textContent = "—";
+      input.appendChild(empty);
+      for (const opt of f.options) {
+        const o = document.createElement("option");
+        o.value = opt;
+        o.textContent = opt;
+        input.appendChild(o);
+      }
+    } else {
+      input = document.createElement("input");
+      input.type = "text";
+      input.maxLength = 300;
+      if (f.hint) input.placeholder = f.hint;
+    }
+    input.dataset.key = f.key;
+    input.className = "forge-input";
+    if (f.required) input.required = true;
+
+    // Bouton ✨ : l'IA remplit ce champ en cohérence avec le reste.
+    const spark = document.createElement("button");
+    spark.type = "button";
+    spark.className = "spark";
+    spark.textContent = "✨";
+    spark.title = "Laisser l’esprit proposer";
+    spark.addEventListener("click", async () => {
+      spark.disabled = true;
+      const r = await api("/characters/suggest", jsonPost({
+        bible_id: bibleId,
+        field_key: f.key,
+        sheet: collectSheet(),
+      }));
+      spark.disabled = false;
+      if (!r.ok) return;
+      const { value } = await r.json();
+      if (input.tagName === "SELECT") {
+        const match = [...input.options].find((o) => o.value === value);
+        if (match) input.value = value;
+      } else {
+        input.value = value;
+      }
+    });
+    head.appendChild(spark);
+    label.append(head, input);
+
+    if (f.suggestions.length) {
+      const chips = document.createElement("div");
+      chips.className = "chips";
+      for (const s of f.suggestions) {
+        const chip = document.createElement("button");
+        chip.type = "button";
+        chip.className = "chip";
+        chip.textContent = s;
+        chip.addEventListener("click", () => { input.value = s; });
+        chips.appendChild(chip);
+      }
+      label.appendChild(chips);
+    }
+    form.appendChild(label);
+  }
+  const submit = document.createElement("button");
+  submit.type = "submit";
+  submit.textContent = "Forger";
+  form.appendChild(submit);
+}
+
+function collectSheet() {
+  const sheet = {};
+  for (const input of $("forge-form").querySelectorAll(".forge-input")) {
+    const value = input.value.trim();
+    if (value !== "") sheet[input.dataset.key] = value;
+  }
+  return sheet;
+}
+
+function renderIssues(issues) {
+  const wrap = $("forge-issues");
+  wrap.innerHTML = "";
+  for (const issue of issues) {
+    const div = document.createElement("div");
+    div.className = "issue " + issue.severity;
+    div.innerHTML = '<span class="field"></span> <span class="text"></span>';
+    div.querySelector(".field").textContent = labelFor(issue.field);
+    div.querySelector(".text").textContent = issue.message;
+    wrap.appendChild(div);
+  }
 }
 
 $("forge-form").addEventListener("submit", async (e) => {
   e.preventDefault();
   const bibleId = e.target.dataset.bibleId;
-  const name = $("forge-name").value.trim();
-  const sheet = {
-    power: $("forge-power").value.trim(),
-    temperament: $("forge-temper").value.trim(),
-    bond: $("forge-bond").value.trim(),
-  };
+  const sheet = collectSheet();
+  const name = (sheet.name || "").trim();
+  if (name === "") {
+    $("forge-msg").textContent = "Un nom, au moins.";
+    $("forge-msg").className = "msg error";
+    return;
+  }
+  const btn = e.target.querySelector('button[type="submit"]');
+  btn.disabled = true;
+
+  // Relecture IA : les incohérences bloquantes arrêtent la forge.
+  $("forge-msg").textContent = "L’esprit relit votre fiche…";
+  $("forge-msg").className = "msg";
+  const check = await api("/characters/validate", jsonPost({ bible_id: bibleId, sheet }));
+  if (check.ok) {
+    const { issues } = await check.json();
+    renderIssues(issues);
+    if (issues.some((i) => i.severity === "blocking")) {
+      $("forge-msg").textContent =
+        "Des incohérences avec le canon bloquent la forge — corrigez, puis réessayez.";
+      $("forge-msg").className = "msg error";
+      btn.disabled = false;
+      return;
+    }
+  }
+
   const res = await api("/characters", jsonPost({ bible_id: bibleId, name, sheet_json: sheet }));
   const body = await res.json();
+  btn.disabled = false;
   if (!res.ok) {
     $("forge-msg").textContent = "Forge impossible : " + (body.error || res.status);
     $("forge-msg").className = "msg error";
@@ -593,6 +837,9 @@ $("forge-form").addEventListener("submit", async (e) => {
     'Personnage forgé. <a href="#/bible/' + esc(bibleId) + '">Retour à la bible</a>';
   $("forge-msg").className = "msg";
   $("forge-fiche").innerHTML = ficheHtml(body.name, body.sheet, { sub: "Nouvelle légende" });
+  $("forge-after").style.display = "";
+  $("forge-launch-btn").onclick = () =>
+    launchSession(bibleId, body.id, "create", $("forge-msg"));
   e.target.reset();
 });
 
@@ -626,27 +873,13 @@ async function loadSessions(bibleId) {
   }
 }
 
-$("new-session-btn").addEventListener("click", async () => {
-  $("new-session-btn").disabled = true;
-  const res = await api("/sessions", jsonPost({
-    bible_id: currentBible.id,
-    character_id: $("new-character").value || null,
+$("new-session-btn").addEventListener("click", () => {
+  // Format et trame mémorisés, puis écran « deux portes » (§6bis).
+  store.set("lf:embark:" + currentBible.id, {
     format: $("new-format").value,
     trame: $("new-trame").value.trim() || null,
-  }));
-  $("new-session-btn").disabled = false;
-  const body = await res.json();
-  if (!res.ok) {
-    $("session-msg").textContent =
-      body.error === "empty_bible"
-        ? "La bible n’a pas de canon — remplissez-la d’abord."
-        : "Lancement impossible : " + (body.error || res.status);
-    $("session-msg").className = "msg error";
-    return;
-  }
-  store.set("lf:questions:" + body.session_id, body.setup_questions);
-  store.set("lf:bible:" + body.session_id, { id: currentBible.id, title: currentBible.title });
-  location.hash = "#/session/" + body.session_id + "/setup";
+  });
+  location.hash = "#/bible/" + currentBible.id + "/embark";
 });
 
 // ── Setup de session ─────────────────────────────────────────────────────
@@ -723,6 +956,8 @@ function startSessionScreen(id, { fresh = false } = {}) {
   resetFinishButton();
   const info = sessionBibleInfo(id);
   $("session-bible").textContent = info ? info.title : "";
+  $("mini-scene").textContent = info ? info.title : "Session";
+  renderActionChips(null);
   showSceneOverlay(fresh ? "Scène 1" : info ? info.title : "La session reprend");
   updateRail();
   lockInput(true);
@@ -856,18 +1091,25 @@ function scrollFeed() {
 
 // — Rail —
 
-function updateRail() {
-  const orbs = $("souffle-orbs");
-  orbs.innerHTML = "";
+function renderOrbs(container, { withLabel = true } = {}) {
+  container.innerHTML = "";
   for (let i = 0; i < S.souffleMax; i++) {
     const orb = document.createElement("span");
     orb.className = "orb" + (i < S.souffle ? "" : " out");
-    orbs.appendChild(orb);
+    container.appendChild(orb);
   }
-  const label = document.createElement("span");
-  label.className = "label";
-  label.textContent = "Souffle " + S.souffle + "/" + S.souffleMax;
-  orbs.appendChild(label);
+  if (withLabel) {
+    const label = document.createElement("span");
+    label.className = "label";
+    label.textContent = "Souffle " + S.souffle + "/" + S.souffleMax;
+    container.appendChild(label);
+  }
+}
+
+function updateRail() {
+  renderOrbs($("souffle-orbs"));
+  // Mini-barre d'état mobile : les orbes restent visibles en permanence.
+  renderOrbs($("mini-orbs"), { withLabel: false });
 
   $("rail-stats").textContent =
     "tour " + S.turnCount + (S.pendingRoll ? " · jet requis" : "");
@@ -905,6 +1147,26 @@ function lockInput(locked) {
   $("player-input").placeholder = reason;
 }
 
+// Chips d'actions suggérées (§8.3) : options extraites de la fin du tour MJ.
+function renderActionChips(gmText) {
+  const wrap = $("action-chips");
+  wrap.innerHTML = "";
+  if (!gmText || S.status !== "playing") return;
+  for (const action of extractActionChips(gmText)) {
+    const chip = document.createElement("button");
+    chip.type = "button";
+    chip.className = "chip";
+    chip.textContent = action;
+    chip.addEventListener("click", () => {
+      const input = $("player-input");
+      if (input.disabled) return;
+      input.value = action;
+      input.focus();
+    });
+    wrap.appendChild(chip);
+  }
+}
+
 $("player-input").addEventListener("keydown", (e) => {
   if (e.key === "Enter" && !e.shiftKey) {
     e.preventDefault();
@@ -927,11 +1189,13 @@ function sendTurn() {
 function runGeneration(sessionId, path, body, retryText = null) {
   S.streaming = true;
   lockInput(true);
+  renderActionChips(null);
   S.writer = newGmWriter();
   const writer = S.writer;
+  let gmText = "";
 
   sse(path, body, {
-    narration: (d) => writer.write(d.text),
+    narration: (d) => { gmText += d.text; writer.write(d.text); },
     roll: (d) => {
       if (S.rollShown) { S.rollShown = false; return; }
       addRollBlock(d);
@@ -969,6 +1233,7 @@ function runGeneration(sessionId, path, body, retryText = null) {
       S.streaming = false;
       S.lastRoll = null;
       if (S.pendingRoll) addRollNeeded();
+      else renderActionChips(gmText);
       updateRail();
       lockInput(false);
       $("player-input").focus();
@@ -1038,10 +1303,37 @@ async function enterSession(id) {
     S.rollShown = true;
   }
   if (S.pendingRoll) addRollNeeded();
+  else {
+    const lastGm = [...(state.log || [])].reverse().find((e) => e.role === "gm");
+    renderActionChips(lastGm ? lastGm.text : null);
+  }
   updateRail();
   lockInput(false);
   scrollFeed();
 }
+
+// §8.3 — robustesse aux verrouillages d'écran mobile : au retour au premier
+// plan, si le flux a été coupé pendant le lock, on resynchronise via /state.
+document.addEventListener("visibilitychange", () => {
+  if (document.visibilityState !== "visible") return;
+  if (S.streaming || !S.id) return;
+  if ($("screen-session").classList.contains("hidden")) return;
+  api("/sessions/" + S.id + "/state").then(async (res) => {
+    if (!res.ok) return;
+    const state = await res.json();
+    if (state.status === "finished") {
+      location.hash = "#/session/" + S.id + "/end";
+      return;
+    }
+    // Un tour a avancé (ou un jet est apparu) pendant l'absence → rebâtir.
+    if (
+      state.turn_count !== S.turnCount ||
+      (state.pending_roll || null) !== (S.pendingRoll || null)
+    ) {
+      enterSession(S.id);
+    }
+  }).catch(() => { /* hors-ligne : on garde l'écran tel quel */ });
+});
 
 // — Fin de session —
 
@@ -1124,6 +1416,12 @@ async function showEnd(id) {
     shown = true;
   }
   $("end-inventions-panel").classList.toggle("hidden", !shown);
+}
+
+// PWA (§8.3) : service worker — assets en stale-while-revalidate, relecture
+// hors-ligne des dernières réponses API.
+if ("serviceWorker" in navigator) {
+  navigator.serviceWorker.register("/sw.js").catch(() => { /* non bloquant */ });
 }
 
 boot();

@@ -4,6 +4,7 @@ import { auth } from "./auth/routes";
 import { bibles } from "./bibles/routes";
 import { richness } from "./richness/routes";
 import { proposals } from "./bibles/proposals";
+import { sheetRoutes } from "./characters/sheet-routes";
 import { characters } from "./characters/routes";
 import { sessions } from "./sessions/routes";
 
@@ -15,6 +16,7 @@ app.get("/api/health", (c) => c.json({ ok: true, service: "loreforge" }));
 app.route("/api/auth", auth);
 app.route("/api/bibles", richness);
 app.route("/api/bibles", proposals);
+app.route("/api/bibles", sheetRoutes);
 app.route("/api/bibles", bibles);
 app.route("/api/characters", characters);
 app.route("/api/sessions", sessions);

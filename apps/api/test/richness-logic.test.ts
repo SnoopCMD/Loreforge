@@ -91,7 +91,8 @@ describe("buildRichnessPrompt", () => {
 
   it("tronque les bibles trop grandes", () => {
     const prompt = buildRichnessPrompt("x".repeat(MAX_CANON_CHARS + 5000));
-    expect(prompt.length).toBeLessThan(MAX_CANON_CHARS + 1000);
+    // Marge = taille des instructions du prompt (hors bible), généreuse.
+    expect(prompt.length).toBeLessThan(MAX_CANON_CHARS + 4000);
     expect(prompt).toContain("bible tronquée");
   });
 });

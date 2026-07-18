@@ -9,6 +9,7 @@ import { findOwnedBible } from "../bibles/db";
 import { sessionKvKey } from "./do";
 
 const FORMATS = ["oneshot", "mini", "campaign"] as const;
+const CHARACTER_MODES = ["embody_canon", "embody_quiz", "create"] as const;
 
 export const sessions = new Hono<AppEnv>();
 
@@ -33,6 +34,7 @@ sessions.post("/", async (c) => {
   let body: {
     bible_id?: unknown;
     character_id?: unknown;
+    character_mode?: unknown;
     format?: unknown;
     trame?: unknown;
   };
@@ -65,6 +67,16 @@ sessions.post("/", async (c) => {
         : undefined;
   if (characterId === undefined) {
     return c.json({ error: "invalid_character_id" }, 400);
+  }
+  // character_mode (§6bis) : informatif — la voie choisie ne change rien au
+  // moteur, la fiche finale a la même structure quelle que soit l'origine.
+  if (
+    body.character_mode !== undefined &&
+    !(CHARACTER_MODES as readonly string[]).includes(
+      body.character_mode as string,
+    )
+  ) {
+    return c.json({ error: "invalid_character_mode" }, 400);
   }
 
   const user = c.get("user");

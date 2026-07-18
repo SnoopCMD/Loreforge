@@ -1,0 +1,8 @@
+{
+  "name": "@app/core",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "Logique Loreforge sans DOM (labels, parseur SSE, markdown) — partagée web / future app native (SPEC §8.3). Source de vérité : apps/api/public/core.js, servie telle quelle au front sans build step.",
+  "exports": "./index.js"
+}

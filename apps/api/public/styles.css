@@ -480,21 +480,156 @@ svg .score-label { fill: var(--spirit); font-family: "JetBrains Mono", monospace
 .invention-item.rejected { opacity: 0.55; }
 .status.accepted { border-color: var(--spirit); color: var(--spirit); }
 
-/* ── Responsive (session jouable au pouce) ────────────────────────────── */
+/* ── Deux portes, questionnaire éclair, forge dynamique (§6bis) ───────── */
+
+.doors { display: grid; grid-template-columns: 1.4fr 1fr; gap: 1rem; align-items: start; }
+@media (max-width: 820px) { .doors { grid-template-columns: 1fr; } }
+
+.char-carousel {
+  display: flex; gap: 0.8rem; overflow-x: auto; padding: 0.4rem 0 0.8rem;
+  scroll-snap-type: x proximity;
+}
+.char-pick {
+  all: unset; cursor: pointer; flex: none; width: min(15rem, 78vw);
+  scroll-snap-align: start; border-radius: 12px;
+}
+.char-pick:hover .fiche, .char-pick:focus-visible .fiche {
+  outline: 2px solid var(--arcane); outline-offset: 2px;
+}
+.char-pick:focus-visible { outline: 2px solid var(--spirit); outline-offset: 3px; }
+.char-pick .fiche { margin: 1.6rem 0 0; }
+.char-pick[disabled] { opacity: 0.5; cursor: wait; }
+
+.quiz-question { font-size: 1.15rem; margin: 0.6rem 0 1rem; }
+.quiz-choices { display: flex; flex-direction: column; gap: 0.5rem; align-items: flex-start; }
+
+.chip {
+  font: inherit; font-size: 0.88rem; color: var(--parchment);
+  background: rgba(124, 58, 237, 0.14); border: 1px solid var(--arcane);
+  border-radius: 99px; padding: 0.45rem 1rem; cursor: pointer;
+  text-align: left;
+}
+.chip:hover { background: rgba(124, 58, 237, 0.3); }
+.chip.dim { border-color: var(--parchment-dim); color: var(--parchment-dim); background: none; }
+
+.chips { display: flex; flex-wrap: wrap; gap: 0.4rem; margin-top: 0.4rem; }
+.chips .chip { font-size: 0.78rem; padding: 0.25rem 0.7rem; }
+
+.forge-field { display: block; margin-bottom: 1rem; }
+.forge-field > .row p { margin: 0; font-weight: 500; }
+.spark {
+  font: inherit; background: none; border: 1px solid var(--arcane);
+  border-radius: 8px; padding: 0.1rem 0.5rem; cursor: pointer; flex: none;
+}
+.spark:hover { background: rgba(124, 58, 237, 0.25); }
+.spark[disabled] { opacity: 0.4; cursor: wait; }
+
+.issue {
+  border-left: 3px solid var(--parchment-dim);
+  padding: 0.4rem 0.8rem; margin-bottom: 0.4rem; font-size: 0.88rem;
+  color: var(--parchment-dim); border-radius: 0 8px 8px 0;
+}
+.issue.blocking {
+  border-left-color: var(--ember); color: var(--parchment);
+  background: rgba(249, 115, 22, 0.08);
+}
+.issue .field {
+  font-family: "JetBrains Mono", monospace; font-size: 0.72rem;
+  text-transform: uppercase; letter-spacing: 0.08em;
+}
+.issue.blocking .field { color: var(--ember); }
+
+/* ── Mini-barre, chips d'actions, liste des scores (§8.3) ─────────────── */
+
+.session-head { max-width: 1100px; margin: 0 auto; padding: 0 1rem 1rem; }
+
+.mini-band { display: none; }
+
+.action-chips {
+  max-width: 68ch; margin: 0 auto 0.5rem;
+  display: flex; gap: 0.5rem; overflow-x: auto;
+  -webkit-overflow-scrolling: touch;
+  scrollbar-width: none;
+}
+.action-chips::-webkit-scrollbar { display: none; }
+.action-chips .chip { flex: none; font-size: 0.8rem; white-space: nowrap; }
+.action-chips:empty { margin-bottom: 0; }
+
+.score-list { display: none; }
+
+/* ── Responsive mobile-first (session jouable au pouce, §8.3) ─────────── */
 
 @media (max-width: 820px) {
   .session-screen { grid-template-columns: minmax(0, 1fr); }
+
+  /* Mini-barre d'état : scène + orbes toujours visibles. */
+  .mini-band {
+    position: fixed; top: 0; left: 0; right: 0; z-index: 30;
+    display: flex; align-items: center; justify-content: space-between;
+    gap: 1rem; padding: 0.45rem 1rem;
+    padding-top: calc(0.45rem + env(safe-area-inset-top, 0px));
+    background: rgba(18, 8, 31, 0.92);
+    backdrop-filter: blur(6px);
+    border-bottom: 1px solid rgba(103, 232, 249, 0.25);
+  }
+  .mini-band .mini-scene {
+    font-family: Cinzel, serif; font-size: 0.8rem;
+    letter-spacing: 0.15em; text-transform: uppercase;
+    overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+  }
+  .mini-orbs { display: flex; gap: 0.4rem; flex: none; }
+  .mini-orbs .orb { width: 0.85rem; height: 0.85rem; box-shadow: 0 0 8px rgba(249, 115, 22, 0.7); }
+  #screen-session .session-head { padding-top: 3.2rem; }
+
+  /* Fiche & Souffle en bottom sheet (tirette) au lieu du rail droit. */
   .session-rail {
-    position: fixed; inset: 0 0 0 auto; width: min(20rem, 85vw); z-index: 40;
+    position: fixed; inset: auto 0 0 0; max-height: 72vh; z-index: 40;
     background: var(--nebula);
-    padding: 1rem; overflow-y: auto;
-    box-shadow: -10px 0 40px rgba(0, 0, 0, 0.5);
-    transform: translateX(105%);
+    padding: 1rem 1rem calc(1rem + env(safe-area-inset-bottom, 0px));
+    overflow-y: auto;
+    border-radius: 18px 18px 0 0;
+    border-top: 2px solid var(--spirit);
+    box-shadow: 0 -12px 40px rgba(0, 0, 0, 0.55);
+    transform: translateY(105%);
     transition: transform 0.25s ease;
+  }
+  .session-rail::before {
+    content: ""; display: block; width: 3rem; height: 4px;
+    margin: 0 auto 0.8rem; border-radius: 99px;
+    background: var(--parchment-dim); opacity: 0.5;
   }
   .session-screen.rail-open .session-rail { transform: none; }
   .session-screen.rail-hidden .session-rail { display: block; }
+  .session-rail .rail-inner { position: static; }
+
   .hero { min-height: 48vh; }
+
+  /* Le radar seul est illisible en petit : liste score/axe en dessous. */
+  .score-list {
+    display: block; list-style: none; padding: 0; margin: 0.8rem auto 0;
+    max-width: 20rem; width: 100%;
+  }
+  .score-list li {
+    display: flex; justify-content: space-between; gap: 1rem;
+    padding: 0.3rem 0; border-bottom: 1px solid rgba(184, 174, 203, 0.15);
+    font-size: 0.9rem;
+  }
+  .score-list .score { color: var(--spirit); }
+
+  /* Cibles tactiles ≥ 44px. */
+  button, .chip, .rune, input, select, textarea { min-height: 44px; }
+  .chips .chip, .action-chips .chip { min-height: 38px; }
+  .spark { min-height: 38px; min-width: 44px; }
+}
+
+@media (max-width: 480px) {
+  /* Diagonales adoucies pour ne pas manger l'espace vertical (§8.3). */
+  .diag-edge { transform: rotate(-1.4deg); }
+  .hero { clip-path: polygon(0 0, 100% 0, 100% calc(100% - 1.8rem), 0 100%); }
+}
+
+.playbar {
+  padding-bottom: calc(1rem + env(safe-area-inset-bottom, 0px));
 }
 
 @media (prefers-reduced-motion: reduce) {

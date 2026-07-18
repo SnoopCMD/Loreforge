@@ -87,9 +87,22 @@ CREATE TABLE characters (
   bible_id TEXT NOT NULL REFERENCES bibles(id),
   user_id TEXT NOT NULL REFERENCES users(id),
   name TEXT NOT NULL,
-  sheet_json TEXT NOT NULL,      -- pouvoir, tempérament, lien divin, progression, ressources
+  sheet_json TEXT NOT NULL,      -- champs dynamiques (schéma dérivé de la bible, cf. §6bis)
+  sheet_schema_json TEXT,        -- le schéma de fiche utilisé à la création (versionné)
   portrait_r2_key TEXT,
-  is_canon INTEGER DEFAULT 0,    -- personnage issu de la bible vs créé en session
+  origin TEXT NOT NULL DEFAULT 'quick', -- 'canon' | 'quick' | 'full'
+                                 -- canon = perso existant de la bible
+                                 -- quick = généré via questionnaire rapide (mode Incarner)
+                                 -- full  = fiche remplie par le joueur (mode Créer)
+  is_canon INTEGER DEFAULT 0,    -- alias : origin = 'canon'
+  created_at INTEGER NOT NULL
+);
+
+CREATE TABLE sheet_schemas (
+  id TEXT PRIMARY KEY,
+  bible_id TEXT NOT NULL REFERENCES bibles(id),
+  version INTEGER NOT NULL DEFAULT 1,
+  schema_json TEXT NOT NULL,     -- JSON Schema léger des champs de fiche (cf. §6bis)
   created_at INTEGER NOT NULL
 );
 
@@ -158,10 +171,24 @@ PATCH  /api/bibles/:id                 { canon_md?, tone_profile? }
 POST   /api/bibles/:id/proposals/:pid  { action: 'accept' | 'reject' }
         → accept = merge content_md dans canon_md + réindex Vectorize
 
-POST   /api/characters                 { bible_id, name, sheet_json }
-GET    /api/characters?bible_id=
+GET    /api/bibles/:id/character-template
+        → gabarit de fiche dérivé de l'analyse (champs + options canon), voir §6bis
+GET    /api/bibles/:id/playable-characters
+        → personnages canon incarnables extraits de la bible (is_canon=1)
+GET    /api/bibles/:id/playable        → personnages canon jouables (extraits à l'analyse)
+GET    /api/bibles/:id/sheet-schema    → schéma de fiche perso dérivé de la bible (cf. §6bis)
+POST   /api/characters/quick           { bible_id }
+        → retourne un questionnaire (3-4 questions à choix, générées d'après la bible)
+POST   /api/characters/quick/:qid      { answers[] }
+        → l'IA génère la fiche complète (origin='quick'), retourne le personnage
+POST   /api/characters                 { bible_id, name, sheet_json }   -- origin='full'
+GET    /api/characters?bible_id=       → persos canon + persos créés par le joueur
+POST   /api/characters/embody-quiz     { bible_id } → questionnaire rapide (3-4 Q)
+POST   /api/characters/embody-quiz/answers { bible_id, answers[] }
+        → génère un personnage pré-rempli à partir des réponses (mode Incarner-express)
 
-POST   /api/sessions                   { bible_id, character_id?, format, trame? }
+POST   /api/sessions                   { bible_id, character_mode, character_id?, format, trame? }
+        → character_mode: 'embody_canon' | 'embody_quiz' | 'create'
         → crée le DO, retourne { session_id, setup_questions[] }
 POST   /api/sessions/:id/setup         { answers[] }  → le DO génère la scène 1
 POST   /api/sessions/:id/turn          { player_input }  → SSE stream
@@ -183,7 +210,47 @@ Le SSE de `/turn` émet des events typés : `narration` (texte), `roll` (dé + r
 
 ---
 
-## 7. Prompt système du MJ (gabarit à générer dynamiquement)
+## 6bis. Personnage à la création de session — « Incarner » vs « Créer »
+
+Premier écran du setup de session : deux voies, présentées comme deux portes.
+
+### Voie A — INCARNER (rapide, guidé)
+Deux sous-options :
+1. **Personnage canon** : liste des personnages jouables extraits de la bible à
+   l'analyse (`/api/bibles/:id/playable`). L'IA identifie qui est « jouable »
+   (protagonistes, membres de factions accessibles) et pré-remplit leur fiche
+   depuis le canon. Les champs manquants sont complétés par l'IA et loggés
+   comme `<invention axis="characters">`.
+2. **Questionnaire éclair** : 3-4 questions à choix multiples **générées
+   dynamiquement d'après la bible** (pas de questions génériques). Exemples de
+   gabarits : type de pouvoir parmi ceux qui existent dans ce monde,
+   tempérament, lien avec une faction/divinité du canon, accroche de mystère
+   personnel. À la validation, l'IA rédige la fiche complète (origin='quick').
+   Objectif : jouer en moins de 90 secondes.
+
+### Voie B — CRÉER (fiche complète, contrôle joueur)
+- L'app affiche une **fiche personnage vierge dont les champs sont dérivés de
+  l'analyse de la bible** — c'est le point clé : le schéma de fiche n'est pas
+  fixe, il est généré par bible.
+- **Génération du schéma** (`sheet_schemas`, calculé une fois à l'analyse,
+  stocké et versionné) : un appel Anthropic produit un JSON Schema léger à
+  partir du canon. Exemples : un monde à magie divine produira un champ
+  « Dieu patron » avec enum des dieux du canon + option « inconnu » ; un monde
+  de factions produira un champ « Allégeance » ; toujours présents : nom,
+  concept en une phrase, tempérament, capacité principale, faiblesse/coût,
+  accroche narrative (ce que le perso veut / fuit / cache).
+- Chaque champ propose : saisie libre, suggestions issues du canon
+  (chips cliquables), et un bouton « ✨ proposer » (l'IA remplit ce champ en
+  cohérence avec les champs déjà saisis).
+- Validation : l'IA relit la fiche, signale les incohérences avec le canon
+  (bloquantes) et les zones grises (informatives), puis normalise en
+  `sheet_json`.
+
+**Règle commune :** quelle que soit la voie, la fiche finale a la même
+structure (`sheet_json` conforme au `sheet_schema` de la bible) — le moteur de
+jeu (§7) ne fait aucune différence entre origin canon/quick/full.
+
+---
 
 ```
 Tu es le Maître de Jeu de l'univers « {{bible.title}} ».
@@ -283,29 +350,71 @@ clavier visible (`outline --spirit`), contrastes AA sur `--parchment`/`--void`.
 
 ### 8.2 Écrans v1
 
+> Tous les écrans sont conçus **mobile-first** (cf. §8.3) — la maquette de
+> référence est le viewport 390px, le desktop est l'extension, pas l'inverse.
+
 1. **Landing** (hero illustré + pitch + CTA)
 2. **Bibliothèque** (cartes de bibles avec mini-radar de richesse)
 3. **Détail bible** : radar 5 axes, lacunes, éditeur Markdown, propositions de
    canon en attente (accept/reject)
-4. **Création de personnage** (guidée, 3-4 questions, fiche Morokh générée)
+4. **Choix du personnage** : écran « deux portes » Incarner / Créer (§6bis).
+   Incarner → carrousel de fiches canon façon Morokh + option questionnaire
+   éclair plein écran (une question par vue, swipe). Créer → fiche verticale
+   à champs dérivés de la bible, chips de suggestions, bouton ✨ par champ.
 5. **Setup de session** (questions de mise en place issues des lacunes)
 6. **Session** (écran de jeu principal)
 7. **Fin de session** : résumé + propositions de canonisation
+
+### 8.3 Mobile-first & app mobile
+
+**Principes v1 (web, PWA) :**
+- La session de jeu est le cas d'usage mobile n°1 : on lit une narration et on
+  répond au pouce, comme une messagerie. L'écran de session mobile =
+  narration plein écran, champ de saisie ancré en bas (safe-area iOS),
+  suggestions d'actions en chips horizontales scrollables au-dessus du champ.
+- La fiche perso et le Souffle passent en **bottom sheet** (tirette) au lieu du
+  rail droit ; les 3 orbes de Souffle restent visibles en permanence dans une
+  mini-barre d'état en haut (avec le nom de scène).
+- Les sections diagonales (signature §8.1) passent de ~4° à ~2.5° sous 480px
+  pour ne pas manger l'espace vertical.
+- Les fiches Morokh deviennent des cartes verticales full-width, portrait en
+  tête débordant vers le haut.
+- Le radar de richesse reste un pentagone mais gagne une liste verticale
+  score/axe en dessous (le radar seul est illisible en petit).
+- Cibles tactiles ≥ 44px, streaming SSE robuste aux locks d'écran mobile
+  (reconnexion + reprise du tour via `/state`), mode hors-ligne minimal PWA
+  (relecture des sessions terminées).
+- **PWA complète dès la v1** : manifest, service worker, installable — c'est
+  l'app mobile de facto en attendant le natif.
+
+**Phase 2 — app mobile native :**
+- **Expo / React Native**, monorepo partagé avec le web : extraire la logique
+  (client API, state de session, parsing SSE) dans un package `@app/core`
+  sans dépendance DOM dès la v1 web pour rendre l'extraction gratuite.
+- L'API Workers reste inchangée (contrat §5 = contrat mobile) ; ajouter
+  uniquement l'auth par deep-link pour le magic-link et les notifications
+  push (Expo Push) : « propositions de canon en attente », « reprends ta
+  session ».
+- Fonctions natives visées : haptique sur les jets de dés, mode immersif
+  (barre système masquée en session), partage de fiche perso en image.
 
 ---
 
 ## 9. Plan de développement (ordre imposé)
 
 1. **M0 — Socle** : monorepo wrangler, Hono, D1 migrations, auth magic-link, CI.
+   Dès M0 : package `@app/core` (client API + types partagés, sans DOM).
 2. **M1 — Bibles** : import Markdown → normalisation → `canon_md`, stockage R2.
-3. **M2 — Richesse** : endpoint analyze, JSON strict, radar UI.
+3. **M2 — Richesse & schéma de fiche** : endpoint analyze (scores + gaps +
+   `sheet_schema` + personnages jouables), radar UI.
 4. **M3 — Moteur** : DO GameSession, prompt système dynamique, SSE, d6 serveur,
    Souffle. *Jouable en curl à ce stade.*
-5. **M4 — UI de session** : écran de jeu complet avec la DA ci-dessus.
+5. **M4 — UI de session mobile-first** : écran de jeu complet (DA §8, layout
+   §8.3), flux Incarner/Créer (§6bis), PWA installable.
 6. **M5 — Boucle canon** : extraction `<invention>`, proposals, merge + réindex.
 7. **M6 — RAG** : Vectorize pour les grosses bibles.
-8. Plus tard : import Notion direct (API), multi-joueurs (WebSocket sur le DO),
-   génération de portraits.
+8. Plus tard : import Notion direct (API), app native Expo (§8.3 phase 2),
+   multi-joueurs (WebSocket sur le DO), génération de portraits.
 
 **Definition of done par milestone** : tests unitaires sur la logique pure
 (parsing, scoring, extraction d'inventions), un test d'intégration DO par

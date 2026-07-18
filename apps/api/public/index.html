@@ -2,9 +2,12 @@
 <html lang="fr">
 <head>
   <meta charset="utf-8" />
-  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
   <title>Loreforge</title>
   <meta name="description" content="Vivez votre univers : sessions JDR solo narrées par IA sur la bible de votre monde." />
+  <meta name="theme-color" content="#12081F" />
+  <link rel="manifest" href="/manifest.webmanifest" />
+  <link rel="icon" href="/icon.svg" type="image/svg+xml" />
   <link rel="preconnect" href="https://fonts.googleapis.com" />
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
   <link href="https://fonts.googleapis.com/css2?family=Cinzel:wght@500;700&family=Inter:wght@400;500;600&family=JetBrains+Mono:wght@500&display=swap" rel="stylesheet" />
@@ -142,6 +145,8 @@
         </svg>
         <div class="global-score"><span id="global-score"></span><small>indice global /10</small></div>
       </div>
+      <!-- Le radar seul est illisible en petit : liste score/axe (§8.3). -->
+      <ul id="score-list" class="score-list"></ul>
       <h2>Zones floues</h2>
       <div id="gaps-list"></div>
     </div>
@@ -162,7 +167,6 @@
         <option value="mini">Mini-campagne</option>
         <option value="campaign">Campagne</option>
       </select>
-      <select id="new-character" style="width:auto"><option value="">Sans personnage</option></select>
       <input type="text" id="new-trame" placeholder="Trame (optionnel, sinon libre)" style="width:14rem" />
       <button id="new-session-btn">Lancer une session</button>
     </div>
@@ -188,24 +192,62 @@
   </div>
 </section>
 
-<!-- ── Forge de personnage ─────────────────────────────────────────────── -->
+<!-- ── Choix du personnage : deux portes (SPEC §6bis) ──────────────────── -->
+<section id="screen-embark" class="hidden">
+  <div class="row spread">
+    <h2>Qui vivra cette session ?</h2>
+    <a class="msg" id="embark-back" href="#/">← Retour</a>
+  </div>
+  <div class="doors">
+    <div class="panel door">
+      <h2>Incarner</h2>
+      <p class="msg">Glissez-vous dans un personnage du canon — ou laissez quelques questions faire naître le vôtre.</p>
+      <div id="embark-characters" class="char-carousel"></div>
+      <div class="row" style="margin-top:0.8rem">
+        <button id="quiz-btn">Questionnaire éclair</button>
+        <button class="ghost" id="no-character-btn">Sans personnage</button>
+      </div>
+    </div>
+    <div class="panel door">
+      <h2>Créer</h2>
+      <p class="msg">Une fiche complète, champ par champ — le schéma est dérivé de votre bible, les suggestions viennent du canon.</p>
+      <button id="create-btn">Forger la fiche</button>
+    </div>
+  </div>
+  <p id="embark-msg" class="msg"></p>
+</section>
+
+<!-- ── Questionnaire éclair (une question par vue) ─────────────────────── -->
+<section id="screen-quiz" class="hidden">
+  <div class="row spread">
+    <h2>Questionnaire éclair</h2>
+    <a class="msg" id="quiz-back" href="#/">← Retour</a>
+  </div>
+  <div class="panel">
+    <p id="quiz-progress" class="msg mono"></p>
+    <p id="quiz-question" class="quiz-question"></p>
+    <div id="quiz-choices" class="quiz-choices"></div>
+    <p id="quiz-msg" class="msg"></p>
+  </div>
+  <div id="quiz-fiche"></div>
+</section>
+
+<!-- ── Forge de personnage (fiche dérivée de la bible) ─────────────────── -->
 <section id="screen-forge" class="hidden">
   <div class="row spread">
     <h2>Forger un personnage</h2>
     <a class="msg" id="forge-back" href="#/">← Retour</a>
   </div>
   <div class="panel">
-    <p class="msg">Quatre questions pour donner corps à votre héros. Le MJ s'appuiera sur cette fiche.</p>
-    <form id="forge-form">
-      <label>Son nom<input type="text" id="forge-name" maxlength="80" required placeholder="Kael des Cendres" /></label>
-      <label>Son pouvoir en éveil<input type="text" id="forge-power" placeholder="Entend le chant des failles entre les Mondes" /></label>
-      <label>Son tempérament<input type="text" id="forge-temper" placeholder="Curieux, loyal, incapable de laisser une porte fermée" /></label>
-      <label>Son lien &amp; ses ressources<input type="text" id="forge-bond" placeholder="Une dette envers l'Ordre ; un couteau hérité, trois pièces" /></label>
-      <button type="submit">Forger</button>
-    </form>
+    <p class="msg" id="forge-intro"></p>
+    <form id="forge-form"></form>
+    <div id="forge-issues"></div>
     <p id="forge-msg" class="msg"></p>
   </div>
   <div id="forge-fiche"></div>
+  <div class="row" id="forge-after" style="display:none">
+    <button id="forge-launch-btn">Partir en session avec ce personnage</button>
+  </div>
 </section>
 
 <!-- ── Setup de session ────────────────────────────────────────────────── -->
@@ -221,7 +263,12 @@
 
 <!-- ── Écran de session ────────────────────────────────────────────────── -->
 <section id="screen-session" class="hidden">
-  <div class="row spread" style="max-width:1100px;margin:0 auto;padding:0 1rem 1rem">
+  <!-- Mini-barre mobile : nom de scène + orbes toujours visibles (§8.3). -->
+  <div class="mini-band" id="mini-band" aria-hidden="true">
+    <span class="mini-scene" id="mini-scene"></span>
+    <span class="mini-orbs" id="mini-orbs"></span>
+  </div>
+  <div class="row spread session-head">
     <span id="session-bible" class="msg"></span>
     <button class="ghost" id="rail-toggle">Fiche &amp; Souffle</button>
   </div>
@@ -244,6 +291,7 @@
     </aside>
   </div>
   <div class="playbar" id="playbar">
+    <div class="action-chips" id="action-chips"></div>
     <div class="inner">
       <textarea id="player-input" rows="1" placeholder="Que fais-tu ?" aria-label="Votre action"></textarea>
       <button id="send-btn">Agir</button>
@@ -271,6 +319,6 @@
 
 <div id="overlay-root"></div>
 
-<script src="/app.js"></script>
+<script type="module" src="/app.js"></script>
 </body>
 </html>

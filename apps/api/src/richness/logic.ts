@@ -1,5 +1,16 @@
 // Indice de Richesse : logique pure (prompt, validation, agrégation).
 // Aucune dépendance réseau — testable unitairement (DoD M2, SPEC §4).
+// Depuis §6bis, la même analyse produit aussi le schéma de fiche personnage
+// et les personnages canon jouables.
+
+import {
+  normalizeSheetFields,
+  parsePlayableCharacters,
+  SHEET_FIELD_OUTPUT_SCHEMA,
+  SHEET_PAIRS_OUTPUT_SCHEMA,
+  type PlayableCharacter,
+  type SheetSchema,
+} from "../characters/schema";
 
 export const AXES = [
   "cosmology",
@@ -27,6 +38,10 @@ export interface RichnessGap {
 export interface RichnessResult {
   scores: RichnessScores;
   gaps: RichnessGap[];
+  /** Schéma de fiche dérivé de la bible (SPEC §6bis) ; null si absent. */
+  sheetSchema: SheetSchema | null;
+  /** Personnages canon jouables extraits de la bible. */
+  playable: PlayableCharacter[];
 }
 
 // Au-delà, le canon est tronqué avant l'appel (~30k tokens, cf. SPEC §2 :
@@ -41,8 +56,26 @@ export const MAX_CANON_CHARS = 120_000;
 export const RICHNESS_OUTPUT_SCHEMA = {
   type: "object",
   additionalProperties: false,
-  required: [...AXES, "gaps"],
+  required: [...AXES, "gaps", "sheet_fields", "playable_characters"],
   properties: {
+    sheet_fields: {
+      type: "array",
+      items: SHEET_FIELD_OUTPUT_SCHEMA,
+      description: "Champs de fiche personnage dérivés de la bible (§6bis)",
+    },
+    playable_characters: {
+      type: "array",
+      items: {
+        type: "object",
+        additionalProperties: false,
+        required: ["name", "sheet"],
+        properties: {
+          name: { type: "string" },
+          sheet: SHEET_PAIRS_OUTPUT_SCHEMA,
+        },
+      },
+      description: "Personnages canon incarnables, fiche pré-remplie du canon",
+    },
     cosmology: { type: "integer", description: "Score 0-10" },
     characters: { type: "integer", description: "Score 0-10" },
     plots: { type: "integer", description: "Score 0-10" },
@@ -90,6 +123,24 @@ décrit UNE lacune concrète et actionnable, en français.
 Ne sur-note pas : une simple mention sans détail exploitable ne dépasse pas 3-4.
 Un axe riche mais désorganisé plafonne à 7-8.
 
+Produis aussi, POUR CETTE BIBLE précisément :
+
+"sheet_fields" : les champs d'une fiche de personnage joueur dérivés du canon
+(4 à 8 champs). Toujours inclure des équivalents de : nom, concept en une
+phrase, tempérament, capacité principale, faiblesse/coût, accroche narrative
+(clés : name, concept, temperament, ability, weakness, hook) — enrichis-les de
+"suggestions" tirées du canon. Ajoute des champs SPÉCIFIQUES à ce monde quand
+le canon s'y prête (ex. un monde à magie divine → champ "Dieu patron" en
+select avec les dieux du canon + « Inconnu » ; un monde de factions → champ
+"Allégeance"). "type": "select" seulement si le canon fournit une liste fermée.
+Clés en snake_case, libellés et contenus en français.
+
+"playable_characters" : les personnages du canon qu'un joueur pourrait
+incarner (0 à 6 : protagonistes, membres de factions accessibles — pas les
+antagonistes majeurs ni les dieux). Pré-remplis leur fiche depuis le canon en
+réutilisant les clés de "sheet_fields" ; n'invente pas, laisse de côté les
+champs que le canon ne renseigne pas.
+
 == BIBLE À ÉVALUER ==
 ${canon}`;
 }
@@ -124,7 +175,15 @@ export function parseRichnessPayload(payload: unknown): RichnessResult | null {
     gaps.push({ axis: axis as Axis, description: description.trim() });
   }
 
-  return { scores, gaps };
+  // §6bis — tolérant : une sortie sans ces champs (anciens mocks, modèle
+  // récalcitrant) reste une analyse valide, juste sans schéma de fiche.
+  const sheetSchema =
+    "sheet_fields" in obj && Array.isArray(obj.sheet_fields)
+      ? normalizeSheetFields(obj.sheet_fields)
+      : null;
+  const playable = parsePlayableCharacters(obj.playable_characters);
+
+  return { scores, gaps, sheetSchema, playable };
 }
 
 /** Score global : moyenne des 5 axes, arrondie au plus proche. */
