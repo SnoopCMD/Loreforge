@@ -150,6 +150,114 @@ export function extractActionChips(text) {
   return chips.length >= 2 && chips.length <= 4 ? chips : [];
 }
 
+// ── Segmentation de la narration pour la lecture vocale (§8.3) ────────────
+
+// Une ligne d'options concrètes de fin de tour (puce ou numéro) : jamais lue.
+const SPEECH_CHOICE_LINE = /^(?:[-–—•*]|\d{1,2}[.)])\s+\S/;
+// Début de ligne qui pourrait encore devenir une puce (marqueur incomplet).
+const SPEECH_MAYBE_CHOICE = /^(?:[-–—•*]|\d{1,2}[.)]?)\s*$/;
+
+/** Position après la dernière phrase COMPLÈTE de `text` (ponctuation + blanc). */
+function sentenceCut(text) {
+  let cut = 0;
+  for (let i = 0; i < text.length; i++) {
+    const c = text[i];
+    if (c === "." || c === "!" || c === "?" || c === "…") {
+      let j = i + 1;
+      while (j < text.length && "\"»”)]".includes(text[j])) j++;
+      if (j < text.length && /\s/.test(text[j])) {
+        while (j < text.length && /\s/.test(text[j])) j++;
+        cut = j;
+        i = j - 1;
+      }
+    }
+  }
+  return cut;
+}
+
+/** Découpe un texte complet en phrases (les décimales « 3.5 » ne cassent pas). */
+function splitSentences(text) {
+  const out = [];
+  let start = 0;
+  for (let i = 0; i < text.length; i++) {
+    const c = text[i];
+    if (c === "." || c === "!" || c === "?" || c === "…") {
+      let j = i + 1;
+      while (j < text.length && "\"»”)]".includes(text[j])) j++;
+      if (j >= text.length || /\s/.test(text[j])) {
+        const s = text.slice(start, j).trim();
+        if (s) out.push(s);
+        while (j < text.length && /\s/.test(text[j])) j++;
+        start = j;
+        i = j - 1;
+      }
+    }
+  }
+  const tail = text.slice(start).trim();
+  if (tail) out.push(tail);
+  return out;
+}
+
+/**
+ * Segmenteur incrémental de narration pour le TTS : `push(delta)` rend les
+ * phrases prêtes à lire au fil du flux ; `flush()` vide le reliquat en fin de
+ * tour. Les lignes d'options concrètes (puces/numéros de fin de tour, SPEC §7)
+ * sont exclues, et dès qu'elles commencent le reste du tour est ignoré (elles
+ * sont toujours en queue de narration). Pur, sans DOM — testable.
+ */
+export function createSpeechSegmenter() {
+  let buf = "";
+  let atLineStart = true;
+  let done = false; // bloc d'options atteint → on ignore la suite du tour
+
+  /** Traite une ligne complète (ou le reliquat final). */
+  const consumeLine = (line, out) => {
+    const t = line.trim();
+    if (atLineStart) {
+      if (t === "") return;
+      if (SPEECH_CHOICE_LINE.test(t)) { done = true; return; }
+    }
+    for (const s of splitSentences(line)) out.push(s);
+  };
+
+  const drain = (final) => {
+    const out = [];
+    if (done) { buf = ""; return out; }
+    for (;;) {
+      const nl = buf.indexOf("\n");
+      if (nl >= 0) {
+        const line = buf.slice(0, nl);
+        buf = buf.slice(nl + 1);
+        consumeLine(line, out);
+        atLineStart = true;
+        if (done) { buf = ""; break; }
+        continue;
+      }
+      // Ligne partielle (pas encore de saut de ligne).
+      if (atLineStart) {
+        const ts = buf.trimStart();
+        if (ts === "") { if (final) buf = ""; break; }
+        if (SPEECH_CHOICE_LINE.test(ts)) { done = true; buf = ""; break; }
+        if (!final && SPEECH_MAYBE_CHOICE.test(ts)) break; // attendre la suite
+      }
+      if (final) { consumeLine(buf, out); buf = ""; break; }
+      const cut = sentenceCut(buf);
+      if (cut > 0) {
+        for (const s of splitSentences(buf.slice(0, cut))) out.push(s);
+        buf = buf.slice(cut);
+        atLineStart = false;
+      }
+      break;
+    }
+    return out;
+  };
+
+  return {
+    push: (delta) => { buf += delta; return drain(false); },
+    flush: () => drain(true),
+  };
+}
+
 /**
  * Découpe un canon_md normalisé (un seul H1, sections en H2) en un
  * document éditable : { h1, preamble, sections: [{ title, body }] }.

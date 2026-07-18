@@ -4,8 +4,9 @@
 
 import {
   AXES, AXIS_LABELS, FORMAT_LABELS, GENERIC_FIELDS, OUTCOME_LABELS,
-  STATUS_LABELS, buildCanonFromSections, createSseParser, esc,
-  extractActionChips, labelFor, mdInline, mdToHtml, parseCanonSections,
+  STATUS_LABELS, buildCanonFromSections, createSseParser,
+  createSpeechSegmenter, esc, extractActionChips, labelFor, mdInline,
+  mdToHtml, parseCanonSections,
 } from "/core.js";
 
 const $ = (id) => document.getElementById(id);
@@ -1514,8 +1515,8 @@ const voice = {
   currentBtn: null, // bouton d'un bloc joué manuellement
   cache: new Map(), // texte → object URL (évite de re-facturer)
   seq: 0, // génération courante ; incrémenté à chaque coupure
-  streamBuf: "", // narration reçue mais pas encore découpée en phrases
-  queue: [], // { p: Promise<url|null>, seq } à jouer dans l'ordre
+  segmenter: null, // découpe la narration en phrases (core.js)
+  queue: [], // { text, seq } à synthétiser puis jouer dans l'ordre
   pumping: false, // boucle de lecture active
 };
 
@@ -1531,7 +1532,7 @@ async function probeVoice() {
 function stopVoice() {
   voice.seq++; // invalide fetches et clips en vol
   voice.queue = [];
-  voice.streamBuf = "";
+  voice.segmenter = null;
   if (voice.current) {
     voice.current.pause();
     voice.current = null;
@@ -1544,71 +1545,47 @@ function stopVoice() {
   $("voice-toggle").classList.remove("speaking");
 }
 
-/** Récupère (ou réutilise) l'audio d'un texte. null si échec. */
-async function ttsUrl(text) {
-  const cached = voice.cache.get(text);
-  if (cached) return cached;
-  try {
-    const res = await api("/tts", jsonPost({ text }));
-    if (!res.ok) return null;
-    const url = URL.createObjectURL(await res.blob());
-    voice.cache.set(text, url);
-    return url;
-  } catch { return null; }
-}
-
 // Texte prêt pour la synthèse : sans balises Markdown, espaces normalisés.
 const cleanForTts = (s) => s.replace(/\*+/g, "").replace(/\s+/g, " ").trim();
 
-/** Découpe streamBuf en phrases complètes (ponctuation + espace, ou saut de
- * ligne). Le reliquat incomplet est gardé pour le prochain delta. */
-function drainSentences() {
-  const buf = voice.streamBuf;
-  const sentences = [];
-  let start = 0;
-  for (let i = 0; i < buf.length; i++) {
-    const c = buf[i];
-    if (c === "\n") {
-      const seg = buf.slice(start, i).trim();
-      if (seg) sentences.push(seg);
-      start = i + 1;
-      continue;
-    }
-    if (c === "." || c === "!" || c === "?" || c === "…") {
-      let j = i + 1;
-      while (j < buf.length && "\"»”)]".includes(buf[j])) j++;
-      // Une phrase n'est sûre que suivie d'un blanc (sinon "3.5", "M."… coupés).
-      if (j < buf.length && /\s/.test(buf[j])) {
-        sentences.push(buf.slice(start, j).trim());
-        while (j < buf.length && /\s/.test(buf[j])) j++;
-        start = j;
-        i = j - 1;
+/** Synthèse d'un texte (ou cache). Un réessai couvre les 429/5xx passagers,
+ * cause principale des phrases sautées quand plusieurs partaient d'un coup. */
+async function ttsUrl(text) {
+  const cached = voice.cache.get(text);
+  if (cached) return cached;
+  for (let attempt = 0; attempt < 2; attempt++) {
+    try {
+      const res = await api("/tts", jsonPost({ text }));
+      if (res.ok) {
+        const url = URL.createObjectURL(await res.blob());
+        voice.cache.set(text, url);
+        return url;
       }
-    }
+      // Erreur client définitive (400/413…) : inutile de réessayer.
+      if (res.status < 500 && res.status !== 429) return null;
+    } catch { /* réseau : on réessaie */ }
+    await new Promise((r) => setTimeout(r, 400));
   }
-  voice.streamBuf = buf.slice(start);
-  return sentences.filter(Boolean);
+  return null;
 }
 
 function enqueueSentence(text) {
   const clean = cleanForTts(text);
-  if (!clean) return;
-  const seq = voice.seq;
-  voice.queue.push({ p: ttsUrl(clean), seq });
+  if (clean) voice.queue.push({ text: clean, seq: voice.seq });
   pumpStream();
 }
 
 /** Alimente le flux vocal avec un delta de narration. */
 function feedVoice(delta) {
-  voice.streamBuf += delta;
-  for (const s of drainSentences()) enqueueSentence(s);
+  if (!voice.segmenter) voice.segmenter = createSpeechSegmenter();
+  for (const s of voice.segmenter.push(delta)) enqueueSentence(s);
 }
 
 /** Fin de tour : lit le reliquat de phrase resté en tampon. */
 function flushVoice() {
-  const tail = voice.streamBuf.trim();
-  voice.streamBuf = "";
-  if (tail) enqueueSentence(tail);
+  if (!voice.segmenter) return;
+  for (const s of voice.segmenter.flush()) enqueueSentence(s);
+  voice.segmenter = null;
 }
 
 function playClip(url, seq) {
@@ -1622,18 +1599,24 @@ function playClip(url, seq) {
   });
 }
 
-/** Joue les clips de la file dans l'ordre, un seul à la fois. */
+/** Synthétise puis joue la file dans l'ordre. Concurrence bornée : le clip
+ * en cours + une seule pré-synthèse d'avance — pas de rafale qui fait
+ * saturer Cartesia (et sauter des phrases). */
 async function pumpStream() {
   if (voice.pumping) return;
   voice.pumping = true;
   $("voice-toggle").classList.add("speaking");
+  let prefetch = null;
   try {
     while (voice.queue.length) {
-      const item = voice.queue[0];
-      if (item.seq !== voice.seq) { voice.queue.shift(); continue; }
-      const url = await item.p; // pré-synthèse déjà lancée à l'enqueue
-      if (voice.queue[0] === item) voice.queue.shift();
+      const item = voice.queue.shift();
       if (item.seq !== voice.seq) continue;
+      const url = await (prefetch || ttsUrl(item.text));
+      prefetch = null;
+      if (item.seq !== voice.seq) continue;
+      // Pré-synthèse de la phrase suivante pendant qu'on joue celle-ci.
+      const next = voice.queue.find((x) => x.seq === voice.seq);
+      if (next) prefetch = ttsUrl(next.text);
       await playClip(url, item.seq);
     }
   } finally {
@@ -1754,24 +1737,43 @@ function lockInput(locked) {
   $("player-input").placeholder = reason;
 }
 
-// Chips d'actions suggérées (§8.3) : options extraites de la fin du tour MJ.
-function renderActionChips(gmText) {
-  const wrap = $("action-chips");
-  wrap.innerHTML = "";
-  if (!gmText || S.status !== "playing") return;
-  for (const action of extractActionChips(gmText)) {
-    const chip = document.createElement("button");
-    chip.type = "button";
-    chip.className = "chip";
-    chip.textContent = action;
-    chip.addEventListener("click", () => {
-      const input = $("player-input");
-      if (input.disabled) return;
-      input.value = action;
-      input.focus();
-    });
-    wrap.appendChild(chip);
+// Vide la barre de chips du composeur (les choix vivent désormais dans le
+// bloc du MJ, cf. renderChoices).
+function renderActionChips() {
+  $("action-chips").innerHTML = "";
+}
+
+// Une ligne d'options concrètes de fin de tour (puce ou numéro).
+const CHOICE_LINE_RE = /^(?:[-–—•*]|\d{1,2}[.)])\s+/;
+
+// Choix suggérés cliquables (§8.3) : les options de fin de tour sont retirées
+// de la prose et rendues en boutons ; cliquer joue l'action.
+function renderChoices(gmEl, gmText) {
+  if (!gmEl || S.status !== "playing") return;
+  const choices = extractActionChips(gmText);
+  if (!choices.length) return;
+  // Retire les paragraphes d'options en fin de bloc (ils redeviennent boutons).
+  const paras = [...gmEl.querySelectorAll("p")];
+  for (let i = paras.length - 1; i >= 0; i--) {
+    if (CHOICE_LINE_RE.test(paras[i].textContent.trim())) paras[i].remove();
+    else break;
   }
+  const wrap = document.createElement("div");
+  wrap.className = "choices";
+  for (const action of choices) {
+    const btn = document.createElement("button");
+    btn.type = "button";
+    btn.className = "choice";
+    btn.textContent = action;
+    btn.addEventListener("click", () => {
+      if (S.streaming || S.pendingRoll || S.status !== "playing") return;
+      if ($("player-input").disabled) return;
+      $("player-input").value = action;
+      sendTurn();
+    });
+    wrap.appendChild(btn);
+  }
+  gmEl.appendChild(wrap);
 }
 
 $("player-input").addEventListener("keydown", (e) => {
@@ -1841,16 +1843,17 @@ function runGeneration(sessionId, path, body, retryText = null) {
       }
     })
     .finally(() => {
+      // Voix activée : on lit le reliquat AVANT de retirer les options de la
+      // prose (le segmenteur les a déjà exclues de la lecture, de toute façon).
+      if (voice.enabled) flushVoice();
       writer.end();
       S.streaming = false;
       S.lastRoll = null;
       if (S.pendingRoll) addRollNeeded();
-      else renderActionChips(gmText);
+      else renderChoices(writer.el, gmText);
       updateRail();
       lockInput(false);
       $("player-input").focus();
-      // Voix activée : on lit le reliquat de phrase resté en tampon.
-      if (voice.enabled) flushVoice();
     });
 }
 
@@ -1907,6 +1910,8 @@ async function enterSession(id) {
   S.facts = state.facts || [];
   S.character = state.character;
 
+  let lastGmEl = null;
+  let lastGmText = null;
   for (const entry of state.log || []) {
     if (entry.role === "player") {
       // Entrée vide = tour de continuation post-jet, rien à afficher.
@@ -1915,6 +1920,8 @@ async function enterSession(id) {
       const writer = newGmWriter();
       writer.write(entry.text);
       writer.end();
+      lastGmEl = writer.el;
+      lastGmText = entry.text;
     }
   }
   if (S.lastRoll) {
@@ -1922,10 +1929,7 @@ async function enterSession(id) {
     S.rollShown = true;
   }
   if (S.pendingRoll) addRollNeeded();
-  else {
-    const lastGm = [...(state.log || [])].reverse().find((e) => e.role === "gm");
-    renderActionChips(lastGm ? lastGm.text : null);
-  }
+  else renderChoices(lastGmEl, lastGmText);
   updateRail();
   lockInput(false);
   scrollFeed(true);

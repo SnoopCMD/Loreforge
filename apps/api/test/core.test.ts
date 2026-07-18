@@ -1,8 +1,24 @@
 // §8.3 — @app/core : logique front sans DOM (source : public/core.js).
 
 import { describe, expect, it } from "vitest";
-// @ts-expect-error — module JS servi tel quel au front, sans types.
-import { createSseParser, extractActionChips, mdToHtml } from "../public/core.js";
+import {
+  createSpeechSegmenter,
+  createSseParser,
+  extractActionChips,
+  mdToHtml,
+  // @ts-expect-error — module JS servi tel quel au front, sans types.
+} from "../public/core.js";
+
+/** Rejoue un texte dans le segmenteur en le coupant en petits deltas. */
+function speak(text: string, step = 5): string[] {
+  const seg = createSpeechSegmenter();
+  const out: string[] = [];
+  for (let i = 0; i < text.length; i += step) {
+    for (const s of seg.push(text.slice(i, i + step))) out.push(s);
+  }
+  for (const s of seg.flush()) out.push(s);
+  return out;
+}
 
 describe("createSseParser", () => {
   it("découpe les frames même coupées en plein milieu par les chunks", () => {
@@ -34,6 +50,41 @@ describe("extractActionChips", () => {
     expect(extractActionChips("- Une seule option")).toEqual([]);
     const five = Array.from({ length: 5 }, (_, i) => `- Option numéro ${i}`).join("\n");
     expect(extractActionChips("Choix :\n" + five)).toEqual([]);
+  });
+});
+
+describe("createSpeechSegmenter", () => {
+  it("découpe en phrases quel que soit le découpage des deltas", () => {
+    const text =
+      "La pluie masque le bruit. Skorn ne bouge pas — son regard se durcit.\n\n" +
+      "Le silence retombe, lourd.";
+    const expected = [
+      "La pluie masque le bruit.",
+      "Skorn ne bouge pas — son regard se durcit.",
+      "Le silence retombe, lourd.",
+    ];
+    expect(speak(text, 3)).toEqual(expected);
+    expect(speak(text, 1)).toEqual(expected);
+    expect(speak(text, 1000)).toEqual(expected);
+  });
+
+  it("ne lit pas les options finales (puces/numéros) ni le « 1. » seul", () => {
+    const text =
+      "Tu débouches dans la cour. Que fais-tu ?\n\n" +
+      "- Foncer vers le van\n" +
+      "2. Attendre dans l'ombre\n" +
+      "3) Interpeller l'homme au tatouage";
+    expect(speak(text, 4)).toEqual([
+      "Tu débouches dans la cour.",
+      "Que fais-tu ?",
+    ]);
+  });
+
+  it("ne coupe pas sur une décimale et garde le reliquat jusqu'au flush", () => {
+    const seg = createSpeechSegmenter();
+    expect(seg.push("Il reste 3.5 litres")).toEqual([]); // pas de fin de phrase
+    expect(seg.push(" d'eau. Puis ")).toEqual(["Il reste 3.5 litres d'eau."]);
+    expect(seg.flush()).toEqual(["Puis"]);
   });
 });
 
