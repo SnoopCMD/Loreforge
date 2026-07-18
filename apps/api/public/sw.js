@@ -1,9 +1,10 @@
 // Service worker Loreforge (SPEC §8.3) : PWA installable + hors-ligne
-// minimal. Assets en cache-first (versionné), API en réseau d'abord avec
-// repli cache pour la relecture (sessions terminées, bibliothèque).
+// minimal. Assets ET API en réseau d'abord avec repli cache — le
+// stale-while-revalidate initial servait l'ancien front après chaque
+// déploiement (constaté : l'utilisateur retestait un bug déjà corrigé).
 // Jamais de cache sur les mutations ni sur les flux SSE.
 
-const VERSION = "lf-v1";
+const VERSION = "lf-v2";
 const ASSET_CACHE = VERSION + "-assets";
 const API_CACHE = VERSION + "-api";
 
@@ -69,20 +70,20 @@ self.addEventListener("fetch", (event) => {
     return;
   }
 
-  // Assets : stale-while-revalidate — réponse cache immédiate, mise à jour
-  // en arrière-plan (le prochain chargement a la nouvelle version).
+  // Assets : réseau d'abord (toujours le front à jour en ligne), repli
+  // cache pour le hors-ligne / écran verrouillé.
   event.respondWith(
-    caches.match(event.request).then((cached) => {
-      const refresh = fetch(event.request)
-        .then((res) => {
-          if (res.ok) {
-            const copy = res.clone();
-            caches.open(ASSET_CACHE).then((cache) => cache.put(event.request, copy));
-          }
-          return res;
-        })
-        .catch(() => cached);
-      return cached || refresh;
-    }),
+    fetch(event.request)
+      .then((res) => {
+        if (res.ok) {
+          const copy = res.clone();
+          caches.open(ASSET_CACHE).then((cache) => cache.put(event.request, copy));
+        }
+        return res;
+      })
+      .catch(async () => {
+        const cached = await caches.match(event.request);
+        return cached || Response.error();
+      }),
   );
 });

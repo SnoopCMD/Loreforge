@@ -13,6 +13,11 @@ export interface Env {
   // Secret (wrangler secret put ANTHROPIC_API_KEY) — absent tant que
   // non configuré : /analyze répond alors 503 analyzer_not_configured.
   ANTHROPIC_API_KEY?: string;
+  // Secret (wrangler secret put RESEND_API_KEY) — envoi des liens magiques.
+  // Absent : le lien part dans les logs Worker (comportement v1).
+  RESEND_API_KEY?: string;
+  // Adresse expéditrice ; défaut onboarding@resend.dev (voir auth/email.ts).
+  MAIL_FROM?: string;
 }
 
 export interface User {

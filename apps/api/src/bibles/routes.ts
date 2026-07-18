@@ -8,7 +8,16 @@ import {
   normalizeMarkdown,
   serializeToneProfile,
 } from "./normalize";
-import { reindexBible } from "../rag/store";
+import { purgeBibleIndex, reindexBible } from "../rag/store";
+import {
+  detectFormat,
+  ensureExtractedSize,
+  ExtractError,
+  extractMarkdown,
+  MAX_UPLOAD_BYTES,
+  stripImportExtension,
+  type ImportFormat,
+} from "./extract";
 
 export const bibles = new Hono<AppEnv>();
 
@@ -29,12 +38,16 @@ function toPublic(row: BibleRow, withContent: boolean) {
   };
 }
 
-// POST /api/bibles — multipart (champ "file", "title" optionnel)
-// ou JSON { markdown, title? }.
+// POST /api/bibles — multipart (champ "file" : .md/.txt/.zip/.pdf/.docx,
+// "title" optionnel) ou JSON { markdown, title? }.
 bibles.post("/", async (c) => {
   const contentType = c.req.header("content-type") ?? "";
   let raw: string;
   let fallbackTitle: string | undefined;
+  let sourceType: ImportFormat = "markdown";
+  let sourceBytes: Uint8Array | null = null;
+  let sourceContentType = "text/markdown; charset=utf-8";
+  let sourceExt = "md";
 
   if (contentType.includes("multipart/form-data")) {
     const body = await c.req.parseBody();
@@ -42,14 +55,33 @@ bibles.post("/", async (c) => {
     if (!(file instanceof File)) {
       return c.json({ error: "missing_file" }, 400);
     }
-    if (file.size > MAX_IMPORT_BYTES) {
+    sourceType = detectFormat(file.name);
+    const maxBytes =
+      sourceType === "markdown" ? MAX_IMPORT_BYTES : MAX_UPLOAD_BYTES;
+    if (file.size > maxBytes) {
       return c.json({ error: "file_too_large" }, 413);
     }
-    raw = await file.text();
+    sourceBytes = new Uint8Array(await file.arrayBuffer());
+    try {
+      raw = await extractMarkdown(sourceType, sourceBytes);
+      ensureExtractedSize(raw);
+    } catch (err) {
+      if (err instanceof ExtractError) {
+        return c.json(
+          { error: err.code },
+          err.code === "file_too_large" ? 413 : 400,
+        );
+      }
+      throw err;
+    }
+    if (sourceType !== "markdown") {
+      sourceExt = file.name.match(/\.(\w+)$/)?.[1]?.toLowerCase() ?? "bin";
+      sourceContentType = file.type || "application/octet-stream";
+    }
     fallbackTitle =
       typeof body["title"] === "string" && body["title"].trim() !== ""
         ? body["title"].trim()
-        : file.name.replace(/\.(md|markdown|txt)$/i, "");
+        : stripImportExtension(file.name);
   } else {
     let body: { markdown?: unknown; title?: unknown };
     try {
@@ -80,17 +112,17 @@ bibles.post("/", async (c) => {
   const now = Date.now();
 
   // Le fichier brut est conservé tel quel dans R2 (source de ré-import).
-  const r2Key = `bibles/${id}/source.md`;
-  await c.env.BUCKET.put(r2Key, raw, {
-    httpMetadata: { contentType: "text/markdown; charset=utf-8" },
+  const r2Key = `bibles/${id}/source.${sourceExt}`;
+  await c.env.BUCKET.put(r2Key, sourceBytes ?? raw, {
+    httpMetadata: { contentType: sourceContentType },
   });
 
   await c.env.DB.prepare(
     `INSERT INTO bibles
        (id, user_id, title, source_type, r2_key, canon_md, status, created_at, updated_at)
-     VALUES (?, ?, ?, 'markdown', ?, ?, 'draft', ?, ?)`,
+     VALUES (?, ?, ?, ?, ?, ?, 'draft', ?, ?)`,
   )
-    .bind(id, user.id, title, r2Key, canonMd, now, now)
+    .bind(id, user.id, title, sourceType, r2Key, canonMd, now, now)
     .run();
 
   // RAG (M6) : indexation en tâche de fond (no-op sous le seuil).
@@ -100,7 +132,7 @@ bibles.post("/", async (c) => {
     {
       id,
       title,
-      source_type: "markdown",
+      source_type: sourceType,
       status: "draft",
       canon_md: canonMd,
       created_at: now,
@@ -132,9 +164,11 @@ bibles.get("/:id", async (c) => {
   return c.json(toPublic(row, true));
 });
 
-// PATCH /api/bibles/:id — { canon_md?, tone_profile? }
+const MAX_TITLE_LENGTH = 200;
+
+// PATCH /api/bibles/:id — { title?, canon_md?, tone_profile? }
 bibles.patch("/:id", async (c) => {
-  let body: { canon_md?: unknown; tone_profile?: unknown };
+  let body: { title?: unknown; canon_md?: unknown; tone_profile?: unknown };
   try {
     body = await c.req.json();
   } catch {
@@ -143,6 +177,15 @@ bibles.patch("/:id", async (c) => {
 
   const sets: string[] = [];
   const values: unknown[] = [];
+
+  if (body.title !== undefined) {
+    const title = typeof body.title === "string" ? body.title.trim() : "";
+    if (title === "" || title.length > MAX_TITLE_LENGTH) {
+      return c.json({ error: "invalid_title" }, 400);
+    }
+    sets.push("title = ?");
+    values.push(title);
+  }
 
   if (body.canon_md !== undefined) {
     if (typeof body.canon_md !== "string" || !isUsableMarkdown(body.canon_md)) {
@@ -183,4 +226,29 @@ bibles.patch("/:id", async (c) => {
     );
   }
   return c.json(toPublic(updated as BibleRow, true));
+});
+
+// DELETE /api/bibles/:id — suppression complète : lignes D1 liées,
+// fichier source R2, index RAG (Vectorize + méta KV).
+bibles.delete("/:id", async (c) => {
+  const id = c.req.param("id");
+  const row = await findOwnedBible(c.env.DB, id, c.get("user").id);
+  if (!row) return c.json({ error: "not_found" }, 404);
+
+  // Enfants d'abord (canon_proposals référence aussi game_sessions).
+  await c.env.DB.batch([
+    c.env.DB.prepare(`DELETE FROM canon_proposals WHERE bible_id = ?`).bind(id),
+    c.env.DB.prepare(`DELETE FROM game_sessions WHERE bible_id = ?`).bind(id),
+    c.env.DB.prepare(`DELETE FROM characters WHERE bible_id = ?`).bind(id),
+    c.env.DB.prepare(`DELETE FROM richness_scores WHERE bible_id = ?`).bind(id),
+    c.env.DB.prepare(`DELETE FROM sheet_schemas WHERE bible_id = ?`).bind(id),
+    c.env.DB.prepare(`DELETE FROM bibles WHERE id = ?`).bind(id),
+  ]);
+
+  if (row.r2_key) {
+    c.executionCtx.waitUntil(c.env.BUCKET.delete(row.r2_key));
+  }
+  c.executionCtx.waitUntil(purgeBibleIndex(c.env, id));
+
+  return c.json({ ok: true });
 });

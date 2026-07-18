@@ -8,7 +8,7 @@
 
 const ANTHROPIC_ORIGIN = "https://api.anthropic.com";
 
-const queue: Array<() => Response> = [];
+const queue: Array<(isStream: boolean) => Response> = [];
 let installed = false;
 
 export function installAnthropicMock(): void {
@@ -30,7 +30,17 @@ export function installAnthropicMock(): void {
       if (!next) {
         throw new Error(`appel Anthropic non mocké : ${url}`);
       }
-      return next();
+      // Le SDK envoie "stream": true pour messages.stream — le mock sert
+      // alors du SSE, sinon du JSON, quel que soit le mock* utilisé.
+      let isStream = false;
+      try {
+        isStream =
+          typeof init?.body === "string" &&
+          (JSON.parse(init.body) as { stream?: boolean }).stream === true;
+      } catch {
+        /* body non-JSON */
+      }
+      return next(isStream);
     }
     if (/^https?:\/\//.test(url)) {
       throw new Error(`trafic réseau inattendu dans les tests : ${url}`);
@@ -47,28 +57,33 @@ export function assertAnthropicMockConsumed(): void {
   }
 }
 
-/** Prochaine réponse non-streamée (analyse de richesse, résumé de fin). */
+/** Prochain appel : `text` en une réponse — JSON ou SSE selon la requête. */
 export function mockAnthropicText(text: string): void {
-  queue.push(
-    () =>
-      new Response(
-        JSON.stringify({
-          id: "msg_test",
-          type: "message",
-          role: "assistant",
-          model: "claude-sonnet-5",
-          content: [{ type: "text", text }],
-          stop_reason: "end_turn",
-          stop_sequence: null,
-          usage: { input_tokens: 500, output_tokens: 120 },
-        }),
-        { status: 200, headers: { "content-type": "application/json" } },
-      ),
+  queue.push((isStream) =>
+    isStream
+      ? sseResponse([text])
+      : new Response(
+          JSON.stringify({
+            id: "msg_test",
+            type: "message",
+            role: "assistant",
+            model: "claude-sonnet-5",
+            content: [{ type: "text", text }],
+            stop_reason: "end_turn",
+            stop_sequence: null,
+            usage: { input_tokens: 500, output_tokens: 120 },
+          }),
+          { status: 200, headers: { "content-type": "application/json" } },
+        ),
   );
 }
 
 /** Prochaine réponse streamée : chaque delta devient un text_delta SSE. */
 export function mockAnthropicStream(deltas: string[]): void {
+  queue.push(() => sseResponse(deltas));
+}
+
+function sseResponse(deltas: string[]): Response {
   const ev = (type: string, data: unknown) =>
     `event: ${type}\ndata: ${JSON.stringify(data)}\n\n`;
   const body =
@@ -107,11 +122,8 @@ export function mockAnthropicStream(deltas: string[]): void {
     }) +
     ev("message_stop", { type: "message_stop" });
 
-  queue.push(
-    () =>
-      new Response(body, {
-        status: 200,
-        headers: { "content-type": "text/event-stream" },
-      }),
-  );
+  return new Response(body, {
+    status: 200,
+    headers: { "content-type": "text/event-stream" },
+  });
 }

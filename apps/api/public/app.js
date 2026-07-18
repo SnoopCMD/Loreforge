@@ -4,7 +4,8 @@
 
 import {
   AXES, AXIS_LABELS, FORMAT_LABELS, GENERIC_FIELDS, OUTCOME_LABELS,
-  createSseParser, esc, extractActionChips, labelFor, mdToHtml,
+  STATUS_LABELS, buildCanonFromSections, createSseParser, esc,
+  extractActionChips, labelFor, mdToHtml, parseCanonSections,
 } from "/core.js";
 
 const $ = (id) => document.getElementById(id);
@@ -29,10 +30,26 @@ let authed = false;
 let currentBible = null;
 let pollTimer = null;
 
+/** Petit HTML « spinner + texte » pour les attentes IA. */
+const spin = (text) =>
+  '<span class="spinner" aria-hidden="true"></span> ' + esc(text);
+
+/** Pastille de statut avec libellé français. */
+const statusChip = (status) =>
+  '<span class="status ' + esc(status) + '">' +
+  esc(STATUS_LABELS[status] || status) + "</span>";
+
+const frDate = (ts) =>
+  new Date(ts).toLocaleDateString("fr-FR", {
+    day: "numeric", month: "short", hour: "2-digit", minute: "2-digit",
+  });
+
 // ── Client SSE (EventSource ne fait pas de POST) ─────────────────────────
 
 async function sse(path, body, handlers) {
-  const res = await api(path, jsonPost(body));
+  const opts = jsonPost(body);
+  opts.headers.accept = "text/event-stream";
+  const res = await api(path, opts);
   const type = res.headers.get("content-type") || "";
   if (!res.ok || !type.includes("text/event-stream")) {
     let payload = {};
@@ -136,8 +153,9 @@ function ficheHtml(name, sheet, { compact = false, sub = "" } = {}) {
 // ── Navigation ───────────────────────────────────────────────────────────
 
 const SCREENS = [
-  "screen-landing", "screen-library", "screen-bible", "screen-embark",
-  "screen-quiz", "screen-forge", "screen-setup", "screen-session", "screen-end",
+  "screen-landing", "screen-home", "screen-play", "screen-library",
+  "screen-bible", "screen-embark", "screen-quiz", "screen-forge",
+  "screen-setup", "screen-session", "screen-end",
 ];
 
 function showScreen(id) {
@@ -152,7 +170,9 @@ function route() {
   const hash = location.hash.replace(/^#/, "") || "/";
   const parts = hash.split("/").filter(Boolean);
   if (!authed) return showLanding();
-  if (parts.length === 0) return showLibrary();
+  if (parts.length === 0) return showHome();
+  if (parts[0] === "play") return showPlay();
+  if (parts[0] === "library") return showLibrary();
   if (parts[0] === "bible" && parts[1]) {
     if (parts[2] === "embark") return showEmbark(parts[1]);
     if (parts[2] === "quiz") return showQuiz(parts[1]);
@@ -169,9 +189,14 @@ function route() {
 
 window.addEventListener("hashchange", route);
 
+let currentUser = null;
+
 async function boot() {
   const me = await api("/auth/me");
   authed = me.ok;
+  if (me.ok) {
+    try { currentUser = (await me.json()).user; } catch { /* sans gravité */ }
+  }
   route();
 }
 
@@ -187,12 +212,56 @@ $("cta-btn").addEventListener("click", () => {
   $("login-panel").scrollIntoView({ block: "center" });
 });
 
-$("login-form").addEventListener("submit", async (e) => {
+async function credentialsAuth(path) {
+  const res = await api(path, jsonPost({
+    email: $("login-email").value,
+    password: $("login-password").value,
+  }));
+  let body = {};
+  try { body = await res.json(); } catch { /* pas du JSON */ }
+  if (!res.ok) {
+    const labels = {
+      invalid_email: "Email invalide.",
+      invalid_password: "Mot de passe trop court (8 caractères minimum).",
+      email_taken: "Un compte existe déjà avec cet email — connectez-vous.",
+      invalid_credentials: "Email ou mot de passe incorrect.",
+    };
+    $("login-msg").textContent = labels[body.error] || "Échec, réessayez.";
+    $("login-msg").className = "msg error";
+    return;
+  }
+  authed = true;
+  $("login-msg").textContent = "";
+  location.hash = "#/";
+  route();
+}
+
+$("login-form").addEventListener("submit", (e) => {
   e.preventDefault();
-  const res = await api("/auth/magic-link", jsonPost({ email: $("login-email").value }));
+  credentialsAuth("/auth/login");
+});
+
+$("register-btn").addEventListener("click", () => {
+  if (!$("login-form").reportValidity()) return;
+  credentialsAuth("/auth/register");
+});
+
+// Secours sans mot de passe : l'ancien flux par lien magique.
+$("magic-link-fallback").addEventListener("click", async (e) => {
+  e.preventDefault();
+  const email = $("login-email").value.trim();
+  if (email === "") {
+    $("login-msg").textContent = "Renseignez d’abord votre email.";
+    $("login-msg").className = "msg error";
+    return;
+  }
+  const res = await api("/auth/magic-link", jsonPost({ email }));
   const body = await res.json();
   if (!res.ok) {
-    $("login-msg").textContent = "Email invalide.";
+    $("login-msg").textContent =
+      body.error === "invalid_email"
+        ? "Email invalide."
+        : "L'envoi de l'email a échoué, réessayez dans un instant.";
     $("login-msg").className = "msg error";
     return;
   }
@@ -212,6 +281,74 @@ $("logout-btn").addEventListener("click", async () => {
   showLanding();
 });
 
+// ── Accueil connecté ─────────────────────────────────────────────────────
+
+async function showHome() {
+  showScreen("screen-home");
+  const name = currentUser && currentUser.email ? currentUser.email.split("@")[0] : "";
+  $("home-greeting").textContent = name
+    ? "Bon retour, " + name + ". Que voulez-vous vivre aujourd'hui ?"
+    : "Que voulez-vous vivre aujourd'hui ?";
+
+  // Reprise rapide : les sessions non terminées, les plus récentes d'abord.
+  const wrap = $("home-resume");
+  wrap.innerHTML = "";
+  const res = await api("/sessions");
+  if (!res.ok) return;
+  const { sessions } = await res.json();
+  const open = sessions.filter((s) => s.status !== "finished").slice(0, 3);
+  if (open.length === 0) return;
+  const panel = document.createElement("div");
+  panel.className = "panel resume-panel";
+  panel.innerHTML = "<h2>Reprendre l’aventure</h2>";
+  for (const s of open) {
+    const target = s.status === "setup" ? "/setup" : "";
+    const a = document.createElement("a");
+    a.className = "resume-item";
+    a.href = "#/session/" + s.id + target;
+    a.innerHTML =
+      '<span class="who"></span><span class="row">' +
+      statusChip(s.status) +
+      '<span class="msg when">' + esc(frDate(s.created_at)) + "</span></span>";
+    a.querySelector(".who").textContent =
+      s.bible_title + " · " + (s.character_name || "Sans personnage");
+    panel.appendChild(a);
+  }
+  wrap.appendChild(panel);
+}
+
+// ── Choix du monde pour jouer ────────────────────────────────────────────
+
+async function showPlay() {
+  showScreen("screen-play");
+  const list = $("play-list");
+  list.innerHTML = '<p class="msg">' + spin("Les mondes s’éveillent…") + "</p>";
+  const res = await api("/bibles");
+  if (!res.ok) { authed = false; return showLanding(); }
+  const { bibles } = await res.json();
+  list.innerHTML = "";
+  if (bibles.length === 0) {
+    list.innerHTML =
+      '<div class="panel"><p class="msg">Aucun monde pour l’instant. ' +
+      '<a href="#/library">Forgez votre première bible</a> pour commencer à jouer.</p></div>';
+    return;
+  }
+  for (const b of bibles) {
+    const card = document.createElement("div");
+    card.className = "panel play-card";
+    card.innerHTML =
+      '<div class="play-info"><span class="title"></span>' +
+      '<span class="row">' + statusChip(b.status) +
+      '<span class="msg">Visitée le ' + esc(frDate(b.updated_at)) + "</span></span></div>" +
+      "<button>Partir à l’aventure</button>";
+    card.querySelector(".title").textContent = b.title;
+    card.querySelector("button").addEventListener("click", () => {
+      location.hash = "#/bible/" + b.id + "/embark";
+    });
+    list.appendChild(card);
+  }
+}
+
 // ── Bibliothèque ─────────────────────────────────────────────────────────
 
 async function showLibrary() {
@@ -223,17 +360,38 @@ async function showLibrary() {
   list.innerHTML = "";
   if (bibles.length === 0) {
     list.innerHTML =
-      '<p class="msg">Aucune bible pour l’instant — importez la première ci-dessous.</p>';
+      '<p class="msg">Aucune bible pour l’instant — forgez la première ci-dessous.</p>';
     return;
   }
   for (const b of bibles) {
     const card = document.createElement("div");
     card.className = "panel bible-card";
     card.innerHTML =
-      '<span class="left"><span class="radar-slot"></span><span class="title"></span></span>' +
-      '<span class="status ' + esc(b.status) + '">' + esc(b.status) + "</span>";
+      '<span class="left"><span class="radar-slot"></span>' +
+      '<span class="bible-id"><span class="title"></span>' +
+      '<span class="msg when">Modifiée le ' + esc(frDate(b.updated_at)) + "</span></span></span>" +
+      '<span class="row card-right">' + statusChip(b.status) +
+      '<button class="ghost card-delete" title="Supprimer cette bible">✕</button></span>';
     card.querySelector(".title").textContent = b.title;
     card.addEventListener("click", () => { location.hash = "#/bible/" + b.id; });
+    // Suppression en deux temps : premier clic arme, second confirme.
+    const del = card.querySelector(".card-delete");
+    del.addEventListener("click", async (ev) => {
+      ev.stopPropagation();
+      if (!del.classList.contains("armed")) {
+        del.classList.add("armed");
+        del.textContent = "Supprimer ?";
+        setTimeout(() => {
+          del.classList.remove("armed");
+          del.textContent = "✕";
+        }, 4000);
+        return;
+      }
+      del.disabled = true;
+      const res = await api("/bibles/" + b.id, { method: "DELETE" });
+      if (res.ok) card.remove();
+      else del.disabled = false;
+    });
     list.appendChild(card);
     if (b.status === "analyzed") {
       api("/bibles/" + b.id + "/richness").then(async (r) => {
@@ -273,14 +431,37 @@ $("import-btn").addEventListener("click", () => {
   importBible(md, $("import-title").value.trim());
 });
 
+// L'upload part toujours en multipart : le serveur détecte le format
+// (.md/.txt bruts, .zip export Notion, .pdf, .docx) et extrait le texte.
 $("import-file").addEventListener("change", async (e) => {
   const file = e.target.files[0];
   if (!file) return;
-  const text = await file.text();
-  importBible(
-    text,
-    $("import-title").value.trim() || file.name.replace(/\.(md|markdown|txt)$/i, ""),
-  );
+  $("import-msg").innerHTML = spin("Import en cours…");
+  $("import-msg").className = "msg";
+  const form = new FormData();
+  form.append("file", file);
+  const title = $("import-title").value.trim();
+  if (title) form.append("title", title);
+  const res = await api("/bibles", { method: "POST", body: form });
+  const body = await res.json();
+  if (!res.ok) {
+    const labels = {
+      file_too_large: "Fichier trop volumineux.",
+      invalid_zip: "Archive ZIP illisible.",
+      zip_without_markdown: "Aucun fichier .md ou .txt dans le ZIP.",
+      invalid_pdf: "PDF illisible.",
+      pdf_without_text: "Aucun texte extractible dans ce PDF (scan d’images ?).",
+      invalid_docx: "Document Word illisible.",
+      docx_without_text: "Aucun texte dans ce document Word.",
+    };
+    $("import-msg").textContent =
+      "Import refusé : " + (labels[body.error] || body.error || res.status);
+    $("import-msg").className = "msg error";
+  } else {
+    $("import-msg").textContent = "";
+    $("import-title").value = "";
+    location.hash = "#/bible/" + body.id;
+  }
   e.target.value = "";
 });
 
@@ -292,7 +473,10 @@ async function showBible(id) {
   if (!res.ok) { location.hash = "#/"; return; }
   currentBible = await res.json();
   $("detail-title").textContent = currentBible.title;
-  $("canon-editor").value = currentBible.canon_md || "";
+  setCanon(currentBible.canon_md || "");
+  $("detail-msg").textContent = "";
+  $("rename-row").classList.add("hidden");
+  resetDeleteButton();
   $("analyze-msg").textContent = "";
   $("save-msg").textContent = "";
   $("session-msg").textContent = "";
@@ -306,36 +490,217 @@ async function showBible(id) {
 
 function renderStatus(status) {
   const el = $("detail-status");
-  el.textContent = status;
+  el.textContent = STATUS_LABELS[status] || status;
   el.className = "status " + status;
   $("analyze-btn").disabled = status === "analyzing";
 }
 
-$("save-canon-btn").addEventListener("click", async () => {
+// ── Renommer / supprimer la bible ────────────────────────────────────────
+
+$("rename-btn").addEventListener("click", () => {
+  $("rename-input").value = currentBible.title;
+  $("rename-row").classList.remove("hidden");
+  $("rename-input").focus();
+});
+$("rename-cancel-btn").addEventListener("click", () => {
+  $("rename-row").classList.add("hidden");
+});
+$("rename-save-btn").addEventListener("click", async () => {
+  const title = $("rename-input").value.trim();
+  if (title === "") return;
   const res = await api("/bibles/" + currentBible.id, {
     method: "PATCH",
     headers: { "content-type": "application/json" },
-    body: JSON.stringify({ canon_md: $("canon-editor").value }),
+    body: JSON.stringify({ title }),
   });
-  $("save-msg").textContent = res.ok ? "Canon enregistré." : "Échec de l’enregistrement.";
-  $("save-msg").className = res.ok ? "msg" : "msg error";
-});
-
-$("analyze-btn").addEventListener("click", async () => {
-  const res = await api("/bibles/" + currentBible.id + "/analyze", { method: "POST" });
-  const body = await res.json();
   if (!res.ok) {
-    $("analyze-msg").textContent =
-      body.error === "analyzer_not_configured"
-        ? "L’analyseur n’est pas configuré côté serveur (clé Anthropic manquante)."
-        : "Analyse impossible : " + (body.error || res.status);
-    $("analyze-msg").className = "msg error";
+    $("detail-msg").textContent = "Impossible de renommer.";
+    $("detail-msg").className = "msg error";
     return;
   }
-  $("analyze-msg").textContent = "Analyse en cours — l’esprit examine votre monde…";
-  $("analyze-msg").className = "msg";
+  currentBible = await res.json();
+  $("detail-title").textContent = currentBible.title;
+  $("rename-row").classList.add("hidden");
+  $("detail-msg").textContent = "";
+});
+
+function resetDeleteButton() {
+  const btn = $("delete-btn");
+  btn.textContent = "Supprimer";
+  btn.classList.remove("armed");
+  btn.disabled = false;
+}
+// Deux temps, comme dans la bibliothèque : armer puis confirmer.
+$("delete-btn").addEventListener("click", async () => {
+  const btn = $("delete-btn");
+  if (!btn.classList.contains("armed")) {
+    btn.classList.add("armed");
+    btn.textContent = "Confirmer la suppression ?";
+    setTimeout(resetDeleteButton, 5000);
+    return;
+  }
+  btn.disabled = true;
+  const res = await api("/bibles/" + currentBible.id, { method: "DELETE" });
+  if (res.ok) { location.hash = "#/library"; return; }
+  resetDeleteButton();
+  $("detail-msg").textContent = "Suppression impossible.";
+  $("detail-msg").className = "msg error";
+});
+
+// ── Éditeur du canon par sections ────────────────────────────────────────
+
+let canonDoc = { h1: "", preamble: "", sections: [] };
+
+/** Met à jour les deux vues (sections + brut) depuis un canon_md. */
+function setCanon(md) {
+  $("canon-editor").value = md;
+  canonDoc = parseCanonSections(md);
+  renderSections();
+}
+
+function renderSections() {
+  const list = $("section-list");
+  list.innerHTML = "";
+
+  if (canonDoc.preamble !== "") {
+    list.appendChild(sectionCard(null));
+  }
+  canonDoc.sections.forEach((_, i) => list.appendChild(sectionCard(i)));
+  if (canonDoc.sections.length === 0 && canonDoc.preamble === "") {
+    list.innerHTML = '<p class="msg">Canon vide — ajoutez une première section.</p>';
+  }
+}
+
+/** Carte d'une section ; index null = préambule (avant la première section). */
+function sectionCard(index) {
+  const isPreamble = index === null;
+  const section = isPreamble ? null : canonDoc.sections[index];
+  const card = document.createElement("div");
+  card.className = "section-card";
+  card.innerHTML =
+    '<div class="row spread section-head">' +
+    (isPreamble
+      ? '<span class="msg">Introduction (avant la première section)</span>'
+      : '<input type="text" class="section-title" placeholder="Titre de la section" />') +
+    '<span class="row section-tools">' +
+    (isPreamble
+      ? ""
+      : '<button class="ghost sec-up" title="Monter">↑</button>' +
+        '<button class="ghost sec-down" title="Descendre">↓</button>' +
+        '<button class="ghost sec-del" title="Retirer la section">✕</button>') +
+    "</span></div>" +
+    '<textarea class="section-body"></textarea>';
+
+  const body = card.querySelector(".section-body");
+  if (isPreamble) {
+    body.value = canonDoc.preamble;
+    body.addEventListener("input", () => { canonDoc.preamble = body.value; });
+    return card;
+  }
+
+  const title = card.querySelector(".section-title");
+  title.value = section.title;
+  body.value = section.body;
+  title.addEventListener("input", () => { section.title = title.value; });
+  body.addEventListener("input", () => { section.body = body.value; });
+
+  card.querySelector(".sec-up").addEventListener("click", () => moveSection(index, -1));
+  card.querySelector(".sec-down").addEventListener("click", () => moveSection(index, 1));
+  card.querySelector(".sec-del").addEventListener("click", () => {
+    canonDoc.sections.splice(index, 1);
+    renderSections();
+  });
+  return card;
+}
+
+function moveSection(index, delta) {
+  const target = index + delta;
+  if (target < 0 || target >= canonDoc.sections.length) return;
+  const [s] = canonDoc.sections.splice(index, 1);
+  canonDoc.sections.splice(target, 0, s);
+  renderSections();
+}
+
+$("add-section-btn").addEventListener("click", () => {
+  canonDoc.sections.push({ title: "", body: "" });
+  renderSections();
+  const cards = $("section-list").querySelectorAll(".section-card");
+  const last = cards[cards.length - 1];
+  last.scrollIntoView({ block: "center" });
+  last.querySelector(".section-title").focus();
+});
+
+async function saveCanon(canonMd) {
+  const res = await api("/bibles/" + currentBible.id, {
+    method: "PATCH",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({ canon_md: canonMd }),
+  });
+  if (res.ok) {
+    currentBible = await res.json();
+    setCanon(currentBible.canon_md || "");
+  }
+  $("save-msg").textContent = res.ok ? "Canon enregistré." : "Échec de l’enregistrement.";
+  $("save-msg").className = res.ok ? "msg" : "msg error";
+}
+
+$("save-canon-btn").addEventListener("click", () => {
+  canonDoc.h1 = currentBible.title;
+  saveCanon(buildCanonFromSections(canonDoc));
+});
+
+$("save-raw-btn").addEventListener("click", () => {
+  saveCanon($("canon-editor").value);
+});
+
+// L'analyse tourne dans la requête SSE : la page doit rester ouverte,
+// en échange on a une progression réelle et jamais d'analyse zombie.
+$("analyze-btn").addEventListener("click", async () => {
+  const bibleId = currentBible.id;
+  const startedAt = Date.now();
   renderStatus("analyzing");
-  startPolling();
+  $("analyze-msg").innerHTML = spin("L’esprit se penche sur votre monde…");
+  $("analyze-msg").className = "msg";
+  let finished = false;
+  try {
+    await sse("/bibles/" + bibleId + "/analyze", {}, {
+      progress(p) {
+        const min = Math.floor((Date.now() - startedAt) / 60000);
+        const sec = Math.floor(((Date.now() - startedAt) % 60000) / 1000);
+        $("analyze-msg").innerHTML = spin(
+          "L’esprit examine votre monde — " +
+            min + " min " + String(sec).padStart(2, "0") + " s, " +
+            Math.round((p.output_chars || 0) / 1000) + " k signes pesés. " +
+            "Gardez la page ouverte.",
+        );
+      },
+      done() {
+        finished = true;
+        $("analyze-msg").textContent = "";
+        refreshRichness();
+      },
+      error() {
+        finished = true;
+        $("analyze-msg").textContent = "L’analyse a échoué — relancez-la.";
+        $("analyze-msg").className = "msg error";
+        refreshRichness();
+      },
+    });
+    if (!finished) {
+      // Flux coupé sans verdict (réseau) : le poll reprend la main.
+      startPolling();
+    }
+  } catch (err) {
+    const code = err.payload && err.payload.error;
+    $("analyze-msg").textContent =
+      code === "analyzer_not_configured"
+        ? "L’analyseur n’est pas configuré côté serveur (clé Anthropic manquante)."
+        : code === "analysis_in_progress"
+          ? "Une analyse est déjà en cours."
+          : "Analyse impossible : " + (code || err.message);
+    $("analyze-msg").className = "msg error";
+    refreshRichness();
+  }
 });
 
 function startPolling() {
@@ -349,6 +714,10 @@ async function refreshRichness() {
   const body = await res.json();
   if (body.status === "analyzing") {
     renderStatus("analyzing");
+    if ($("analyze-msg").textContent === "") {
+      $("analyze-msg").innerHTML = spin("Analyse en cours — l’esprit examine votre monde…");
+      $("analyze-msg").className = "msg";
+    }
     if (!pollTimer) startPolling();
     return;
   }
@@ -371,8 +740,10 @@ async function refreshRichness() {
     }
     renderGaps(body.gaps);
   } else {
-    if ($("detail-status").textContent === "analyzing") {
-      $("analyze-msg").textContent = "L’analyse a échoué — réessayez.";
+    // "failed" = analyse morte côté serveur (zombie récupéré) ; sinon,
+    // le passage analyzing -> none signale aussi un échec.
+    if (body.status === "failed" || $("detail-status").textContent === "analyzing") {
+      $("analyze-msg").textContent = "L’analyse a échoué — relancez-la.";
       $("analyze-msg").className = "msg error";
     }
     renderStatus(currentBible.status === "analyzed" ? "analyzed" : "draft");
@@ -464,7 +835,7 @@ async function loadProposals(bibleId) {
     list.appendChild(
       proposalItem(p, bibleId, {
         // Le canon renvoyé par l'accept remplace l'éditeur (état serveur).
-        onAccepted(canonMd) { if (canonMd !== null) $("canon-editor").value = canonMd; },
+        onAccepted(canonMd) { if (canonMd !== null) setCanon(canonMd); },
       }),
     );
   }
@@ -524,7 +895,7 @@ async function launchSession(bibleId, characterId, mode, msgEl) {
     trame: pref.trame || null,
   };
   if (mode) payload.character_mode = mode;
-  if (msgEl) { msgEl.textContent = "La session se prépare…"; msgEl.className = "msg"; }
+  if (msgEl) { msgEl.innerHTML = spin("La session se prépare…"); msgEl.className = "msg"; }
   const res = await api("/sessions", jsonPost(payload));
   const body = await res.json();
   if (!res.ok) {
@@ -555,7 +926,7 @@ async function showEmbark(bibleId) {
     launchSession(bibleId, null, null, $("embark-msg"));
 
   const wrap = $("embark-characters");
-  wrap.innerHTML = '<p class="msg">Les personnages se réveillent…</p>';
+  wrap.innerHTML = '<p class="msg">' + spin("Les personnages se réveillent…") + "</p>";
   const res = await api("/characters?bible_id=" + encodeURIComponent(bibleId));
   if (!res.ok) {
     wrap.innerHTML = '<p class="msg error">Personnages indisponibles.</p>';
@@ -596,7 +967,7 @@ async function showQuiz(bibleId) {
   $("quiz-msg").className = "msg";
   $("quiz-question").textContent = "";
   $("quiz-choices").innerHTML = "";
-  $("quiz-progress").textContent = "L’esprit compose vos questions…";
+  $("quiz-progress").innerHTML = spin("L’esprit compose vos questions…");
 
   const res = await api("/characters/embody-quiz", jsonPost({ bible_id: bibleId }));
   const body = await res.json();
@@ -617,7 +988,7 @@ async function showQuiz(bibleId) {
   const submit = async () => {
     $("quiz-question").textContent = "";
     $("quiz-choices").innerHTML = "";
-    $("quiz-progress").textContent = "L’esprit forge votre personnage…";
+    $("quiz-progress").innerHTML = spin("L’esprit forge votre personnage…");
     const r = await api(
       "/characters/embody-quiz/answers",
       jsonPost({ bible_id: bibleId, answers }),
@@ -629,9 +1000,26 @@ async function showQuiz(bibleId) {
       $("quiz-msg").className = "msg error";
       return;
     }
+    // La fiche reste à l'écran : le départ en session est un choix explicite.
     $("quiz-progress").textContent = "";
+    $("quiz-question").textContent = "Votre personnage est né.";
     $("quiz-fiche").innerHTML = ficheHtml(ch.name, ch.sheet, { sub: "Né du questionnaire" });
-    launchSession(bibleId, ch.id, "embody_quiz", $("quiz-msg"));
+    const row = document.createElement("div");
+    row.className = "row";
+    row.style.marginTop = "1rem";
+    const go = document.createElement("button");
+    go.textContent = "Partir en session";
+    go.addEventListener("click", () => {
+      go.disabled = true;
+      launchSession(bibleId, ch.id, "embody_quiz", $("quiz-msg"))
+        .finally(() => { go.disabled = false; });
+    });
+    const back = document.createElement("a");
+    back.className = "msg";
+    back.href = "#/bible/" + bibleId;
+    back.textContent = "← Retour à la bible (la fiche restera dans Personnages)";
+    row.append(go, back);
+    $("quiz-fiche").appendChild(row);
   };
 
   const show = () => {
@@ -674,7 +1062,7 @@ async function showForge(bibleId) {
   $("forge-fiche").innerHTML = "";
   $("forge-issues").innerHTML = "";
   $("forge-after").style.display = "none";
-  $("forge-form").innerHTML = '<p class="msg">La fiche de ce monde se dessine…</p>';
+  $("forge-form").innerHTML = '<p class="msg">' + spin("La fiche de ce monde se dessine…") + "</p>";
 
   let fields = GENERIC_FIELDS;
   $("forge-intro").textContent =
@@ -735,12 +1123,14 @@ function buildForgeForm(bibleId, fields) {
     spark.title = "Laisser l’esprit proposer";
     spark.addEventListener("click", async () => {
       spark.disabled = true;
+      spark.innerHTML = '<span class="spinner" aria-hidden="true"></span>';
       const r = await api("/characters/suggest", jsonPost({
         bible_id: bibleId,
         field_key: f.key,
         sheet: collectSheet(),
       }));
       spark.disabled = false;
+      spark.textContent = "✨";
       if (!r.ok) return;
       const { value } = await r.json();
       if (input.tagName === "SELECT") {
@@ -810,7 +1200,7 @@ $("forge-form").addEventListener("submit", async (e) => {
   btn.disabled = true;
 
   // Relecture IA : les incohérences bloquantes arrêtent la forge.
-  $("forge-msg").textContent = "L’esprit relit votre fiche…";
+  $("forge-msg").innerHTML = spin("L’esprit relit votre fiche…");
   $("forge-msg").className = "msg";
   const check = await api("/characters/validate", jsonPost({ bible_id: bibleId, sheet }));
   if (check.ok) {
@@ -865,8 +1255,8 @@ async function loadSessions(bibleId) {
     const target = s.status === "finished" ? "/end" : s.status === "setup" ? "/setup" : "";
     item.innerHTML =
       '<span><span class="who"></span> <span class="when">' + esc(when) + "</span></span>" +
-      '<span class="row"><span class="status ' + esc(s.status) + '">' + esc(s.status) +
-      '</span><a href="#/session/' + esc(s.id) + esc(target) + '">' + label + "</a></span>";
+      '<span class="row">' + statusChip(s.status) +
+      '<a href="#/session/' + esc(s.id) + esc(target) + '">' + label + "</a></span>";
     item.querySelector(".who").textContent =
       (s.character_name || "Sans personnage") + " · " + (FORMAT_LABELS[s.format] || s.format);
     list.appendChild(item);

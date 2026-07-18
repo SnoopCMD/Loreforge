@@ -1,4 +1,4 @@
-import { SELF } from "cloudflare:test";
+import { env, SELF } from "cloudflare:test";
 import { afterEach, beforeAll, describe, expect, it } from "vitest";
 import {
   assertAnthropicMockConsumed,
@@ -39,7 +39,8 @@ async function createBible(cookie: string): Promise<string> {
   return id;
 }
 
-/** Mocke le prochain POST /v1/messages avec `bodyText` (texte JSON). */
+/** Mocke le prochain POST /v1/messages avec `bodyText` (texte JSON) —
+ * le mock sert du SSE si la requête est streamée (cas de l'analyse). */
 function mockAnthropic(bodyText: string) {
   mockAnthropicText(bodyText);
 }
@@ -155,5 +156,102 @@ describe("POST /api/bibles/:id/analyze + GET richness", () => {
       method: "POST",
     });
     expect(res.status).toBe(401);
+  });
+});
+
+describe("récupération des analyses zombies", () => {
+  it("une bible bloquée en analyzing depuis trop longtemps repasse à failed/draft", async () => {
+    const cookie = await login("author@example.com");
+    const bibleId = await createBible(cookie);
+
+    // État zombie : isolate évincé, le statut n'a jamais été rétabli.
+    await env.DB.prepare(
+      `UPDATE bibles SET status = 'analyzing', updated_at = ? WHERE id = ?`,
+    )
+      .bind(Date.now() - 11 * 60 * 1000, bibleId)
+      .run();
+
+    const res = await SELF.fetch(`${BASE}/api/bibles/${bibleId}/richness`, {
+      headers: { cookie },
+    });
+    expect(await res.json()).toEqual({ status: "failed" });
+
+    const bible = (await (
+      await SELF.fetch(`${BASE}/api/bibles/${bibleId}`, { headers: { cookie } })
+    ).json()) as { status: string };
+    expect(bible.status).toBe("draft");
+  });
+
+  it("une analyse zombie peut être relancée", async () => {
+    const cookie = await login("author@example.com");
+    const bibleId = await createBible(cookie);
+
+    await env.DB.prepare(
+      `UPDATE bibles SET status = 'analyzing', updated_at = ? WHERE id = ?`,
+    )
+      .bind(Date.now() - 11 * 60 * 1000, bibleId)
+      .run();
+
+    mockAnthropic(
+      JSON.stringify({
+        cosmology: 5, characters: 5, plots: 5, tone: 5, geography: 5, gaps: [],
+      }),
+    );
+    const relaunch = await SELF.fetch(`${BASE}/api/bibles/${bibleId}/analyze`, {
+      method: "POST",
+      headers: { cookie },
+    });
+    expect(relaunch.status).toBe(202);
+
+    await pollRichness(cookie, bibleId, (s) => s === "analyzed");
+  });
+});
+
+describe("analyse en mode SSE (Accept: text/event-stream)", () => {
+  it("l'analyse aboutit dans la requête et persiste les scores", async () => {
+    const cookie = await login("author@example.com");
+    const bibleId = await createBible(cookie);
+
+    mockAnthropic(
+      JSON.stringify({
+        cosmology: 7, characters: 6, plots: 5, tone: 4, geography: 3, gaps: [],
+      }),
+    );
+
+    const res = await SELF.fetch(`${BASE}/api/bibles/${bibleId}/analyze`, {
+      method: "POST",
+      headers: { cookie, accept: "text/event-stream" },
+    });
+    expect(res.status).toBe(200);
+    expect(res.headers.get("content-type")).toContain("text/event-stream");
+    const body = await res.text();
+    expect(body).toContain("event: done");
+
+    const after = (await (
+      await SELF.fetch(`${BASE}/api/bibles/${bibleId}/richness`, {
+        headers: { cookie },
+      })
+    ).json()) as { status: string; global?: number };
+    expect(after.status).toBe("analyzed");
+    expect(after.global).toBe(5);
+  });
+
+  it("échec du modèle : event error et statut rétabli", async () => {
+    const cookie = await login("author@example.com");
+    const bibleId = await createBible(cookie);
+
+    mockAnthropic(JSON.stringify({ pas: "conforme" }));
+
+    const res = await SELF.fetch(`${BASE}/api/bibles/${bibleId}/analyze`, {
+      method: "POST",
+      headers: { cookie, accept: "text/event-stream" },
+    });
+    expect(res.status).toBe(200);
+    expect(await res.text()).toContain("event: error");
+
+    const bible = (await (
+      await SELF.fetch(`${BASE}/api/bibles/${bibleId}`, { headers: { cookie } })
+    ).json()) as { status: string };
+    expect(bible.status).toBe("draft");
   });
 });

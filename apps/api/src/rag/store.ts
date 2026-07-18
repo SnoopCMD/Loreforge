@@ -103,6 +103,21 @@ export async function reindexBible(
   }
 }
 
+/** Purge l'index Vectorize et la méta KV d'une bible supprimée. Ne jette pas. */
+export async function purgeBibleIndex(env: Env, bibleId: string): Promise<void> {
+  if (!ragAvailable(env)) return;
+  try {
+    const key = ragKvKey(bibleId);
+    const meta = await env.CACHE.get<RagMeta>(key, "json");
+    if (meta) {
+      await deleteVectors(env, bibleId, meta.count);
+      await env.CACHE.delete(key);
+    }
+  } catch (err) {
+    console.error(`[rag] purge échouée pour ${bibleId}:`, err);
+  }
+}
+
 async function deleteVectors(
   env: Env,
   bibleId: string,

@@ -132,24 +132,28 @@ sessions.post("/", async (c) => {
   return c.json({ session_id: sessionId, setup_questions }, 201);
 });
 
-// GET /api/sessions?bible_id= — sessions de l'utilisateur pour une bible.
+// GET /api/sessions?bible_id= — sessions de l'utilisateur pour une bible ;
+// sans bible_id : toutes ses sessions (accueil, reprise rapide).
 sessions.get("/", async (c) => {
   const bibleId = c.req.query("bible_id");
-  if (!bibleId) return c.json({ error: "missing_bible_id" }, 400);
-
   const user = c.get("user");
-  const bible = await findOwnedBible(c.env.DB, bibleId, user.id);
-  if (!bible) return c.json({ error: "bible_not_found" }, 404);
+
+  if (bibleId) {
+    const bible = await findOwnedBible(c.env.DB, bibleId, user.id);
+    if (!bible) return c.json({ error: "bible_not_found" }, 404);
+  }
 
   const { results } = await c.env.DB.prepare(
-    `SELECT gs.id, gs.character_id, ch.name AS character_name, gs.format,
+    `SELECT gs.id, gs.bible_id, b.title AS bible_title,
+            gs.character_id, ch.name AS character_name, gs.format,
             gs.trame, gs.status, gs.created_at, gs.finished_at
      FROM game_sessions gs
+     JOIN bibles b ON b.id = gs.bible_id
      LEFT JOIN characters ch ON ch.id = gs.character_id
-     WHERE gs.bible_id = ? AND gs.user_id = ?
+     WHERE gs.user_id = ? AND (? IS NULL OR gs.bible_id = ?)
      ORDER BY gs.created_at DESC`,
   )
-    .bind(bible.id, user.id)
+    .bind(user.id, bibleId ?? null, bibleId ?? null)
     .all();
 
   return c.json({ sessions: results });

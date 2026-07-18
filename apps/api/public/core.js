@@ -146,3 +146,58 @@ export function extractActionChips(text) {
   }
   return chips.length >= 2 && chips.length <= 4 ? chips : [];
 }
+
+/**
+ * Découpe un canon_md normalisé (un seul H1, sections en H2) en un
+ * document éditable : { h1, preamble, sections: [{ title, body }] }.
+ * Les blocs de code sont respectés (un `##` dans une fence n'est pas
+ * un titre de section).
+ */
+export function parseCanonSections(md) {
+  const doc = { h1: "", preamble: "", sections: [] };
+  const pre = [];
+  let current = null;
+  let inFence = false;
+  for (const line of String(md || "").split("\n")) {
+    if (/^\s*(```|~~~)/.test(line)) inFence = !inFence;
+    if (!inFence) {
+      const h1 = line.match(/^# (.+)$/);
+      if (h1 && doc.h1 === "" && current === null) { doc.h1 = h1[1]; continue; }
+      const h2 = line.match(/^## (.*)$/);
+      if (h2) {
+        current = { title: h2[1], body: [] };
+        doc.sections.push(current);
+        continue;
+      }
+    }
+    (current ? current.body : pre).push(line);
+  }
+  doc.preamble = pre.join("\n").trim();
+  for (const s of doc.sections) s.body = s.body.join("\n").trim();
+  return doc;
+}
+
+/** Recompose le canon_md depuis un document sectionné (inverse de parseCanonSections). */
+export function buildCanonFromSections(doc) {
+  const parts = [`# ${String(doc.h1 || "").trim() || "Bible sans titre"}`];
+  if (doc.preamble && doc.preamble.trim() !== "") parts.push(doc.preamble.trim());
+  for (const s of doc.sections) {
+    const title = String(s.title || "").trim() || "Sans titre";
+    const body = String(s.body || "").trim();
+    parts.push(body === "" ? `## ${title}` : `## ${title}\n\n${body}`);
+  }
+  return parts.join("\n\n") + "\n";
+}
+
+/** Libellés français des statuts (bibles et sessions). */
+export const STATUS_LABELS = {
+  draft: "Brouillon",
+  analyzing: "Analyse en cours",
+  analyzed: "Analysée",
+  ready: "Prête",
+  setup: "Préparation",
+  playing: "En jeu",
+  finished: "Terminée",
+  accepted: "Canonisé",
+  rejected: "Rejeté",
+};

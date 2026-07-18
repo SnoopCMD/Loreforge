@@ -17,6 +17,11 @@
 
 <header id="topbar" class="topbar hidden">
   <a class="brand" href="#/">Loreforge</a>
+  <nav class="topnav">
+    <a href="#/">Accueil</a>
+    <a href="#/play">Jouer</a>
+    <a href="#/library">Bibliothèque</a>
+  </nav>
   <button class="ghost" id="logout-btn">Se déconnecter</button>
 </header>
 
@@ -82,8 +87,14 @@
       <h2>Entrer dans la forge</h2>
       <form id="login-form">
         <input type="email" id="login-email" placeholder="votre@email.com" required autocomplete="email" />
-        <button type="submit">Recevoir le lien magique</button>
+        <input type="password" id="login-password" placeholder="Mot de passe (8 caractères min.)"
+               required minlength="8" autocomplete="current-password" />
+        <div class="row">
+          <button type="submit">Se connecter</button>
+          <button type="button" class="ghost" id="register-btn">Créer un compte</button>
+        </div>
       </form>
+      <p class="msg"><a href="#" id="magic-link-fallback">Mot de passe oublié ? Recevoir un lien magique par email.</a></p>
       <p id="login-msg" class="msg"></p>
     </div>
     <h2>Comment ça marche</h2>
@@ -106,19 +117,62 @@
   </defs>
 </svg>
 
-<!-- ── Bibliothèque ────────────────────────────────────────────────────── -->
+<!-- ── Accueil connecté ────────────────────────────────────────────────── -->
 <div class="app">
+<section id="screen-home" class="hidden">
+  <div class="home-hero">
+    <h1 class="home-title">La forge vous attend</h1>
+    <p class="home-sub" id="home-greeting">Que voulez-vous vivre aujourd'hui ?</p>
+  </div>
+  <div id="home-resume"></div>
+  <div class="doors home-doors">
+    <a class="panel door door-link" href="#/play">
+      <span class="door-icon" aria-hidden="true">
+        <svg viewBox="0 0 48 48" width="44" height="44"><circle cx="24" cy="24" r="21" fill="none" stroke="#7C3AED" stroke-width="2.5"/><path d="M18 15 L34 24 L18 33 Z" fill="#67E8F9"/></svg>
+      </span>
+      <h2>Jouer</h2>
+      <p class="msg">Choisissez un monde et partez en session — le Maître de Jeu vous attend.</p>
+    </a>
+    <a class="panel door door-link" href="#/library">
+      <span class="door-icon" aria-hidden="true">
+        <svg viewBox="0 0 48 48" width="44" height="44"><rect x="8" y="10" width="9" height="28" rx="1.5" fill="none" stroke="#7C3AED" stroke-width="2.5"/><rect x="20" y="10" width="9" height="28" rx="1.5" fill="none" stroke="#67E8F9" stroke-width="2.5"/><rect x="33" y="12" width="8" height="26" rx="1.5" transform="rotate(8 37 25)" fill="none" stroke="#F97316" stroke-width="2.5"/></svg>
+      </span>
+      <h2>Bibliothèque</h2>
+      <p class="msg">Importer, organiser, analyser et enrichir les bibles de vos univers.</p>
+    </a>
+  </div>
+</section>
+
+<!-- ── Choix du monde pour jouer ───────────────────────────────────────── -->
+<section id="screen-play" class="hidden">
+  <div class="row spread">
+    <h2>Dans quel monde partez-vous ?</h2>
+    <a class="msg" href="#/">← Accueil</a>
+  </div>
+  <div id="play-list"></div>
+</section>
+
+<!-- ── Bibliothèque ────────────────────────────────────────────────────── -->
 <section id="screen-library" class="hidden">
-  <h2>Bibliothèque</h2>
+  <div class="row spread">
+    <h2>Bibliothèque</h2>
+    <a class="msg" href="#/">← Accueil</a>
+  </div>
   <div id="bible-list"></div>
   <div class="panel">
-    <h2>Importer une bible</h2>
-    <input type="text" id="import-title" placeholder="Titre (optionnel, sinon déduit du Markdown)" />
-    <textarea id="import-md" placeholder="# Mon Univers&#10;&#10;Collez ici le Markdown de votre bible…"></textarea>
-    <div class="row">
-      <button id="import-btn">Importer</button>
-      <label class="msg">ou fichier .md : <input type="file" id="import-file" accept=".md,.markdown,.txt" /></label>
-    </div>
+    <h2>Forger une nouvelle bible</h2>
+    <p class="msg">Importez le document de votre univers — il devient une bible jouable.</p>
+    <input type="text" id="import-title" placeholder="Titre (optionnel, sinon déduit du document)" />
+    <label class="import-drop" for="import-file">
+      <span class="import-drop-main">Choisir un fichier</span>
+      <span class="msg">.md, .txt, .zip (export Notion), .pdf ou .docx — 25 Mo max</span>
+      <input type="file" id="import-file" accept=".md,.markdown,.txt,.zip,.pdf,.docx" hidden />
+    </label>
+    <details>
+      <summary class="msg">…ou coller du Markdown</summary>
+      <textarea id="import-md" placeholder="# Mon Univers&#10;&#10;Collez ici le Markdown de votre bible…"></textarea>
+      <div class="row"><button id="import-btn">Importer le texte</button></div>
+    </details>
     <p id="import-msg" class="msg"></p>
   </div>
 </section>
@@ -127,8 +181,18 @@
 <section id="screen-bible" class="hidden">
   <div class="row spread">
     <h2 id="detail-title"></h2>
-    <a class="msg" href="#/">← Bibliothèque</a>
+    <span class="row bible-actions">
+      <button class="ghost" id="rename-btn">Renommer</button>
+      <button class="danger" id="delete-btn">Supprimer</button>
+      <a class="msg" href="#/library">← Bibliothèque</a>
+    </span>
   </div>
+  <div class="row hidden" id="rename-row">
+    <input type="text" id="rename-input" style="width:18rem" />
+    <button id="rename-save-btn">Valider</button>
+    <button class="ghost" id="rename-cancel-btn">Annuler</button>
+  </div>
+  <p id="detail-msg" class="msg"></p>
 
   <div class="panel">
     <div class="row spread">
@@ -183,12 +247,23 @@
   </div>
 
   <div class="panel">
-    <h2 id="canon-title">Canon</h2>
-    <textarea id="canon-editor"></textarea>
+    <div class="row spread">
+      <h2 id="canon-title">Canon</h2>
+      <button class="ghost" id="add-section-btn">+ Ajouter une section</button>
+    </div>
+    <p class="msg">Réorganisez, renommez, ajoutez ou retirez des sections, puis enregistrez.</p>
+    <div id="section-list"></div>
     <div class="row">
       <button id="save-canon-btn">Enregistrer</button>
       <span id="save-msg" class="msg"></span>
     </div>
+    <details id="raw-editor-details">
+      <summary class="msg">Éditeur brut (Markdown complet)</summary>
+      <textarea id="canon-editor"></textarea>
+      <div class="row">
+        <button class="ghost" id="save-raw-btn">Enregistrer le brut</button>
+      </div>
+    </details>
   </div>
 </section>
 

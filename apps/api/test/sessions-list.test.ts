@@ -93,15 +93,36 @@ describe("GET /api/sessions?bible_id=", () => {
     }
   });
 
-  it("400 sans bible_id, 404 pour la bible d'un autre", async () => {
+  it("404 pour la bible d'un autre", async () => {
     const alice = await login("alice3@example.com");
     const bob = await login("bob3@example.com");
     const bibleId = await createBible(alice);
 
-    expect((await get(alice, "/api/sessions")).status).toBe(400);
     expect(
       (await get(bob, `/api/sessions?bible_id=${bibleId}`)).status,
     ).toBe(404);
+  });
+
+  it("sans bible_id : toutes les sessions de l'utilisateur, avec le titre de la bible", async () => {
+    const cookie = await login("all-sessions@example.com");
+    const other = await login("other-sessions@example.com");
+    const bible1 = await createBible(cookie);
+    const bible2 = await createBible(cookie);
+    const foreign = await createBible(other);
+    await createSession(cookie, bible1);
+    await createSession(cookie, bible2);
+    await createSession(other, foreign);
+
+    const res = await get(cookie, "/api/sessions");
+    expect(res.status).toBe(200);
+    const { sessions } = (await res.json()) as {
+      sessions: Array<Record<string, unknown>>;
+    };
+    expect(sessions).toHaveLength(2);
+    for (const s of sessions) {
+      expect([bible1, bible2]).toContain(s.bible_id);
+      expect(s.bible_title).toBe("Les Mondes Fêlés");
+    }
   });
 });
 
