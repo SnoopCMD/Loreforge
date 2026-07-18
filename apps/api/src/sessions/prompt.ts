@@ -114,9 +114,13 @@ ${tone}
 
 == RÈGLES DE JEU ==
 Système Souffle : d6 serveur uniquement. Ne lance JAMAIS de dé toi-même ni
-n'annonce de résultat : quand une action est risquée, termine ton tour par
-<roll reason="..."/> et attends le résultat (1-2 échec avec complication,
-3-4 réussite avec coût, 5-6 réussite franche).
+n'annonce de résultat. Quand une action est risquée : narre JUSQU'À l'instant
+de bascule (le geste s'amorce, l'issue reste incertaine), SANS décrire le
+résultat ni la moindre conséquence, puis émets <roll reason="..."/> et
+termine ton tour immédiatement — pas une phrase de plus. Le résultat
+(1-2 échec avec complication, 3-4 réussite avec coût, 5-6 réussite franche)
+te sera transmis au tour suivant : reprends alors la narration exactement où
+elle s'était arrêtée et raconte l'issue selon ce résultat.
 Le joueur dispose de ${SOUFFLE_MAX} points de Souffle par session ; 1 point transforme
 un échec en réussite ou dope un pouvoir. À 0, épuisement (malus narratif).
 Quand la fiction consomme ou rend du Souffle, émets <souffle delta="-1"/>
@@ -137,13 +141,17 @@ ${facts}
 - Réponds en français, uniquement la narration (plus les balises prévues).`;
 }
 
-/** Message utilisateur du tour : injecte le résultat du d6 s'il y en a un. */
+/** Message utilisateur du tour : injecte le résultat du d6 s'il y en a un.
+ * Saisie vide + jet = tour de continuation (le MJ reprend la narration). */
 export function buildTurnMessage(
   playerInput: string,
   lastRoll: RollResult | null,
 ): string {
   if (!lastRoll) return playerInput;
-  return `[Jet d6 (${lastRoll.reason}) : ${lastRoll.value} → ${describeOutcome(lastRoll.outcome)}]\n\n${playerInput}`;
+  const rollLine = `[Jet d6 (${lastRoll.reason}) : ${lastRoll.value} → ${describeOutcome(lastRoll.outcome)}]`;
+  return playerInput.trim() === ""
+    ? rollLine
+    : `${rollLine}\n\n${playerInput}`;
 }
 
 /** Premier message utilisateur : réponses de mise en place + scène 1. */

@@ -18,6 +18,11 @@ export interface Env {
   RESEND_API_KEY?: string;
   // Adresse expéditrice ; défaut onboarding@resend.dev (voir auth/email.ts).
   MAIL_FROM?: string;
+  // Secret (wrangler secret put CARTESIA_API_KEY) — narration vocale (TTS).
+  // Absent : /api/tts répond 503 et le front masque le bouton d'écoute.
+  CARTESIA_API_KEY?: string;
+  // Voix française par défaut ; surchargeable via var CARTESIA_VOICE_ID.
+  CARTESIA_VOICE_ID?: string;
 }
 
 export interface User {

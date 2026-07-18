@@ -312,6 +312,24 @@ svg .score-label { fill: var(--spirit); font-family: "JetBrains Mono", monospace
   line-height: 1.7;
 }
 .narration .gm p { margin-bottom: 1em; }
+
+/* Narration vocale : bouton d'écoute discret au bas d'un bloc du MJ. */
+.narration .gm { position: relative; }
+.voice-btn {
+  margin-top: 0.2rem;
+  padding: 0.15rem 0.5rem;
+  font-size: 0.95rem;
+  line-height: 1;
+  border-radius: 999px;
+  opacity: 0.5;
+  transition: opacity 0.2s ease, color 0.2s ease;
+}
+.narration .gm:hover .voice-btn { opacity: 1; }
+.voice-btn.playing { opacity: 1; color: var(--spirit); border-color: var(--spirit); }
+.voice-btn.loading { opacity: 1; animation: caret-pulse 1s ease-in-out infinite; }
+.voice-btn.failed { color: var(--danger, #f6a); border-color: var(--danger, #f6a); }
+#voice-toggle.on { color: var(--spirit); border-color: var(--spirit); }
+#voice-toggle.speaking { animation: caret-pulse 1.4s ease-in-out infinite; }
 .narration .player {
   margin: 1.4rem 0;
   padding: 0.6rem 1rem;

@@ -7,6 +7,7 @@ import { proposals } from "./bibles/proposals";
 import { sheetRoutes } from "./characters/sheet-routes";
 import { characters } from "./characters/routes";
 import { sessions } from "./sessions/routes";
+import { tts } from "./tts/routes";
 
 export { GameSession } from "./sessions/do";
 
@@ -20,6 +21,7 @@ app.route("/api/bibles", sheetRoutes);
 app.route("/api/bibles", bibles);
 app.route("/api/characters", characters);
 app.route("/api/sessions", sessions);
+app.route("/api/tts", tts);
 
 // Hors /api : front statique via le binding ASSETS (en prod le runtime sert
 // les assets avant le worker ; ce fallback couvre les tests et run_worker_first).

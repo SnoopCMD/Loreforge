@@ -345,7 +345,11 @@
   </div>
   <div class="row spread session-head">
     <span id="session-bible" class="msg"></span>
-    <button class="ghost" id="rail-toggle">Fiche &amp; Souffle</button>
+    <span class="row">
+      <button class="ghost hidden" id="voice-toggle" aria-pressed="false"
+        title="Lire chaque tour du MJ à voix haute">🔊 Voix du MJ</button>
+      <button class="ghost" id="rail-toggle">Fiche &amp; Souffle</button>
+    </span>
   </div>
   <div class="session-screen" id="session-layout">
     <div class="narration" id="feed" aria-live="polite"></div>

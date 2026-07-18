@@ -86,11 +86,14 @@ export function createSseParser(onEvent) {
 export const esc = (s) =>
   String(s).replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
 
+/** Markdown inline (gras/italique) échappé — aussi utilisé par le fil de session. */
+export const mdInline = (s) =>
+  esc(s)
+    .replace(/\*\*([^*]+)\*\*/g, "<b>$1</b>")
+    .replace(/\*([^*]+)\*/g, "<i>$1</i>");
+
 export function mdToHtml(md) {
-  const inline = (s) =>
-    esc(s)
-      .replace(/\*\*([^*]+)\*\*/g, "<b>$1</b>")
-      .replace(/\*([^*]+)\*/g, "<i>$1</i>");
+  const inline = mdInline;
   const out = [];
   let list = null;
   let para = [];

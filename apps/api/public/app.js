@@ -5,7 +5,7 @@
 import {
   AXES, AXIS_LABELS, FORMAT_LABELS, GENERIC_FIELDS, OUTCOME_LABELS,
   STATUS_LABELS, buildCanonFromSections, createSseParser, esc,
-  extractActionChips, labelFor, mdToHtml, parseCanonSections,
+  extractActionChips, labelFor, mdInline, mdToHtml, parseCanonSections,
 } from "/core.js";
 
 const $ = (id) => document.getElementById(id);
@@ -163,6 +163,7 @@ function showScreen(id) {
   $("topbar").classList.toggle("hidden", id === "screen-landing");
   clearInterval(pollTimer);
   pollTimer = null;
+  if (typeof stopVoice === "function") stopVoice();
   window.scrollTo(0, 0);
 }
 
@@ -196,6 +197,7 @@ async function boot() {
   authed = me.ok;
   if (me.ok) {
     try { currentUser = (await me.json()).user; } catch { /* sans gravité */ }
+    probeVoice(); // en tâche de fond : décide si le bouton d'écoute existe
   }
   route();
 }
@@ -1351,6 +1353,14 @@ function startSessionScreen(id, { fresh = false } = {}) {
   showSceneOverlay(fresh ? "Scène 1" : info ? info.title : "La session reprend");
   updateRail();
   lockInput(true);
+
+  // Narration vocale : le toggle n'apparaît que si le serveur est configuré.
+  const vtoggle = $("voice-toggle");
+  vtoggle.classList.toggle("hidden", !voice.ready);
+  voice.enabled = voice.ready && Boolean(store.get("lf:voice"));
+  vtoggle.setAttribute("aria-pressed", String(voice.enabled));
+  vtoggle.classList.toggle("on", voice.enabled);
+  vtoggle.textContent = voice.enabled ? "🔊 Voix activée" : "🔊 Voix du MJ";
 }
 
 function showSceneOverlay(title) {
@@ -1367,7 +1377,7 @@ function addPlayerEntry(text) {
   div.className = "player chunk";
   div.textContent = text;
   $("feed").appendChild(div);
-  scrollFeed();
+  scrollFeed(true);
 }
 
 function addSceneSep(label = "❖") {
@@ -1381,30 +1391,30 @@ function newGmWriter() {
   const gm = document.createElement("div");
   gm.className = "gm";
   $("feed").appendChild(gm);
-  let p = null;
   const caret = document.createElement("span");
   caret.className = "caret";
-  const ensureP = () => {
+  let p = null;
+  let raw = ""; // texte brut du paragraphe courant, re-rendu à chaque delta
+  const render = () => {
     if (!p) {
       p = document.createElement("p");
+      p.className = "chunk";
       gm.appendChild(p);
     }
+    // Le Markdown inline (**gras**, *italique*) se forme au fil du flux.
+    p.innerHTML = mdInline(raw);
+    p.appendChild(caret);
   };
-  ensureP();
-  p.appendChild(caret);
+  render();
   return {
     write(text) {
       const parts = text.split("\n");
       parts.forEach((part, i) => {
         // Nouveau paragraphe seulement si le courant a du contenu.
-        if (i > 0 && p && p.textContent.trim() !== "") p = null;
+        if (i > 0 && raw.trim() !== "") { p = null; raw = ""; }
         if (part === "") return;
-        ensureP();
-        const span = document.createElement("span");
-        span.className = "chunk";
-        span.textContent = part;
-        caret.remove();
-        p.append(span, caret);
+        raw += part;
+        render();
       });
       scrollFeed();
     },
@@ -1414,7 +1424,9 @@ function newGmWriter() {
       for (const empty of gm.querySelectorAll("p")) {
         if (empty.textContent.trim() === "") empty.remove();
       }
+      attachVoiceButton(gm);
     },
+    el: gm,
   };
 }
 
@@ -1475,9 +1487,214 @@ function addFeedError(text) {
   scrollFeed();
 }
 
-function scrollFeed() {
-  window.scrollTo({ top: document.body.scrollHeight });
+// Le fil ne « colle » en bas que si le lecteur y est déjà : remonter à la
+// main suspend l'auto-scroll, redescendre en bas le réactive.
+let stickToBottom = true;
+window.addEventListener("scroll", () => {
+  stickToBottom =
+    window.innerHeight + window.scrollY >= document.body.scrollHeight - 80;
+}, { passive: true });
+
+function scrollFeed(force = false) {
+  if (force) stickToBottom = true;
+  if (stickToBottom) window.scrollTo({ top: document.body.scrollHeight });
 }
+
+// — Narration vocale (Cartesia, palier 2 : lecture en flux, phrase par phrase) —
+//
+// Pendant que le texte s'écrit, on découpe la narration en phrases ; chaque
+// phrase complète part en synthèse et les clips s'enchaînent dans l'ordre.
+// La voix suit donc le texte avec un léger décalage. Un jeton `seq` invalide
+// tout l'audio d'un tour dès qu'un nouveau tour (ou une navigation) démarre.
+
+const voice = {
+  ready: false, // clé ET voix configurées côté serveur
+  enabled: false, // lecture auto pendant l'écriture
+  current: null, // <audio> en cours
+  currentBtn: null, // bouton d'un bloc joué manuellement
+  cache: new Map(), // texte → object URL (évite de re-facturer)
+  seq: 0, // génération courante ; incrémenté à chaque coupure
+  streamBuf: "", // narration reçue mais pas encore découpée en phrases
+  queue: [], // { p: Promise<url|null>, seq } à jouer dans l'ordre
+  pumping: false, // boucle de lecture active
+};
+
+async function probeVoice() {
+  try {
+    const res = await api("/tts");
+    if (!res.ok) return;
+    const body = await res.json();
+    voice.ready = Boolean(body.available && body.voice_configured);
+  } catch { /* voix indisponible : on reste muet, sans bruit */ }
+}
+
+function stopVoice() {
+  voice.seq++; // invalide fetches et clips en vol
+  voice.queue = [];
+  voice.streamBuf = "";
+  if (voice.current) {
+    voice.current.pause();
+    voice.current = null;
+  }
+  if (voice.currentBtn) {
+    voice.currentBtn.classList.remove("playing");
+    voice.currentBtn.textContent = "🔊";
+    voice.currentBtn = null;
+  }
+  $("voice-toggle").classList.remove("speaking");
+}
+
+/** Récupère (ou réutilise) l'audio d'un texte. null si échec. */
+async function ttsUrl(text) {
+  const cached = voice.cache.get(text);
+  if (cached) return cached;
+  try {
+    const res = await api("/tts", jsonPost({ text }));
+    if (!res.ok) return null;
+    const url = URL.createObjectURL(await res.blob());
+    voice.cache.set(text, url);
+    return url;
+  } catch { return null; }
+}
+
+// Texte prêt pour la synthèse : sans balises Markdown, espaces normalisés.
+const cleanForTts = (s) => s.replace(/\*+/g, "").replace(/\s+/g, " ").trim();
+
+/** Découpe streamBuf en phrases complètes (ponctuation + espace, ou saut de
+ * ligne). Le reliquat incomplet est gardé pour le prochain delta. */
+function drainSentences() {
+  const buf = voice.streamBuf;
+  const sentences = [];
+  let start = 0;
+  for (let i = 0; i < buf.length; i++) {
+    const c = buf[i];
+    if (c === "\n") {
+      const seg = buf.slice(start, i).trim();
+      if (seg) sentences.push(seg);
+      start = i + 1;
+      continue;
+    }
+    if (c === "." || c === "!" || c === "?" || c === "…") {
+      let j = i + 1;
+      while (j < buf.length && "\"»”)]".includes(buf[j])) j++;
+      // Une phrase n'est sûre que suivie d'un blanc (sinon "3.5", "M."… coupés).
+      if (j < buf.length && /\s/.test(buf[j])) {
+        sentences.push(buf.slice(start, j).trim());
+        while (j < buf.length && /\s/.test(buf[j])) j++;
+        start = j;
+        i = j - 1;
+      }
+    }
+  }
+  voice.streamBuf = buf.slice(start);
+  return sentences.filter(Boolean);
+}
+
+function enqueueSentence(text) {
+  const clean = cleanForTts(text);
+  if (!clean) return;
+  const seq = voice.seq;
+  voice.queue.push({ p: ttsUrl(clean), seq });
+  pumpStream();
+}
+
+/** Alimente le flux vocal avec un delta de narration. */
+function feedVoice(delta) {
+  voice.streamBuf += delta;
+  for (const s of drainSentences()) enqueueSentence(s);
+}
+
+/** Fin de tour : lit le reliquat de phrase resté en tampon. */
+function flushVoice() {
+  const tail = voice.streamBuf.trim();
+  voice.streamBuf = "";
+  if (tail) enqueueSentence(tail);
+}
+
+function playClip(url, seq) {
+  return new Promise((resolve) => {
+    if (seq !== voice.seq || !url) return resolve();
+    const audio = new Audio(url);
+    voice.current = audio;
+    audio.addEventListener("ended", resolve, { once: true });
+    audio.addEventListener("error", resolve, { once: true });
+    audio.play().catch(() => resolve());
+  });
+}
+
+/** Joue les clips de la file dans l'ordre, un seul à la fois. */
+async function pumpStream() {
+  if (voice.pumping) return;
+  voice.pumping = true;
+  $("voice-toggle").classList.add("speaking");
+  try {
+    while (voice.queue.length) {
+      const item = voice.queue[0];
+      if (item.seq !== voice.seq) { voice.queue.shift(); continue; }
+      const url = await item.p; // pré-synthèse déjà lancée à l'enqueue
+      if (voice.queue[0] === item) voice.queue.shift();
+      if (item.seq !== voice.seq) continue;
+      await playClip(url, item.seq);
+    }
+  } finally {
+    voice.pumping = false;
+    voice.current = null;
+    $("voice-toggle").classList.remove("speaking");
+  }
+}
+
+/** Lecture manuelle d'un bloc entier (bouton 🔊). Indépendante du flux. */
+async function playText(text, btn) {
+  stopVoice();
+  btn.classList.add("loading");
+  btn.disabled = true;
+  try {
+    const url = await ttsUrl(cleanForTts(text));
+    if (!url) { btn.classList.add("failed"); return; }
+    const audio = new Audio(url);
+    voice.current = audio;
+    voice.currentBtn = btn;
+    btn.classList.add("playing");
+    btn.textContent = "⏸";
+    audio.addEventListener("ended", () => {
+      if (voice.currentBtn === btn) stopVoice();
+    });
+    await audio.play();
+  } catch { btn.classList.add("failed"); }
+  finally { btn.classList.remove("loading"); btn.disabled = false; }
+}
+
+/** Ajoute le bouton d'écoute au bas d'un bloc de narration du MJ. */
+function attachVoiceButton(gmEl) {
+  if (!voice.ready || gmEl.querySelector(".voice-btn")) return;
+  const text = gmEl.textContent.trim();
+  if (text === "") return;
+  const btn = document.createElement("button");
+  btn.type = "button";
+  btn.className = "voice-btn ghost";
+  btn.title = "Écouter ce passage";
+  btn.textContent = "🔊";
+  btn.addEventListener("click", () => {
+    // Re-clic sur le bloc en cours → arrêt.
+    if (voice.currentBtn === btn && voice.current && !voice.current.paused) {
+      stopVoice();
+      return;
+    }
+    playText(text, btn);
+  });
+  gmEl.appendChild(btn);
+  return btn;
+}
+
+$("voice-toggle").addEventListener("click", () => {
+  voice.enabled = !voice.enabled;
+  const btn = $("voice-toggle");
+  btn.setAttribute("aria-pressed", String(voice.enabled));
+  btn.classList.toggle("on", voice.enabled);
+  btn.textContent = voice.enabled ? "🔊 Voix activée" : "🔊 Voix du MJ";
+  store.set("lf:voice", voice.enabled);
+  if (!voice.enabled) stopVoice();
+});
 
 // — Rail —
 
@@ -1578,6 +1795,7 @@ function sendTurn() {
 
 function runGeneration(sessionId, path, body, retryText = null) {
   S.streaming = true;
+  stopVoice(); // une nouvelle narration coupe la lecture en cours
   lockInput(true);
   renderActionChips(null);
   S.writer = newGmWriter();
@@ -1585,7 +1803,11 @@ function runGeneration(sessionId, path, body, retryText = null) {
   let gmText = "";
 
   sse(path, body, {
-    narration: (d) => { gmText += d.text; writer.write(d.text); },
+    narration: (d) => {
+      gmText += d.text;
+      writer.write(d.text);
+      if (voice.enabled) feedVoice(d.text);
+    },
     roll: (d) => {
       if (S.rollShown) { S.rollShown = false; return; }
       addRollBlock(d);
@@ -1627,6 +1849,8 @@ function runGeneration(sessionId, path, body, retryText = null) {
       updateRail();
       lockInput(false);
       $("player-input").focus();
+      // Voix activée : on lit le reliquat de phrase resté en tampon.
+      if (voice.enabled) flushVoice();
     });
 }
 
@@ -1655,9 +1879,13 @@ async function doRoll() {
   S.lastRoll = body;
   S.rollShown = true; // l'event SSE `roll` du prochain tour ne sera pas ré-affiché
   addRollBlock(body, { animate: true });
+  scrollFeed(true);
   updateRail();
-  lockInput(false);
-  $("player-input").focus();
+  // La narration reprend d'elle-même là où le MJ l'avait suspendue : tour
+  // de continuation sans saisie (le dé animé se pose d'abord).
+  setTimeout(() => {
+    runGeneration(S.id, "/sessions/" + S.id + "/turn", { player_input: "" });
+  }, 700);
 }
 
 // — Reprise d'une session existante —
@@ -1681,7 +1909,8 @@ async function enterSession(id) {
 
   for (const entry of state.log || []) {
     if (entry.role === "player") {
-      addPlayerEntry(entry.text);
+      // Entrée vide = tour de continuation post-jet, rien à afficher.
+      if (entry.text.trim() !== "") addPlayerEntry(entry.text);
     } else {
       const writer = newGmWriter();
       writer.write(entry.text);
@@ -1699,7 +1928,12 @@ async function enterSession(id) {
   }
   updateRail();
   lockInput(false);
-  scrollFeed();
+  scrollFeed(true);
+  // Jet lancé mais jamais raconté (refresh entre le dé et la suite) :
+  // la narration suspendue reprend d'elle-même.
+  if (S.lastRoll && !S.pendingRoll) {
+    runGeneration(id, "/sessions/" + id + "/turn", { player_input: "" });
+  }
 }
 
 // §8.3 — robustesse aux verrouillages d'écran mobile : au retour au premier

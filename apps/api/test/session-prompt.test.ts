@@ -88,6 +88,15 @@ describe("buildTurnMessage / buildSetupMessage", () => {
     expect(buildTurnMessage("Je marche.", null)).toBe("Je marche.");
   });
 
+  it("saisie vide + jet = tour de continuation (le jet seul)", () => {
+    const msg = buildTurnMessage("", {
+      value: 1,
+      outcome: "failure_complication",
+      reason: "frappe",
+    });
+    expect(msg).toBe("[Jet d6 (frappe) : 1 → échec avec complication]");
+  });
+
   it("apparie questions et réponses de mise en place", () => {
     const msg = buildSetupMessage(["Q1 ?", "Q2 ?"], ["Réponse 1", ""]);
     expect(msg).toContain("Q : Q1 ?\nR : Réponse 1");

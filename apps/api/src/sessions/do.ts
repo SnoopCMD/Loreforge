@@ -257,11 +257,7 @@ export class GameSession extends DurableObject<Env> {
       return json({ error: "invalid_status", status: meta.status }, 409);
     }
     const input = (body as { player_input?: unknown }).player_input;
-    if (
-      typeof input !== "string" ||
-      input.trim() === "" ||
-      input.length > MAX_PLAYER_INPUT_CHARS
-    ) {
+    if (typeof input !== "string" || input.length > MAX_PLAYER_INPUT_CHARS) {
       return json({ error: "invalid_player_input" }, 400);
     }
 
@@ -270,8 +266,13 @@ export class GameSession extends DurableObject<Env> {
       return json({ error: "roll_required", reason: state.pending_roll }, 409);
     }
 
-    // Le résultat du dernier jet est consommé par ce tour.
+    // Le résultat du dernier jet est consommé par ce tour. Une saisie vide
+    // n'est valide que pour lui : c'est le tour de continuation post-jet,
+    // où le MJ reprend la narration là où il l'avait suspendue.
     const consumedRoll = state.last_roll;
+    if (input.trim() === "" && !consumedRoll) {
+      return json({ error: "invalid_player_input" }, 400);
+    }
     state.last_roll = null;
 
     return this.generate(
@@ -347,7 +348,13 @@ export class GameSession extends DurableObject<Env> {
       turn_count: state.turn_count,
       log: turns.map((t) => ({
         role: t.role === "assistant" ? "gm" : "player",
-        text: t.role === "assistant" ? stripGmTags(t.text).trim() : t.text,
+        // Côté joueur, la ligne technique du jet est retirée : le client
+        // affiche le jet via son propre bloc dédié. Un tour de continuation
+        // post-jet devient donc une entrée vide, ignorée à l'affichage.
+        text:
+          t.role === "assistant"
+            ? stripGmTags(t.text).trim()
+            : t.text.replace(/^\[Jet d6 [^\]]*\]\s*/, ""),
       })),
     };
   }
