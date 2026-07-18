@@ -473,6 +473,12 @@ svg .score-label { fill: var(--spirit); font-family: "JetBrains Mono", monospace
   font-family: "JetBrains Mono", monospace; font-size: 0.72rem;
   color: var(--arcane); text-transform: uppercase; letter-spacing: 0.08em;
 }
+.invention-item .content { margin-top: 0.35rem; white-space: pre-wrap; }
+.invention-item .actions { gap: 0.5rem; }
+.invention-item .actions button { padding: 0.3rem 0.9rem; font-size: 0.8rem; }
+.invention-item.accepted { border-left-color: var(--spirit); }
+.invention-item.rejected { opacity: 0.55; }
+.status.accepted { border-color: var(--spirit); color: var(--spirit); }
 
 /* ── Responsive (session jouable au pouce) ────────────────────────────── */
 

@@ -405,9 +405,35 @@ export class GameSession extends DurableObject<Env> {
     // Purge du cache chaud (SPEC §5).
     await this.env.CACHE.delete(sessionKvKey(meta.sessionId));
 
+    // Boucle canon (M5) : chaque invention devient une proposition en attente,
+    // tranchée ensuite via POST /api/bibles/:id/proposals/:pid.
     const inventions =
       (await this.ctx.storage.get<Invention[]>("inventions")) ?? [];
-    return json({ summary_md: summaryMd, inventions });
+    const now = Date.now();
+    const proposals = inventions
+      .filter((inv) => inv.content.trim() !== "")
+      .map((inv) => ({
+        id: crypto.randomUUID(),
+        session_id: meta.sessionId,
+        bible_id: meta.bibleId,
+        content_md: inv.content,
+        axis: inv.axis,
+        status: "pending",
+        created_at: now,
+      }));
+    if (proposals.length > 0) {
+      const stmt = this.env.DB.prepare(
+        `INSERT INTO canon_proposals
+           (id, session_id, bible_id, content_md, axis, status, created_at)
+         VALUES (?, ?, ?, ?, ?, 'pending', ?)`,
+      );
+      await this.env.DB.batch(
+        proposals.map((p) =>
+          stmt.bind(p.id, p.session_id, p.bible_id, p.content_md, p.axis, p.created_at),
+        ),
+      );
+    }
+    return json({ summary_md: summaryMd, inventions, proposals });
   }
 
   // ── Génération streamée (setup et turn) ───────────────────────────────

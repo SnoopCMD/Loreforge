@@ -367,6 +367,7 @@ async function showBible(id) {
   $("character-fiche").innerHTML = "";
   renderStatus(currentBible.status);
   refreshRichness();
+  loadProposals(id);
   loadCharacters(id);
   loadSessions(id);
 }
@@ -458,6 +459,73 @@ function renderGaps(gaps) {
       $("canon-editor").focus({ preventScroll: true });
     });
     list.appendChild(btn);
+  }
+}
+
+// ── Propositions de canon (boucle M5) ────────────────────────────────────
+
+function proposalItem(p, bibleId, { onAccepted } = {}) {
+  const div = document.createElement("div");
+  div.className = "invention-item";
+  div.innerHTML =
+    '<div class="row spread"><span class="axis"></span><span class="row actions"></span></div>' +
+    '<div class="content"></div>';
+  div.querySelector(".axis").textContent = AXIS_LABELS[p.axis] || p.axis;
+  div.querySelector(".content").textContent = p.content_md;
+  const actions = div.querySelector(".actions");
+  const setDecided = (status) => {
+    actions.innerHTML = "";
+    const chip = document.createElement("span");
+    chip.className = "status " + status;
+    chip.textContent = status === "accepted" ? "canonisé" : "rejeté";
+    actions.appendChild(chip);
+    div.classList.add(status);
+  };
+  if (p.status !== "pending") {
+    setDecided(p.status);
+    return div;
+  }
+  const accept = document.createElement("button");
+  accept.textContent = "Canoniser";
+  const reject = document.createElement("button");
+  reject.className = "ghost";
+  reject.textContent = "Rejeter";
+  const decide = async (action) => {
+    accept.disabled = reject.disabled = true;
+    const res = await api(
+      "/bibles/" + bibleId + "/proposals/" + p.id,
+      jsonPost({ action }),
+    );
+    const body = await res.json();
+    if (!res.ok && body.error !== "already_decided") {
+      accept.disabled = reject.disabled = false;
+      return;
+    }
+    const status = res.ok ? body.proposal.status : body.status;
+    setDecided(status);
+    if (status === "accepted" && onAccepted) onAccepted(res.ok ? body.canon_md : null);
+  };
+  accept.addEventListener("click", () => decide("accept"));
+  reject.addEventListener("click", () => decide("reject"));
+  actions.append(accept, reject);
+  return div;
+}
+
+async function loadProposals(bibleId) {
+  const panel = $("proposals-panel");
+  const list = $("proposal-list");
+  list.innerHTML = "";
+  const res = await api("/bibles/" + bibleId + "/proposals?status=pending");
+  if (!res.ok) { panel.classList.add("hidden"); return; }
+  const { proposals } = await res.json();
+  panel.classList.toggle("hidden", proposals.length === 0);
+  for (const p of proposals) {
+    list.appendChild(
+      proposalItem(p, bibleId, {
+        // Le canon renvoyé par l'accept remplace l'éditeur (état serveur).
+        onAccepted(canonMd) { if (canonMd !== null) $("canon-editor").value = canonMd; },
+      }),
+    );
   }
 }
 
@@ -1030,18 +1098,32 @@ async function showEnd(id) {
     ? mdToHtml(data.summary_md)
     : '<p class="msg">Résumé indisponible.</p>';
 
-  const inventions = data && Array.isArray(data.inventions) ? data.inventions : null;
-  $("end-inventions-panel").classList.toggle("hidden", !inventions || inventions.length === 0);
   const list = $("end-inventions");
   list.innerHTML = "";
-  for (const inv of inventions || []) {
-    const div = document.createElement("div");
-    div.className = "invention-item";
-    div.innerHTML = '<span class="axis"></span><div class="content"></div>';
-    div.querySelector(".axis").textContent = AXIS_LABELS[inv.axis] || inv.axis;
-    div.querySelector(".content").textContent = inv.content;
-    list.appendChild(div);
+  let shown = false;
+  if (info) {
+    const res = await api(
+      "/bibles/" + info.id + "/proposals?session_id=" + encodeURIComponent(id),
+    );
+    if (res.ok) {
+      const { proposals } = await res.json();
+      for (const p of proposals) list.appendChild(proposalItem(p, info.id));
+      shown = proposals.length > 0;
+    }
   }
+  if (!shown && data && Array.isArray(data.inventions) && data.inventions.length) {
+    // Repli lecture seule : la bible de la session n'est pas connue côté client.
+    for (const inv of data.inventions) {
+      const div = document.createElement("div");
+      div.className = "invention-item";
+      div.innerHTML = '<span class="axis"></span><div class="content"></div>';
+      div.querySelector(".axis").textContent = AXIS_LABELS[inv.axis] || inv.axis;
+      div.querySelector(".content").textContent = inv.content;
+      list.appendChild(div);
+    }
+    shown = true;
+  }
+  $("end-inventions-panel").classList.toggle("hidden", !shown);
 }
 
 boot();
