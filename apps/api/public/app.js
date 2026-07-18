@@ -1764,11 +1764,15 @@ function renderChoices(gmEl, gmText) {
     const btn = document.createElement("button");
     btn.type = "button";
     btn.className = "choice";
-    btn.textContent = action;
+    // Rend le Markdown inline (**gras**) plutôt que d'afficher les astérisques.
+    btn.innerHTML = mdInline(action);
     btn.addEventListener("click", () => {
       if (S.streaming || S.pendingRoll || S.status !== "playing") return;
       if ($("player-input").disabled) return;
-      $("player-input").value = action;
+      // Le choix devient la réponse écrite : les options disparaissent, la
+      // sélection réapparaît en entrée joueur (texte nettoyé du Markdown).
+      wrap.remove();
+      $("player-input").value = action.replace(/\*+/g, "");
       sendTurn();
     });
     wrap.appendChild(btn);

@@ -59,10 +59,10 @@
     // Passe à "production" via `wrangler deploy --var ENVIRONMENT:production`
     // ou un environnement wrangler dédié.
     "ENVIRONMENT": "development",
-    // Narration vocale (Cartesia) : voix FR « Mathieu - Assured Expert ».
+    // Narration vocale (Cartesia) : voix FR choisie par l'utilisateur.
     // La clé API vit en secret (CARTESIA_API_KEY) ; l'ID de voix n'est pas
     // sensible. Changer de voix = remplacer cet ID (voir /api/tts/voices?language=fr).
-    "CARTESIA_VOICE_ID": "93c98a2b-7d15-4f7b-8236-294b1e02b1c0"
+    "CARTESIA_VOICE_ID": "bfd5390b-e4f9-4e44-95ab-9ebd223acd62"
   },
   "observability": {
     "enabled": true
