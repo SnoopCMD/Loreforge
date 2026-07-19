@@ -143,11 +143,13 @@ export function extractActionChips(text) {
       if (chips.length) break;
       continue;
     }
-    const m = line.match(/^(?:[-•*]|\d+[).])\s+(.{3,120})$/);
+    // Une option concrète : puce/numéro + libellé (jusqu'à 200 car., le
+    // **gras** compris) ; on tolère jusqu'à 6 options pour n'en perdre aucune.
+    const m = line.match(/^(?:[-•*]|\d+[).])\s+(.{3,200})$/);
     if (!m) break;
     chips.unshift(m[1].replace(/\s*[;.]$/, ""));
   }
-  return chips.length >= 2 && chips.length <= 4 ? chips : [];
+  return chips.length >= 2 && chips.length <= 6 ? chips : [];
 }
 
 // ── Segmentation de la narration pour la lecture vocale (§8.3) ────────────

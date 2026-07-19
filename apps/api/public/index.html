@@ -307,13 +307,17 @@
 <!-- ── Questionnaire éclair (une question par vue) ─────────────────────── -->
 <section id="screen-quiz" class="hidden">
   <div class="row spread">
-    <h2>Questionnaire éclair</h2>
+    <h2>Création du personnage</h2>
     <a class="msg" id="quiz-back" href="#/">← Retour</a>
   </div>
-  <div class="panel">
+  <div class="panel creator">
     <p id="quiz-progress" class="msg mono"></p>
     <p id="quiz-question" class="quiz-question"></p>
-    <div id="quiz-choices" class="quiz-choices"></div>
+    <div class="creator-body">
+      <div id="quiz-choices" class="quiz-choices"></div>
+      <div id="quiz-desc" class="creator-desc"></div>
+    </div>
+    <div id="quiz-nav" class="creator-nav"></div>
     <p id="quiz-msg" class="msg"></p>
   </div>
   <div id="quiz-fiche"></div>

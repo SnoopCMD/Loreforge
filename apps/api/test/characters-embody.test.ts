@@ -169,8 +169,21 @@ describe("questionnaire éclair (Incarner-express)", () => {
     mockAnthropicText(
       JSON.stringify({
         questions: [
-          { question: "Quel pouvoir des failles ?", choices: ["Écho", "Verrou", "Chant"] },
-          { question: "Quel tempérament ?", choices: ["Fervent", "Sceptique"] },
+          {
+            question: "Quel genre ?",
+            choices: [
+              { label: "Femme", description: "" },
+              { label: "Homme", description: "" },
+            ],
+          },
+          {
+            question: "Quel pouvoir des failles ?",
+            choices: [
+              { label: "Écho", description: "Renvoie les sorts adverses." },
+              { label: "Verrou", description: "Scelle une faille d'un mot." },
+              { label: "Chant", description: "Ouvre les failles par la voix." },
+            ],
+          },
         ],
       }),
     );
@@ -179,10 +192,11 @@ describe("questionnaire éclair (Incarner-express)", () => {
     });
     expect(quizRes.status).toBe(200);
     const { questions } = (await quizRes.json()) as {
-      questions: Array<{ question: string; choices: string[] }>;
+      questions: Array<{ question: string; choices: Array<{ label: string; description: string }> }>;
     };
     expect(questions).toHaveLength(2);
-    expect(questions[0].choices).toContain("Écho");
+    expect(questions[1].choices.map((c) => c.label)).toContain("Écho");
+    expect(questions[1].choices[0].description).not.toBe("");
 
     mockAnthropicText(
       JSON.stringify({

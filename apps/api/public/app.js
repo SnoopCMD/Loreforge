@@ -1013,14 +1013,35 @@ async function showQuiz(bibleId) {
     return;
   }
 
-  const questions = body.questions;
-  const answers = [];
+  // Normalise chaque choix en { label, description } (repli si l'API renvoie
+  // encore de simples chaînes).
+  const questions = (body.questions || []).map((q) => ({
+    question: q.question,
+    choices: (q.choices || [])
+      .map((c) =>
+        typeof c === "string"
+          ? { label: c, description: "" }
+          : { label: c.label || "", description: c.description || "" },
+      )
+      .filter((c) => c.label !== ""),
+  }));
+  // Choix retenu par étape (index de choix, ou -1 si « Passer »).
+  const picks = questions.map(() => null);
   let i = 0;
 
   const submit = async () => {
     $("quiz-question").textContent = "";
     $("quiz-choices").innerHTML = "";
+    $("quiz-desc").innerHTML = "";
+    $("quiz-nav").innerHTML = "";
     $("quiz-progress").innerHTML = spin("L’esprit forge votre personnage…");
+    const answers = [];
+    questions.forEach((q, idx) => {
+      const pick = picks[idx];
+      if (pick !== null && pick >= 0) {
+        answers.push({ question: q.question, answer: q.choices[pick].label });
+      }
+    });
     const r = await api(
       "/characters/embody-quiz/answers",
       jsonPost({ bible_id: bibleId, answers }),
@@ -1054,31 +1075,77 @@ async function showQuiz(bibleId) {
     $("quiz-fiche").appendChild(row);
   };
 
+  // Affiche la description du choix retenu (ou une invite) dans le panneau
+  // latéral. mdInline rend le **gras** au lieu d'afficher les astérisques.
+  const showDesc = (choice) => {
+    const desc = $("quiz-desc");
+    if (choice && choice.description) {
+      desc.innerHTML =
+        '<span class="creator-desc-label">' + mdInline(choice.label) + "</span>" +
+        "<span>" + mdInline(choice.description) + "</span>";
+      desc.classList.add("filled");
+    } else if (choice) {
+      desc.innerHTML = "";
+      desc.classList.remove("filled");
+    } else {
+      desc.innerHTML =
+        '<span class="creator-desc-hint">Sélectionnez une option pour voir ce qu’elle implique.</span>';
+      desc.classList.remove("filled");
+    }
+  };
+
   const show = () => {
     if (i >= questions.length) { submit(); return; }
     const q = questions[i];
-    $("quiz-progress").textContent = (i + 1) + " / " + questions.length;
+    const pick = picks[i];
+    $("quiz-progress").textContent = "Étape " + (i + 1) + " / " + questions.length;
     $("quiz-question").textContent = q.question;
+
     const wrap = $("quiz-choices");
     wrap.innerHTML = "";
-    for (const choice of q.choices) {
+    q.choices.forEach((choice, idx) => {
       const b = document.createElement("button");
       b.type = "button";
-      b.className = "chip";
-      b.textContent = choice;
+      b.className = "creator-choice" + (pick === idx ? " selected" : "");
+      // Libellé « acté » ; le **gras** éventuel est rendu, pas affiché brut.
+      b.innerHTML = mdInline(choice.label);
       b.addEventListener("click", () => {
-        answers.push({ question: q.question, answer: choice });
-        i++;
+        picks[i] = idx;
         show();
       });
       wrap.appendChild(b);
-    }
+    });
+
+    showDesc(pick !== null && pick >= 0 ? q.choices[pick] : pick === -1 ? null : undefined);
+
+    // Barre de navigation : Précédent, Passer, Suivant/Créer.
+    const nav = $("quiz-nav");
+    nav.innerHTML = "";
+    const last = i === questions.length - 1;
+
+    const prev = document.createElement("button");
+    prev.type = "button";
+    prev.className = "ghost";
+    prev.textContent = "← Précédent";
+    prev.disabled = i === 0;
+    prev.addEventListener("click", () => { i--; show(); });
+
     const skip = document.createElement("button");
     skip.type = "button";
-    skip.className = "chip dim";
+    skip.className = "ghost";
     skip.textContent = "Passer";
-    skip.addEventListener("click", () => { i++; show(); });
-    wrap.appendChild(skip);
+    skip.addEventListener("click", () => { picks[i] = -1; i++; show(); });
+
+    const next = document.createElement("button");
+    next.type = "button";
+    next.textContent = last ? "Créer le personnage" : "Suivant →";
+    next.disabled = pick === null; // il faut choisir ou passer explicitement
+    next.addEventListener("click", () => { i++; show(); });
+
+    const left = document.createElement("div");
+    left.className = "row";
+    left.append(prev, skip);
+    nav.append(left, next);
   };
   show();
 }

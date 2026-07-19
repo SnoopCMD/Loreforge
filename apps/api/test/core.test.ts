@@ -48,8 +48,19 @@ describe("extractActionChips", () => {
   it("reste muet sans liste finale ou avec trop d'options", () => {
     expect(extractActionChips("Rien à proposer ici.")).toEqual([]);
     expect(extractActionChips("- Une seule option")).toEqual([]);
-    const five = Array.from({ length: 5 }, (_, i) => `- Option numéro ${i}`).join("\n");
-    expect(extractActionChips("Choix :\n" + five)).toEqual([]);
+    const seven = Array.from({ length: 7 }, (_, i) => `- Option numéro ${i}`).join("\n");
+    expect(extractActionChips("Choix :\n" + seven)).toEqual([]);
+  });
+
+  it("tolère jusqu'à 6 options, gras et libellés longs compris", () => {
+    const six = Array.from({ length: 6 }, (_, i) => `- Option ${i}`).join("\n");
+    expect(extractActionChips(six)).toHaveLength(6);
+    const long = "- " + "Négocier ".repeat(15).trim(); // > 120 caractères
+    const text = "- **Fuir** vers la forêt\n" + long;
+    expect(extractActionChips(text)).toEqual([
+      "**Fuir** vers la forêt",
+      "Négocier ".repeat(15).trim(),
+    ]);
   });
 });
 

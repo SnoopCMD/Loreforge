@@ -575,7 +575,40 @@ svg .score-label { fill: var(--spirit); font-family: "JetBrains Mono", monospace
 .char-pick[disabled] { opacity: 0.5; cursor: wait; }
 
 .quiz-question { font-size: 1.15rem; margin: 0.6rem 0 1rem; }
-.quiz-choices { display: flex; flex-direction: column; gap: 0.5rem; align-items: flex-start; }
+.quiz-choices { display: flex; flex-direction: column; gap: 0.5rem; align-items: stretch; }
+
+/* Créateur de personnage page-par-page (§6bis). */
+.creator-body {
+  display: grid; grid-template-columns: 1fr 1fr; gap: 1rem; align-items: start;
+}
+@media (max-width: 700px) { .creator-body { grid-template-columns: 1fr; } }
+
+.creator-choice {
+  font: inherit; font-size: 0.95rem; color: var(--parchment);
+  background: rgba(124, 58, 237, 0.12); border: 1px solid var(--arcane);
+  border-left-width: 3px; border-radius: 0 10px 10px 0;
+  padding: 0.6rem 0.9rem; cursor: pointer; text-align: left;
+  transition: background 0.15s ease, border-color 0.15s ease;
+}
+.creator-choice:hover { background: rgba(124, 58, 237, 0.28); border-left-color: var(--spirit); }
+.creator-choice:focus-visible { outline: 2px solid var(--spirit); outline-offset: 2px; }
+.creator-choice.selected {
+  background: rgba(103, 232, 249, 0.16);
+  border-color: var(--spirit); border-left-color: var(--spirit);
+  box-shadow: inset 0 0 0 1px var(--spirit);
+}
+
+.creator-desc {
+  border: 1px dashed var(--line); border-radius: 10px; padding: 0.85rem 1rem;
+  min-height: 4.5rem; display: flex; flex-direction: column; gap: 0.35rem;
+  color: var(--parchment); font-size: 0.92rem; line-height: 1.5;
+}
+.creator-desc.filled { border-style: solid; border-color: var(--arcane); }
+.creator-desc-label { font-weight: 600; color: var(--spirit); }
+.creator-desc-hint { color: var(--parchment-dim); font-style: italic; }
+
+.creator-nav { display: flex; justify-content: space-between; align-items: center; gap: 0.6rem; margin-top: 1.1rem; }
+.creator-nav .row { gap: 0.5rem; }
 
 .chip {
   font: inherit; font-size: 0.88rem; color: var(--parchment);

@@ -12,9 +12,16 @@ import {
 
 export const CHARACTER_MODEL = "claude-sonnet-5";
 
+export interface QuizChoice {
+  /** Fait « acté », court (1 à 4 mots) : « Gardien », « Dieu ». */
+  label: string;
+  /** Une phrase pour le panneau d'info du créateur. */
+  description: string;
+}
+
 export interface QuizQuestion {
   question: string;
-  choices: string[];
+  choices: QuizChoice[];
 }
 
 export interface QuizAnswer {
@@ -93,12 +100,44 @@ const QUIZ_OUTPUT_SCHEMA = {
         required: ["question", "choices"],
         properties: {
           question: { type: "string" },
-          choices: { type: "array", items: { type: "string" } },
+          choices: {
+            type: "array",
+            items: {
+              type: "object",
+              additionalProperties: false,
+              required: ["label", "description"],
+              properties: {
+                label: {
+                  type: "string",
+                  description: "Fait acté, 1 à 4 mots (« Gardien », « Dieu »)",
+                },
+                description: {
+                  type: "string",
+                  description: "Une phrase évocatrice pour le panneau d'info",
+                },
+              },
+            },
+          },
         },
       },
     },
   },
 } as const;
+
+/** Normalise un choix : objet {label, description} ou simple chaîne (repli). */
+function parseChoice(raw: unknown): QuizChoice | null {
+  if (typeof raw === "string") {
+    const label = raw.trim();
+    return label === "" ? null : { label: label.slice(0, 80), description: "" };
+  }
+  if (raw === null || typeof raw !== "object") return null;
+  const obj = raw as Record<string, unknown>;
+  const label = typeof obj.label === "string" ? obj.label.trim() : "";
+  if (label === "") return null;
+  const description =
+    typeof obj.description === "string" ? obj.description.trim() : "";
+  return { label: label.slice(0, 80), description: description.slice(0, 240) };
+}
 
 export async function generateQuiz(
   apiKey: string,
@@ -106,9 +145,16 @@ export async function generateQuiz(
   canonMd: string,
   schema: SheetSchema | null,
 ): Promise<QuizQuestion[]> {
-  const prompt = `Tu prépares un questionnaire éclair pour créer un personnage joueur dans l'univers « ${bibleTitle} ». Objectif : jouer en moins de 90 secondes.
+  const prompt = `Tu prépares un assistant de création de personnage joueur, étape par étape, pour l'univers « ${bibleTitle} ». Chaque étape est une question à choix multiples, comme un menu de création de personnage de jeu de rôle.
 
-Produis 3 ou 4 questions à choix multiples (3 à 5 choix chacune), GÉNÉRÉES D'APRÈS CETTE BIBLE — jamais génériques. Gabarits possibles : type de pouvoir parmi ceux qui existent dans ce monde, tempérament, lien avec une faction/divinité du canon, accroche de mystère personnel. Chaque choix est court (moins de 12 mots), évocateur, en français.
+Produis 4 à 6 étapes, GÉNÉRÉES D'APRÈS CETTE BIBLE — jamais génériques.
+- ÉTAPE 1 — le genre du personnage. Propose les genres pertinents pour ce monde (au minimum « Femme », « Homme » ; ajoute « Non-binaire » et tout genre propre à l'univers s'il en existe).
+- ÉTAPES SUIVANTES — la nature / classe / rôle (donne le MAXIMUM d'options que le canon permet, jusqu'à 8), puis le tempérament, le lien avec une faction ou une figure du canon, et une accroche de mystère personnel.
+
+Règles pour chaque choix :
+- "label" : un fait ACTÉ, court (1 à 4 mots), SANS exemple ni comparaison. Écris « Gardien », jamais « Gardien comme Alma » ni « Hybride (mi-dieu…) ».
+- "description" : UNE phrase qui explique ce que ce choix implique dans ce monde (elle s'affichera dans un panneau d'info quand le joueur sélectionne le choix). C'est là que vont les détails et les exemples, pas dans le label.
+Donne 3 à 8 choix par étape, en français.
 
 ${schemaBlock(schema)}
 
@@ -122,13 +168,18 @@ ${trimCanon(canonMd)}`;
     for (const q of obj.questions) {
       const { question, choices } = q as Record<string, unknown>;
       if (typeof question !== "string" || !Array.isArray(choices)) continue;
-      const clean = choices.filter(
-        (ch): ch is string => typeof ch === "string" && ch.trim() !== "",
-      );
+      const clean: QuizChoice[] = [];
+      const seen = new Set<string>();
+      for (const raw of choices) {
+        const choice = parseChoice(raw);
+        if (!choice || seen.has(choice.label.toLowerCase())) continue;
+        seen.add(choice.label.toLowerCase());
+        clean.push(choice);
+      }
       if (question.trim() === "" || clean.length < 2) continue;
-      questions.push({ question: question.trim(), choices: clean.slice(0, 5) });
+      questions.push({ question: question.trim(), choices: clean.slice(0, 8) });
     }
-    return questions.length >= 1 ? questions.slice(0, 4) : null;
+    return questions.length >= 1 ? questions.slice(0, 6) : null;
   });
 }
 
