@@ -1038,8 +1038,10 @@ async function showQuiz(bibleId) {
     const answers = [];
     questions.forEach((q, idx) => {
       const pick = picks[idx];
-      if (pick !== null && pick >= 0) {
+      if (typeof pick === "number" && pick >= 0) {
         answers.push({ question: q.question, answer: q.choices[pick].label });
+      } else if (typeof pick === "string" && pick.trim() !== "") {
+        answers.push({ question: q.question, answer: pick.trim() });
       }
     });
     const r = await api(
@@ -1075,23 +1077,29 @@ async function showQuiz(bibleId) {
     $("quiz-fiche").appendChild(row);
   };
 
-  // Affiche la description du choix retenu (ou une invite) dans le panneau
-  // latéral. mdInline rend le **gras** au lieu d'afficher les astérisques.
-  const showDesc = (choice) => {
-    const desc = $("quiz-desc");
+  const desc = () => $("quiz-desc");
+  // Panneau latéral : description du choix retenu, réponse libre saisie, ou
+  // invite. mdInline rend le **gras** ; esc échappe la saisie du joueur.
+  const showChoiceDesc = (choice) => {
     if (choice && choice.description) {
-      desc.innerHTML =
+      desc().innerHTML =
         '<span class="creator-desc-label">' + mdInline(choice.label) + "</span>" +
         "<span>" + mdInline(choice.description) + "</span>";
-      desc.classList.add("filled");
-    } else if (choice) {
-      desc.innerHTML = "";
-      desc.classList.remove("filled");
+      desc().classList.add("filled");
     } else {
-      desc.innerHTML =
-        '<span class="creator-desc-hint">Sélectionnez une option pour voir ce qu’elle implique.</span>';
-      desc.classList.remove("filled");
+      desc().innerHTML = "";
+      desc().classList.remove("filled");
     }
+  };
+  const showCustomDesc = (v) => {
+    desc().innerHTML =
+      '<span class="creator-desc-label">Votre réponse</span><span>' + esc(v) + "</span>";
+    desc().classList.add("filled");
+  };
+  const showHint = () => {
+    desc().innerHTML =
+      '<span class="creator-desc-hint">Sélectionnez une option, ou écrivez la vôtre.</span>';
+    desc().classList.remove("filled");
   };
 
   const show = () => {
@@ -1101,6 +1109,9 @@ async function showQuiz(bibleId) {
     $("quiz-progress").textContent = "Étape " + (i + 1) + " / " + questions.length;
     $("quiz-question").textContent = q.question;
 
+    let next; // renseigné plus bas ; le champ libre le réactive à la saisie.
+    const syncNext = () => { if (next) next.disabled = picks[i] === null; };
+
     const wrap = $("quiz-choices");
     wrap.innerHTML = "";
     q.choices.forEach((choice, idx) => {
@@ -1109,14 +1120,31 @@ async function showQuiz(bibleId) {
       b.className = "creator-choice" + (pick === idx ? " selected" : "");
       // Libellé « acté » ; le **gras** éventuel est rendu, pas affiché brut.
       b.innerHTML = mdInline(choice.label);
-      b.addEventListener("click", () => {
-        picks[i] = idx;
-        show();
-      });
+      b.addEventListener("click", () => { picks[i] = idx; show(); });
       wrap.appendChild(b);
     });
 
-    showDesc(pick !== null && pick >= 0 ? q.choices[pick] : pick === -1 ? null : undefined);
+    // Champ libre : une réponse tapée à la main remplace le choix d'options.
+    const custom = document.createElement("input");
+    custom.type = "text";
+    custom.className = "creator-custom";
+    custom.placeholder = "…ou écrivez votre propre réponse";
+    custom.maxLength = 120;
+    if (typeof pick === "string") custom.value = pick;
+    custom.addEventListener("input", () => {
+      const v = custom.value.trim();
+      picks[i] = v === "" ? null : custom.value;
+      wrap.querySelectorAll(".creator-choice.selected")
+        .forEach((el) => el.classList.remove("selected"));
+      if (v === "") showHint(); else showCustomDesc(v);
+      syncNext();
+    });
+    wrap.appendChild(custom);
+
+    if (typeof pick === "string") showCustomDesc(pick.trim());
+    else if (typeof pick === "number") showChoiceDesc(q.choices[pick]);
+    else if (pick === -1) showChoiceDesc(null);
+    else showHint();
 
     // Barre de navigation : Précédent, Passer, Suivant/Créer.
     const nav = $("quiz-nav");
@@ -1136,10 +1164,10 @@ async function showQuiz(bibleId) {
     skip.textContent = "Passer";
     skip.addEventListener("click", () => { picks[i] = -1; i++; show(); });
 
-    const next = document.createElement("button");
+    next = document.createElement("button");
     next.type = "button";
     next.textContent = last ? "Créer le personnage" : "Suivant →";
-    next.disabled = pick === null; // il faut choisir ou passer explicitement
+    next.disabled = pick === null; // il faut choisir, écrire, ou passer
     next.addEventListener("click", () => { i++; show(); });
 
     const left = document.createElement("div");
