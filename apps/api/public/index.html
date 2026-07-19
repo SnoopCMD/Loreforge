@@ -2,7 +2,7 @@
 <html lang="fr">
 <head>
   <meta charset="utf-8" />
-  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover, interactive-widget=resizes-content" />
   <title>Loreforge</title>
   <meta name="description" content="Vivez votre univers : sessions JDR solo narrées par IA sur la bible de votre monde." />
   <meta name="theme-color" content="#12081F" />
@@ -348,6 +348,8 @@
     <span class="row">
       <button class="ghost hidden" id="voice-toggle" aria-pressed="false"
         title="Lire chaque tour du MJ à voix haute">🔊 Voix du MJ</button>
+      <button class="ghost" id="follow-toggle" aria-pressed="true"
+        title="Faire défiler le fil automatiquement pendant la narration">⇣ Suivi</button>
       <button class="ghost" id="rail-toggle">Fiche &amp; Souffle</button>
     </span>
   </div>
@@ -369,6 +371,7 @@
       </div>
     </aside>
   </div>
+  <button class="jump-bottom hidden" id="jump-bottom">⬇ Reprendre le fil</button>
   <div class="playbar" id="playbar">
     <div class="action-chips" id="action-chips"></div>
     <div class="inner">

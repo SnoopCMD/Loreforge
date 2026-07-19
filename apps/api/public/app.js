@@ -1362,6 +1362,7 @@ function startSessionScreen(id, { fresh = false } = {}) {
   vtoggle.setAttribute("aria-pressed", String(voice.enabled));
   vtoggle.classList.toggle("on", voice.enabled);
   vtoggle.textContent = voice.enabled ? "🔊 Voix activée" : "🔊 Voix du MJ";
+  renderFollowToggle();
 }
 
 function showSceneOverlay(title) {
@@ -1489,17 +1490,62 @@ function addFeedError(text) {
 }
 
 // Le fil ne « colle » en bas que si le lecteur y est déjà : remonter à la
-// main suspend l'auto-scroll, redescendre en bas le réactive.
+// main suspend l'auto-scroll, redescendre en bas le réactive. Sur tactile le
+// suivi est coupé par défaut (le saut à chaque chunk gêne la lecture) — le
+// bouton « ⇣ Suivi » et la pilule « Reprendre le fil » prennent le relais.
+const COARSE_POINTER = matchMedia("(pointer: coarse)").matches;
+let followFeed = store.get("lf:follow");
+if (followFeed === null) followFeed = !COARSE_POINTER;
 let stickToBottom = true;
+function atBottom() {
+  return window.innerHeight + window.scrollY >= document.body.scrollHeight - 80;
+}
 window.addEventListener("scroll", () => {
-  stickToBottom =
-    window.innerHeight + window.scrollY >= document.body.scrollHeight - 80;
+  stickToBottom = atBottom();
+  updateJumpPill();
 }, { passive: true });
 
+function updateJumpPill() {
+  // atBottom() plutôt que stickToBottom : quand le fil grandit sans que la
+  // page ne défile (suivi coupé), aucun event scroll ne remet l'état à jour.
+  const inSession = !$("screen-session").classList.contains("hidden");
+  $("jump-bottom").classList.toggle("hidden", !inSession || atBottom());
+}
+
+let scrollQueued = false;
 function scrollFeed(force = false) {
   if (force) stickToBottom = true;
-  if (stickToBottom) window.scrollTo({ top: document.body.scrollHeight });
+  if ((!followFeed && !force) || !stickToBottom) { updateJumpPill(); return; }
+  if (scrollQueued) return;
+  scrollQueued = true;
+  // Un scroll par frame au plus : le flux SSE ne « martèle » plus la page.
+  requestAnimationFrame(() => {
+    scrollQueued = false;
+    window.scrollTo({
+      top: document.body.scrollHeight,
+      behavior: force ? "smooth" : "auto",
+    });
+  });
 }
+
+$("jump-bottom").addEventListener("click", () => {
+  stickToBottom = true;
+  window.scrollTo({ top: document.body.scrollHeight, behavior: "smooth" });
+  updateJumpPill();
+});
+
+function renderFollowToggle() {
+  const btn = $("follow-toggle");
+  btn.setAttribute("aria-pressed", String(followFeed));
+  btn.classList.toggle("on", followFeed);
+  btn.textContent = followFeed ? "⇣ Suivi activé" : "⇣ Suivi";
+}
+$("follow-toggle").addEventListener("click", () => {
+  followFeed = !followFeed;
+  store.set("lf:follow", followFeed);
+  renderFollowToggle();
+  if (followFeed) scrollFeed(true);
+});
 
 // — Narration vocale (Cartesia, palier 2 : lecture en flux, phrase par phrase) —
 //
@@ -1857,7 +1903,8 @@ function runGeneration(sessionId, path, body, retryText = null) {
       else renderChoices(writer.el, gmText);
       updateRail();
       lockInput(false);
-      $("player-input").focus();
+      // Sur tactile, focus() ouvrirait le clavier en pleine lecture.
+      if (!COARSE_POINTER) $("player-input").focus();
     });
 }
 

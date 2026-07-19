@@ -19,17 +19,20 @@ html { scroll-behavior: smooth; }
 
 body {
   min-height: 100vh;
+  min-height: 100dvh;
   background: var(--void);
   color: var(--parchment);
   font-family: Inter, system-ui, sans-serif;
   line-height: 1.6;
+  /* Pas de scroll horizontal accidentel (le pinch-zoom, lui, reste libre). */
+  overflow-x: clip;
 }
 
 a { color: var(--spirit); }
 
 button, input, textarea, select { font: inherit; }
 
-input[type=email], input[type=text], textarea, select {
+input[type=email], input[type=password], input[type=text], textarea, select {
   width: 100%;
   background: var(--void);
   color: var(--parchment);
@@ -328,7 +331,19 @@ svg .score-label { fill: var(--spirit); font-family: "JetBrains Mono", monospace
 .voice-btn.playing { opacity: 1; color: var(--spirit); border-color: var(--spirit); }
 .voice-btn.loading { opacity: 1; animation: caret-pulse 1s ease-in-out infinite; }
 .voice-btn.failed { color: var(--danger, #f6a); border-color: var(--danger, #f6a); }
-#voice-toggle.on { color: var(--spirit); border-color: var(--spirit); }
+#voice-toggle.on, #follow-toggle.on { color: var(--spirit); border-color: var(--spirit); }
+
+/* Pilule « reprendre le fil » quand le lecteur est remonté dans la narration. */
+.jump-bottom {
+  position: fixed; left: 50%; transform: translateX(-50%);
+  bottom: calc(6.4rem + env(safe-area-inset-bottom, 0px));
+  z-index: 35;
+  font-size: 0.85rem; padding: 0.45rem 1.1rem;
+  border-radius: 999px;
+  background: var(--nebula); color: var(--spirit);
+  border: 1px solid var(--spirit);
+  box-shadow: 0 6px 24px rgba(0, 0, 0, 0.5);
+}
 #voice-toggle.speaking { animation: caret-pulse 1.4s ease-in-out infinite; }
 .narration .player {
   margin: 1.4rem 0;
@@ -650,6 +665,21 @@ svg .score-label { fill: var(--spirit); font-family: "JetBrains Mono", monospace
   button, .chip, .rune, input, select, textarea { min-height: 44px; }
   .chips .chip, .action-chips .chip { min-height: 38px; }
   .spark { min-height: 38px; min-width: 44px; }
+
+  /* iOS zoome (et ne dézoome pas) sur tout champ < 16px : jamais en-dessous. */
+  input[type=email], input[type=password], input[type=text], textarea, select {
+    font-size: 16px;
+  }
+
+  /* Les cartes une-ligne s'écrasent en petit : autoriser le retour à la ligne
+     et aérer les blocs (« trop serrés » constaté sur mobile). */
+  .bible-card, .session-item, .character-card, .play-card { flex-wrap: wrap; }
+  .panel { padding: 1.1rem 1rem; margin-bottom: 1.2rem; }
+  .app { padding: 1.25rem 0.9rem 4.5rem; }
+  h2 { margin: 1.6rem 0 0.9rem; }
+  .narration { font-size: 1.02rem; }
+  .fiche dl { grid-template-columns: 1fr; gap: 0.15rem 0; }
+  .fiche dt { padding-top: 0.5rem; }
 }
 
 @media (max-width: 480px) {
