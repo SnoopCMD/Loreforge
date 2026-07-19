@@ -558,10 +558,14 @@ svg .score-label { fill: var(--spirit); font-family: "JetBrains Mono", monospace
 
 .doors { display: grid; grid-template-columns: 1.4fr 1fr; gap: 1rem; align-items: start; }
 @media (max-width: 820px) { .doors { grid-template-columns: 1fr; } }
+/* Sans min-width:0, l'enfant de grille refuse de rétrécir sous son contenu :
+   le carrousel étire alors la colonne au lieu de scroller (et le scroll-x
+   global est désactivé, cf. body). */
+.doors > * { min-width: 0; }
 
 .char-carousel {
   display: flex; gap: 0.8rem; overflow-x: auto; padding: 0.4rem 0 0.8rem;
-  scroll-snap-type: x proximity;
+  scroll-snap-type: x proximity; min-width: 0; max-width: 100%;
 }
 .char-pick {
   all: unset; cursor: pointer; flex: none; width: min(15rem, 78vw);

@@ -61,11 +61,12 @@ async function structuredCall<T>(
   prompt: string,
   outputSchema: Record<string, unknown>,
   parse: (payload: unknown) => T | null,
+  maxTokens = 4000,
 ): Promise<T> {
   const client = new Anthropic({ apiKey });
   const response = await client.messages.create({
     model: CHARACTER_MODEL,
-    max_tokens: 4000,
+    max_tokens: maxTokens,
     output_config: { format: { type: "json_schema", schema: outputSchema } },
     messages: [{ role: "user", content: prompt }],
   });
@@ -78,7 +79,11 @@ async function structuredCall<T>(
   try {
     payload = JSON.parse(text);
   } catch {
-    throw new Error("character_invalid_json");
+    // La cause fréquente est une troncature (stop_reason = max_tokens) : on la
+    // remonte pour que le log de la route soit exploitable d'une seule repro.
+    throw new Error(
+      `character_invalid_json (stop=${response.stop_reason}, len=${text.length})`,
+    );
   }
   const result = parse(payload);
   if (result === null) throw new Error("character_invalid_payload");
@@ -153,7 +158,7 @@ Produis 4 à 6 étapes, GÉNÉRÉES D'APRÈS CETTE BIBLE — jamais génériques
 
 Règles pour chaque choix :
 - "label" : un fait ACTÉ, court (1 à 4 mots), SANS exemple ni comparaison. Écris « Gardien », jamais « Gardien comme Alma » ni « Hybride (mi-dieu…) ».
-- "description" : UNE phrase qui explique ce que ce choix implique dans ce monde (elle s'affichera dans un panneau d'info quand le joueur sélectionne le choix). C'est là que vont les détails et les exemples, pas dans le label.
+- "description" : UNE phrase COURTE (25 mots maximum) qui explique ce que ce choix implique dans ce monde (elle s'affichera dans un panneau d'info quand le joueur sélectionne le choix). C'est là que vont les détails et les exemples, pas dans le label.
 Donne 3 à 8 choix par étape, en français.
 
 ${schemaBlock(schema)}
@@ -180,7 +185,7 @@ ${trimCanon(canonMd)}`;
       questions.push({ question: question.trim(), choices: clean.slice(0, 8) });
     }
     return questions.length >= 1 ? questions.slice(0, 6) : null;
-  });
+  }, 8000);
 }
 
 // ── Fiche complète depuis les réponses (origin = quick) ──────────────────
