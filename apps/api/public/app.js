@@ -284,6 +284,35 @@ $("logout-btn").addEventListener("click", async () => {
   showLanding();
 });
 
+// ── Menu mobile (hamburger < 640px) ──────────────────────────────────────
+
+function menuOpen() {
+  return !$("mobile-menu").classList.contains("hidden");
+}
+function toggleMenu(open) {
+  $("mobile-menu").classList.toggle("hidden", !open);
+  $("menu-btn").setAttribute("aria-expanded", String(open));
+  if (open) $("mobile-menu").querySelector("a").focus();
+  else $("menu-btn").focus();
+}
+$("menu-btn").addEventListener("click", () => toggleMenu(!menuOpen()));
+// Tap sur le fond assombri (hors du panneau) : fermeture.
+$("mobile-menu").addEventListener("click", (e) => {
+  if (e.target === $("mobile-menu")) toggleMenu(false);
+});
+document.addEventListener("keydown", (e) => {
+  if (e.key === "Escape" && menuOpen()) toggleMenu(false);
+});
+// Naviguer (liens du drawer inclus) referme le menu sans voler le focus.
+window.addEventListener("hashchange", () => {
+  $("mobile-menu").classList.add("hidden");
+  $("menu-btn").setAttribute("aria-expanded", "false");
+});
+$("menu-logout-btn").addEventListener("click", () => {
+  toggleMenu(false);
+  $("logout-btn").click();
+});
+
 // ── Accueil connecté ─────────────────────────────────────────────────────
 
 async function showHome() {

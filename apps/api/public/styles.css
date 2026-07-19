@@ -15,7 +15,13 @@
 
 * { margin: 0; box-sizing: border-box; }
 
-html { scroll-behavior: smooth; }
+html {
+  scroll-behavior: smooth;
+  /* Filet anti-scroll horizontal : hidden d'abord (partout supporté),
+     clip ensuite là où il existe (n'installe pas de conteneur de scroll). */
+  overflow-x: hidden;
+  overflow-x: clip;
+}
 
 body {
   min-height: 100vh;
@@ -25,6 +31,7 @@ body {
   font-family: Inter, system-ui, sans-serif;
   line-height: 1.6;
   /* Pas de scroll horizontal accidentel (le pinch-zoom, lui, reste libre). */
+  overflow-x: hidden;
   overflow-x: clip;
 }
 
@@ -93,8 +100,42 @@ h2 {
 
 .topbar {
   display: flex; justify-content: space-between; align-items: center;
+  gap: 0.6rem; flex-wrap: wrap;
   max-width: 960px; margin: 0 auto; padding: 1rem;
 }
+.menu-btn { display: none; font-size: 1.25rem; line-height: 1; padding: 0.35rem 0.8rem; }
+
+/* Sous 640px : header compact logo + hamburger, nav dans un drawer. */
+@media (max-width: 639.98px) {
+  .topbar .topnav, .topbar > #logout-btn { display: none; }
+  .menu-btn { display: inline-block; }
+}
+.mobile-menu {
+  position: fixed; inset: 0; z-index: 60;
+  background: rgba(18, 8, 31, 0.6);
+  backdrop-filter: blur(3px);
+}
+.mobile-menu .mobile-nav {
+  position: absolute; top: 0; right: 0; bottom: 0;
+  width: min(19rem, 82vw);
+  display: flex; flex-direction: column; gap: 0.3rem;
+  background: var(--nebula);
+  padding: calc(1.2rem + env(safe-area-inset-top, 0px)) 1.2rem
+           calc(1.2rem + env(safe-area-inset-bottom, 0px));
+  box-shadow: -12px 0 40px rgba(0, 0, 0, 0.5);
+  animation: drawer-in 0.2s ease both;
+}
+@keyframes drawer-in { from { transform: translateX(30%); opacity: 0; } to { transform: none; opacity: 1; } }
+.mobile-nav a {
+  display: flex; align-items: center; min-height: 48px;
+  color: var(--parchment); text-decoration: none;
+  font-family: Cinzel, serif; font-size: 0.95rem;
+  letter-spacing: 0.1em; text-transform: uppercase;
+  padding: 0.4rem 0.6rem;
+  border-bottom: 1px solid rgba(75, 47, 122, 0.4);
+}
+.mobile-nav a:active, .mobile-nav a:hover { color: var(--spirit); }
+.mobile-nav button { margin-top: auto; min-height: 48px; }
 .topbar .brand {
   font-family: Cinzel, serif;
   letter-spacing: 0.2em;
@@ -680,6 +721,15 @@ svg .score-label { fill: var(--spirit); font-family: "JetBrains Mono", monospace
   .narration { font-size: 1.02rem; }
   .fiche dl { grid-template-columns: 1fr; gap: 0.15rem 0; }
   .fiche dt { padding-top: 0.5rem; }
+
+  /* Titres de session sur 2 lignes plutôt que tronqués (« Les Légende… »). */
+  .resume-item .who {
+    white-space: normal;
+    display: -webkit-box;
+    -webkit-line-clamp: 2;
+    -webkit-box-orient: vertical;
+    text-overflow: clip;
+  }
 }
 
 @media (max-width: 480px) {
@@ -712,6 +762,10 @@ button.armed, .bible-card .card-delete.armed {
   background: transparent; border: 1px solid var(--ember); color: var(--ember);
 }
 .bible-actions { gap: 0.5rem; align-items: center; flex-wrap: wrap; }
+
+/* Largeurs bornées par max-width (jamais fixes) : compressibles en petit. */
+#rename-input { width: 100%; max-width: 18rem; }
+#new-trame { width: 100%; max-width: 14rem; flex: 1 1 10rem; min-width: 0; }
 
 .section-card {
   border: 1px solid var(--line); border-radius: 8px;

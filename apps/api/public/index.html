@@ -23,7 +23,19 @@
     <a href="#/library">Bibliothèque</a>
   </nav>
   <button class="ghost" id="logout-btn">Se déconnecter</button>
+  <button class="ghost menu-btn" id="menu-btn" aria-label="Menu"
+    aria-expanded="false" aria-controls="mobile-menu">☰</button>
 </header>
+
+<!-- Drawer de navigation mobile (< 640px), ouvert par le hamburger. -->
+<div class="mobile-menu hidden" id="mobile-menu">
+  <nav class="mobile-nav" aria-label="Navigation">
+    <a href="#/">Accueil</a>
+    <a href="#/play">Jouer</a>
+    <a href="#/library">Bibliothèque</a>
+    <button class="ghost" id="menu-logout-btn">Se déconnecter</button>
+  </nav>
+</div>
 
 <!-- ── Landing ─────────────────────────────────────────────────────────── -->
 <section id="screen-landing" class="hidden">
@@ -188,7 +200,7 @@
     </span>
   </div>
   <div class="row hidden" id="rename-row">
-    <input type="text" id="rename-input" style="width:18rem" />
+    <input type="text" id="rename-input" />
     <button id="rename-save-btn">Valider</button>
     <button class="ghost" id="rename-cancel-btn">Annuler</button>
   </div>
@@ -231,7 +243,7 @@
         <option value="mini">Mini-campagne</option>
         <option value="campaign">Campagne</option>
       </select>
-      <input type="text" id="new-trame" placeholder="Trame (optionnel, sinon libre)" style="width:14rem" />
+      <input type="text" id="new-trame" placeholder="Trame (optionnel, sinon libre)" />
       <button id="new-session-btn">Lancer une session</button>
     </div>
     <p id="session-msg" class="msg"></p>
