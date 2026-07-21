@@ -4,10 +4,34 @@
 //
 // Balises reconnues :
 //   <invention axis="...">...</invention>  invisible pour le joueur, loggée
+//   <lore term="..." kind="...">...</lore>  terme d'univers cliquable (§7) :
+//       le texte visible RESTE dans la narration, mais enveloppé de marqueurs
+//       de contrôle (DC1/DC2/DC3) OPEN·term·SEP·visible·CLOSE que le front
+//       transforme en <button class="lore"> ; la définition est résolue à la
+//       demande, une fois par session (KV), au clic.
 //   <roll reason="..."/>                   demande de jet d6 serveur
 //   <souffle delta="-1"/>                  dépense/regain de Souffle
 //   <scene_break/>                         rupture de scène (event SSE)
 // Tout autre usage de '<' (dialogue, comparaison...) est restitué tel quel.
+
+// Marqueurs lore (mêmes codes que public/core.js : LORE_OPEN/SEP/CLOSE).
+export const LORE_OPEN = String.fromCharCode(17); // DC1
+export const LORE_SEP = String.fromCharCode(18); // DC2
+export const LORE_CLOSE = String.fromCharCode(19); // DC3
+const LORE_CTRL = new RegExp("[" + LORE_OPEN + LORE_SEP + LORE_CLOSE + "]", "g");
+/** Enveloppe un terme lore résolu dans le flux : OPEN·term·SEP·kind·SEP·visible·CLOSE. */
+export function wrapLore(term: string, kind: string, visible: string): string {
+  const clean = (s: string) => s.replace(LORE_CTRL, "");
+  return (
+    LORE_OPEN +
+    clean(term) +
+    LORE_SEP +
+    clean(kind) +
+    LORE_SEP +
+    clean(visible) +
+    LORE_CLOSE
+  );
+}
 
 export type GmTagEvent =
   | { type: "invention"; axis: string; content: string }
@@ -26,12 +50,16 @@ export interface ParsedChunk {
 const MAX_TAG_LEN = 400;
 
 const OPEN_INVENTION = /^<invention\s+axis="([^"]*)"\s*>/;
+// term obligatoire ; kind optionnel, dans n'importe quel ordre.
+const OPEN_LORE =
+  /^<lore(?=\s)(?=[^>]*\bterm="([^"]*)")(?:[^>]*\bkind="([^"]*)")?[^>]*>/;
 const ROLL = /^<roll\s+reason="([^"]*)"\s*\/>/;
 const SOUFFLE = /^<souffle\s+delta="([+-]?\d+)"\s*\/>/;
 const SCENE_BREAK = /^<scene_break\s*\/>/;
 const CLOSE_INVENTION = "</invention>";
+const CLOSE_LORE = "</lore>";
 
-const TAG_NAMES = ["invention", "roll", "souffle", "scene_break"];
+const TAG_NAMES = ["invention", "lore", "roll", "souffle", "scene_break"];
 
 /** Le début de buffer (commençant par '<') peut-il encore devenir une balise ? */
 function couldBeTag(buf: string): boolean {
@@ -53,12 +81,20 @@ function partialSuffixLen(s: string, tag: string): number {
   return 0;
 }
 
-type TagMatch = { length: number; event?: GmTagEvent; openInvention?: string };
+type TagMatch = {
+  length: number;
+  event?: GmTagEvent;
+  openInvention?: string;
+  openLore?: { term: string; kind: string };
+};
 
 function matchTag(buf: string): TagMatch | "incomplete" | null {
   let m: RegExpMatchArray | null;
   if ((m = buf.match(OPEN_INVENTION))) {
     return { length: m[0].length, openInvention: m[1] };
+  }
+  if ((m = buf.match(OPEN_LORE))) {
+    return { length: m[0].length, openLore: { term: m[1], kind: m[2] ?? "" } };
   }
   if ((m = buf.match(ROLL))) {
     return {
@@ -82,6 +118,7 @@ function matchTag(buf: string): TagMatch | "incomplete" | null {
 export class GmStreamParser {
   private buf = "";
   private invention: { axis: string; content: string } | null = null;
+  private lore: { term: string; kind: string; content: string } | null = null;
 
   /** Ingère un delta de streaming, rend le texte sûr et les événements. */
   feed(chunk: string): ParsedChunk {
@@ -119,6 +156,23 @@ export class GmStreamParser {
         break;
       }
 
+      if (this.lore) {
+        // Le texte visible du terme RESTE dans la narration, enveloppé de
+        // marqueurs quand la balise se referme.
+        const close = this.buf.indexOf(CLOSE_LORE);
+        if (close >= 0) {
+          this.lore.content += this.buf.slice(0, close);
+          text += wrapLore(this.lore.term, this.lore.kind, this.lore.content);
+          this.buf = this.buf.slice(close + CLOSE_LORE.length);
+          this.lore = null;
+          continue;
+        }
+        const keep = final ? 0 : partialSuffixLen(this.buf, CLOSE_LORE);
+        this.lore.content += this.buf.slice(0, this.buf.length - keep);
+        this.buf = this.buf.slice(this.buf.length - keep);
+        break;
+      }
+
       const lt = this.buf.indexOf("<");
       if (lt < 0) {
         text += this.buf;
@@ -147,6 +201,13 @@ export class GmStreamParser {
       if (match.openInvention !== undefined) {
         this.invention = { axis: match.openInvention, content: "" };
       }
+      if (match.openLore !== undefined) {
+        this.lore = {
+          term: match.openLore.term,
+          kind: match.openLore.kind,
+          content: "",
+        };
+      }
     }
 
     if (final && this.invention) {
@@ -157,6 +218,13 @@ export class GmStreamParser {
         content: this.invention.content.trim(),
       });
       this.invention = null;
+    }
+
+    if (final && this.lore) {
+      // Lore jamais refermé : on ne perd pas le texte, on le rend en clair
+      // (sans bouton, faute de fermeture fiable).
+      text += this.lore.content;
+      this.lore = null;
     }
 
     return { text, events };

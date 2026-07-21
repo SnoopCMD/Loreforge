@@ -6,7 +6,7 @@ import {
   AXES, AXIS_LABELS, FORMAT_LABELS, GENERIC_FIELDS, OUTCOME_LABELS,
   STATUS_LABELS, buildCanonFromSections, createSseParser,
   createSpeechSegmenter, esc, extractActionChips, labelFor, mdInline,
-  mdToHtml, parseCanonSections,
+  mdToHtml, parseCanonSections, stripLore,
 } from "/core.js";
 
 const $ = (id) => document.getElementById(id);
@@ -47,9 +47,21 @@ const frDate = (ts) =>
 
 // ── Client SSE (EventSource ne fait pas de POST) ─────────────────────────
 
-async function sse(path, body, handlers) {
+// idleTimeoutMs : un stream sans nouveau chunk au-delà de ce délai est
+// considéré comme figé (réseau qui traîne) et coupé → traité comme une
+// interruption par l'appelant (bouton Régénérer).
+async function sse(path, body, handlers, { idleTimeoutMs = 20000 } = {}) {
   const opts = jsonPost(body);
   opts.headers.accept = "text/event-stream";
+  const controller = new AbortController();
+  opts.signal = controller.signal;
+  let timedOut = false;
+  let timer = null;
+  const arm = () => {
+    clearTimeout(timer);
+    timer = setTimeout(() => { timedOut = true; controller.abort(); }, idleTimeoutMs);
+  };
+
   const res = await api(path, opts);
   const type = res.headers.get("content-type") || "";
   if (!res.ok || !type.includes("text/event-stream")) {
@@ -65,10 +77,25 @@ async function sse(path, body, handlers) {
   const parser = createSseParser((event, data) => {
     if (handlers[event]) handlers[event](data);
   });
-  for (;;) {
-    const { done, value } = await reader.read();
-    if (done) break;
-    parser.push(decoder.decode(value, { stream: true }));
+  arm();
+  try {
+    for (;;) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      arm(); // un chunk est arrivé : on repousse le timeout
+      parser.push(decoder.decode(value, { stream: true }));
+    }
+  } catch (err) {
+    if (timedOut) {
+      const e = new Error("stream_timeout");
+      e.interrupted = true;
+      throw e;
+    }
+    // Coupure réseau en plein flux (fetch abort inattendu, connexion perdue).
+    err.interrupted = true;
+    throw err;
+  } finally {
+    clearTimeout(timer);
   }
 }
 
@@ -1469,6 +1496,8 @@ function startSessionScreen(id, { fresh = false } = {}) {
   S.rollShown = false;
   S.writer = null;
   $("feed").innerHTML = "";
+  closeLorePopover();
+  loreCache.clear();
   $("finish-msg").textContent = "";
   resetFinishButton();
   const info = sessionBibleInfo(id);
@@ -1748,7 +1777,8 @@ function enqueueSentence(text) {
 /** Alimente le flux vocal avec un delta de narration. */
 function feedVoice(delta) {
   if (!voice.segmenter) voice.segmenter = createSpeechSegmenter();
-  for (const s of voice.segmenter.push(delta)) enqueueSentence(s);
+  // Les marqueurs lore sont réduits à leur texte visible avant lecture.
+  for (const s of voice.segmenter.push(stripLore(delta))) enqueueSentence(s);
 }
 
 /** Fin de tour : lit le reliquat de phrase resté en tampon. */
@@ -1907,10 +1937,30 @@ function lockInput(locked) {
   $("player-input").placeholder = reason;
 }
 
-// Vide la barre de chips du composeur (les choix vivent désormais dans le
-// bloc du MJ, cf. renderChoices).
-function renderActionChips() {
-  $("action-chips").innerHTML = "";
+// Chips de suggestions au-dessus du champ de saisie (§7, appoint mobile) :
+// miroir des options du MJ. Taper une chip REMPLIT l'entrée (le joueur peut
+// éditer avant d'envoyer) plutôt que d'agir directement — complément des
+// boutons du bloc MJ (renderChoices), utile quand le clavier est coûteux.
+// Sans argument (ou liste vide) : la barre est vidée.
+function renderActionChips(choices) {
+  const bar = $("action-chips");
+  bar.innerHTML = "";
+  if (!choices || !choices.length || S.status !== "playing") return;
+  for (const action of choices) {
+    const chip = document.createElement("button");
+    chip.type = "button";
+    chip.className = "chip";
+    chip.innerHTML = mdInline(action);
+    chip.addEventListener("click", () => {
+      if (S.streaming || S.pendingRoll || S.status !== "playing") return;
+      if ($("player-input").disabled) return;
+      const input = $("player-input");
+      input.value = action.replace(/\*+/g, "");
+      bar.innerHTML = "";
+      if (!COARSE_POINTER) input.focus();
+    });
+    bar.appendChild(chip);
+  }
 }
 
 // Une ligne d'options concrètes de fin de tour (puce ou numéro).
@@ -1942,12 +1992,15 @@ function renderChoices(gmEl, gmText) {
       // Le choix devient la réponse écrite : les options disparaissent, la
       // sélection réapparaît en entrée joueur (texte nettoyé du Markdown).
       wrap.remove();
+      renderActionChips(null);
       $("player-input").value = action.replace(/\*+/g, "");
       sendTurn();
     });
     wrap.appendChild(btn);
   }
   gmEl.appendChild(wrap);
+  // Miroir dans le composeur (appoint mobile).
+  renderActionChips(choices);
 }
 
 $("player-input").addEventListener("keydown", (e) => {
@@ -1976,7 +2029,11 @@ function runGeneration(sessionId, path, body, retryText = null) {
   renderActionChips(null);
   S.writer = newGmWriter();
   const writer = S.writer;
+  // Contexte de reprise : rejouer EXACTEMENT le même tour sans le dupliquer.
+  const ctx = { path, body, retryText, turnBefore: S.turnCount };
   let gmText = "";
+  let gotDone = false; // un event `done` = tour validé côté serveur
+  let redirected = false;
 
   sse(path, body, {
     narration: (d) => {
@@ -1995,26 +2052,29 @@ function runGeneration(sessionId, path, body, retryText = null) {
     },
     scene_break: () => addSceneSep(),
     done: (d) => {
+      gotDone = true;
       S.turnCount = d.turn;
       S.souffle = d.souffle;
     },
-    error: () => {
-      addFeedError("La narration a échoué — réessayez.");
-      if (retryText) $("player-input").value = retryText;
-    },
+    // Erreur serveur (génération échouée) : traitée comme une interruption
+    // (gotDone reste faux) → bandeau + Régénérer dans le finally.
+    error: () => {},
   })
     .catch((err) => {
-      writer.end();
       if (err.status === 409 && err.payload && err.payload.error === "roll_required") {
+        // Flux de jeu normal (pas une coupure) : un jet est requis avant ce tour.
+        gotDone = true;
         S.pendingRoll = err.payload.reason || "action risquée";
         if (retryText) $("player-input").value = retryText;
       } else if (err.status === 409 && err.payload && err.payload.error === "invalid_status") {
+        gotDone = true;
         S.status = err.payload.status;
-        if (S.status === "finished") { location.hash = "#/session/" + sessionId + "/end"; return; }
-      } else {
-        addFeedError("La narration a échoué (" + (err.message || "erreur") + ") — réessayez.");
-        if (retryText) $("player-input").value = retryText;
+        if (S.status === "finished") {
+          redirected = true;
+          location.hash = "#/session/" + sessionId + "/end";
+        }
       }
+      // Sinon (interrupted / réseau / 5xx) : gotDone reste faux → interruption.
     })
     .finally(() => {
       // Voix activée : on lit le reliquat AVANT de retirer les options de la
@@ -2023,14 +2083,173 @@ function runGeneration(sessionId, path, body, retryText = null) {
       writer.end();
       S.streaming = false;
       S.lastRoll = null;
+      if (redirected) { updateRail(); return; }
+      if (!gotDone) {
+        // Tour interrompu : RIEN n'a été validé côté serveur (le DO ne commite
+        // qu'au succès). On annule les patchs optimistes et on propose de
+        // régénérer le même tour, sans avancer l'état deux fois.
+        S.pendingRoll = null;
+        showInterruption(ctx, writer.el);
+        updateRail();
+        return;
+      }
       if (S.pendingRoll) addRollNeeded();
       else renderChoices(writer.el, gmText);
       updateRail();
       lockInput(false);
       // Sur tactile, focus() ouvrirait le clavier en pleine lecture.
-      if (!COARSE_POINTER) $("player-input").focus();
+      if (!COARSE_POINTER && !S.pendingRoll) $("player-input").focus();
     });
 }
+
+// — Reprise après coupure réseau (§7) —
+
+// État visuel « interrompu » sous le texte tronqué + bouton Régénérer.
+function showInterruption(ctx, gmEl) {
+  lockInput(true); // on force la résolution par Régénérer
+  renderActionChips(null);
+  const box = document.createElement("div");
+  box.className = "interrupted chunk";
+  box.innerHTML =
+    '<span class="warn">⚠ Génération interrompue</span>' +
+    '<button type="button" class="regen">↻ Régénérer</button>';
+  box.querySelector(".regen").addEventListener("click", () => {
+    box.remove();
+    regenerate(ctx, gmEl);
+  });
+  $("feed").appendChild(box);
+  scrollFeed(true);
+}
+
+// Rejoue le même tour. Garde-fou : si le tour a en fait été validé côté
+// serveur (event `done` perdu en route), on réaffiche l'état réel au lieu de
+// le rejouer — pas de double avance de l'état de jeu.
+async function regenerate(ctx, gmEl) {
+  try {
+    const res = await api("/sessions/" + S.id + "/state");
+    if (res.ok) {
+      const st = await res.json();
+      if (st.status === "finished") {
+        location.hash = "#/session/" + S.id + "/end";
+        return;
+      }
+      if (st.turn_count > ctx.turnBefore) {
+        // Le tour est bien passé : on resynchronise plutôt que de le rejouer.
+        if (gmEl) gmEl.remove();
+        enterSession(S.id);
+        return;
+      }
+      // Resynchronise l'état optimiste depuis le dernier état validé.
+      S.souffle = st.souffle;
+      S.pendingRoll = st.pending_roll;
+      S.lastRoll = st.last_roll;
+    }
+  } catch { /* hors-ligne : on tente la reprise quand même */ }
+  if (gmEl) gmEl.remove(); // retire le texte tronqué avant de rejouer
+  runGeneration(S.id, ctx.path, ctx.body, ctx.retryText);
+}
+
+// — Glossaire lore cliquable (§7) —
+
+const LORE_KIND_LABELS = {
+  personnage: "Personnage",
+  faction: "Faction",
+  lieu: "Lieu",
+  concept: "Concept",
+};
+const loreCache = new Map(); // term (minuscule) → fiche, une résolution / session
+let lorePopoverEl = null;
+
+function closeLorePopover() {
+  if (lorePopoverEl) { lorePopoverEl.remove(); lorePopoverEl = null; }
+  document.removeEventListener("click", onLoreOutside, true);
+  document.removeEventListener("keydown", onLoreKey);
+}
+function onLoreOutside(e) {
+  if (lorePopoverEl && !lorePopoverEl.contains(e.target) && !e.target.closest(".lore")) {
+    closeLorePopover();
+  }
+}
+function onLoreKey(e) { if (e.key === "Escape") closeLorePopover(); }
+
+async function fetchLore(term, kind) {
+  const key = term.toLowerCase();
+  if (loreCache.has(key)) return loreCache.get(key);
+  try {
+    const res = await api(
+      "/sessions/" + S.id + "/lore?term=" + encodeURIComponent(term) +
+        "&kind=" + encodeURIComponent(kind || ""),
+    );
+    if (res.ok) {
+      const fiche = await res.json();
+      loreCache.set(key, fiche);
+      return fiche;
+    }
+  } catch { /* réseau : fiche de repli */ }
+  return { term, kind, definition: "Définition indisponible pour le moment.", in_canon: false };
+}
+
+function positionLorePopover(pop, btn) {
+  if (COARSE_POINTER) { pop.classList.add("sheet"); return; } // bottom sheet (CSS)
+  const r = btn.getBoundingClientRect();
+  const pw = Math.min(pop.offsetWidth || 300, window.innerWidth - 24);
+  let left = r.left + window.scrollX;
+  left = Math.min(left, window.scrollX + window.innerWidth - pw - 12);
+  left = Math.max(left, window.scrollX + 12);
+  pop.style.left = left + "px";
+  pop.style.top = r.bottom + window.scrollY + 8 + "px";
+}
+
+async function openLorePopover(btn) {
+  closeLorePopover();
+  const term = (btn.dataset.term || btn.textContent || "").trim();
+  const kind = btn.dataset.kind || "";
+  if (!term) return;
+
+  const pop = document.createElement("div");
+  pop.className = "lore-popover";
+  pop.innerHTML =
+    '<button type="button" class="lore-close" aria-label="Fermer">✕</button>' +
+    '<div class="lore-head"><span class="lore-term"></span>' +
+    '<span class="lore-kind"></span></div>' +
+    '<div class="lore-def">' + spin("Recherche dans la bible…") + "</div>";
+  pop.querySelector(".lore-term").textContent = term;
+  pop.querySelector(".lore-close").addEventListener("click", closeLorePopover);
+  document.body.appendChild(pop);
+  lorePopoverEl = pop;
+  positionLorePopover(pop, btn);
+  // Le listener global ignore ce clic d'ouverture (capture, même tick).
+  setTimeout(() => {
+    if (lorePopoverEl !== pop) return;
+    document.addEventListener("click", onLoreOutside, true);
+    document.addEventListener("keydown", onLoreKey);
+  }, 0);
+
+  const fiche = await fetchLore(term, kind);
+  if (lorePopoverEl !== pop) return; // fermé pendant la requête
+  pop.querySelector(".lore-kind").textContent =
+    LORE_KIND_LABELS[fiche.kind] || "";
+  pop.querySelector(".lore-def").textContent =
+    fiche.definition || "Définition indisponible.";
+  if (fiche.in_canon) {
+    const info = sessionBibleInfo(S.id);
+    const bibleId = fiche.bible_id || (info && info.id);
+    if (bibleId) {
+      const a = document.createElement("a");
+      a.className = "lore-link";
+      a.href = "#/bible/" + bibleId;
+      a.textContent = "Voir dans la bible →";
+      a.addEventListener("click", closeLorePopover);
+      pop.appendChild(a);
+    }
+  }
+  positionLorePopover(pop, btn); // la taille a changé
+}
+
+$("feed").addEventListener("click", (e) => {
+  const btn = e.target.closest(".lore");
+  if (btn) { e.preventDefault(); openLorePopover(btn); }
+});
 
 // — Jet de d6 —
 

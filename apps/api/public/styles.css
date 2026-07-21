@@ -463,6 +463,77 @@ svg .score-label { fill: var(--spirit); font-family: "JetBrains Mono", monospace
 }
 .roll-needed .reason { color: var(--parchment-dim); margin-bottom: 0.7rem; }
 
+/* Terme d'univers cliquable (§7) : soulignage pointillé --spirit, aucun saut
+   de layout (bouton inline, hérite de la typo du texte). */
+.lore {
+  display: inline;
+  background: none;
+  border: none;
+  padding: 0;
+  margin: 0;
+  min-height: 0;
+  font: inherit;
+  color: inherit;
+  cursor: pointer;
+  text-decoration: underline dotted var(--spirit);
+  text-underline-offset: 0.18em;
+  text-decoration-thickness: 1px;
+}
+.lore:hover { color: var(--spirit); }
+.lore:focus-visible { outline: 2px solid var(--spirit); outline-offset: 2px; border-radius: 3px; }
+
+/* Fiche lore : popover ancré (desktop) ou bottom sheet (tactile). */
+.lore-popover {
+  position: absolute;
+  z-index: 60;
+  width: min(340px, calc(100vw - 24px));
+  padding: 0.9rem 1rem 1rem;
+  background: var(--nebula);
+  border: 1px solid var(--spirit);
+  border-radius: 12px;
+  box-shadow: 0 10px 40px rgba(0, 0, 0, 0.55), 0 0 0 1px rgba(103, 232, 249, 0.15);
+}
+.lore-popover .lore-close {
+  position: absolute; top: 0.4rem; right: 0.4rem;
+  background: none; border: none; color: var(--parchment-dim);
+  font-size: 0.9rem; padding: 0.2rem 0.4rem; min-height: 0; cursor: pointer;
+}
+.lore-popover .lore-close:hover { color: var(--parchment); }
+.lore-head { display: flex; align-items: baseline; gap: 0.6rem; flex-wrap: wrap; margin-bottom: 0.5rem; padding-right: 1.4rem; }
+.lore-term { font-weight: 600; color: var(--spirit); }
+.lore-kind {
+  font-family: "JetBrains Mono", monospace; font-size: 0.66rem;
+  letter-spacing: 0.08em; text-transform: uppercase; color: var(--parchment-dim);
+  border: 1px solid var(--line); border-radius: 999px; padding: 0.1rem 0.5rem;
+}
+.lore-def { font-size: 0.9rem; line-height: 1.5; color: var(--parchment); }
+.lore-link {
+  display: inline-block; margin-top: 0.7rem;
+  font-size: 0.82rem; color: var(--spirit); text-decoration: none;
+}
+.lore-link:hover { text-decoration: underline; }
+.lore-popover.sheet {
+  position: fixed; left: 0 !important; right: 0; top: auto !important; bottom: 0;
+  width: 100%; border-radius: 16px 16px 0 0; border-bottom: none;
+  padding-bottom: calc(1.2rem + env(safe-area-inset-bottom, 0));
+}
+
+/* Génération interrompue (§7) : bandeau discret --ember + bouton Régénérer. */
+.interrupted {
+  display: flex; align-items: center; gap: 0.9rem; flex-wrap: wrap;
+  margin: 0.6rem 0 1.2rem;
+  padding: 0.7rem 1rem;
+  border: 1px solid var(--ember);
+  border-radius: 10px;
+  background: rgba(249, 115, 22, 0.07);
+}
+.interrupted .warn { color: var(--ember); font-size: 0.9rem; }
+.interrupted .regen {
+  margin-left: auto;
+  border: 1px solid var(--spirit); color: var(--spirit); background: transparent;
+}
+.interrupted .regen:hover { background: rgba(103, 232, 249, 0.12); }
+
 /* Rail droit repliable. */
 .session-rail { position: relative; }
 .session-rail .rail-inner { position: sticky; top: 1rem; }

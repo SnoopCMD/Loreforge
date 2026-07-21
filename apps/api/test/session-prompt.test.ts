@@ -6,6 +6,7 @@ import {
   buildSystemPrompt,
   buildTurnMessage,
   MAX_SETUP_QUESTIONS,
+  turnEndsOpen,
 } from "../src/sessions/prompt";
 import { initialGameState } from "../src/sessions/rules";
 
@@ -74,6 +75,42 @@ describe("buildSystemPrompt (SPEC §7)", () => {
 
   it("ton par défaut si tone_profile absent", () => {
     expect(prompt).toContain("registre par défaut");
+  });
+
+  it("annonce le glossaire cliquable et la règle de fin de tour non négociable", () => {
+    expect(prompt).toContain('<lore term="Nom canonique"');
+    expect(prompt).toContain("NON NÉGOCIABLE");
+  });
+});
+
+describe("turnEndsOpen (garde-fou §7)", () => {
+  it("accepte une question dans les 2 dernières phrases", () => {
+    expect(turnEndsOpen("La porte grince. Que fais-tu ?")).toBe(true);
+    expect(
+      turnEndsOpen("Tu hésites. La brume avance. Oses-tu la traverser ?"),
+    ).toBe(true);
+  });
+
+  it("accepte une fin sur ≥ 2 options listées", () => {
+    expect(
+      turnEndsOpen("Deux chemins s'ouvrent.\n- Le pont\n- La barque"),
+    ).toBe(true);
+    expect(turnEndsOpen("Choisis.\n1) Frapper\n2) Fuir\n3) Parler")).toBe(true);
+  });
+
+  it("rejette une scène descriptive fermée sans relance", () => {
+    expect(
+      turnEndsOpen("La nuit tombe sur Karnos. Les torches s'éteignent une à une."),
+    ).toBe(false);
+    expect(turnEndsOpen("Une seule option.\n- Avancer")).toBe(false);
+  });
+
+  it("une question trop en amont ne suffit pas", () => {
+    expect(
+      turnEndsOpen(
+        "Tu te demandes où aller ? Tu marches. Le silence retombe sur la salle.",
+      ),
+    ).toBe(false);
   });
 });
 

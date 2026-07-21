@@ -86,11 +86,37 @@ export function createSseParser(onEvent) {
 export const esc = (s) =>
   String(s).replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
 
+// Lore cliquable (§7) : le serveur remplace <lore term kind>V</lore> par un
+// marqueur en caractères de contrôle (invisibles, jamais produits par la
+// narration) OPEN·term·SEP·kind·SEP·visible·CLOSE, atomique dans un même chunk
+// SSE. mdInline le transforme en <button class="lore">, stripLore le réduit au
+// texte visible (voix, chips, extraction d'options).
+export const LORE_OPEN = String.fromCharCode(17); // DC1
+export const LORE_SEP = String.fromCharCode(18); // DC2
+export const LORE_CLOSE = String.fromCharCode(19); // DC3
+const LORE_CLS = "[^" + LORE_OPEN + LORE_SEP + LORE_CLOSE + "]*";
+const LORE_RE = new RegExp(
+  LORE_OPEN + "(" + LORE_CLS + ")" + LORE_SEP + "(" + LORE_CLS + ")" +
+    LORE_SEP + "(" + LORE_CLS + ")" + LORE_CLOSE,
+  "g",
+);
+
+/** Réduit les marqueurs lore à leur seul texte visible. */
+export const stripLore = (s) => String(s).replace(LORE_RE, "$3");
+
+const attr = (s) => s.replace(/"/g, "&quot;");
+
 /** Markdown inline (gras/italique) échappé — aussi utilisé par le fil de session. */
 export const mdInline = (s) =>
   esc(s)
     .replace(/\*\*([^*]+)\*\*/g, "<b>$1</b>")
-    .replace(/\*([^*]+)\*/g, "<i>$1</i>");
+    .replace(/\*([^*]+)\*/g, "<i>$1</i>")
+    // Marqueur lore → bouton inline (le label peut déjà porter du gras/italique).
+    .replace(
+      LORE_RE,
+      (_m, term, kind, label) =>
+        `<button type="button" class="lore" data-term="${attr(term)}" data-kind="${attr(kind)}">${label}</button>`,
+    );
 
 export function mdToHtml(md) {
   const inline = mdInline;
@@ -135,7 +161,7 @@ export function mdToHtml(md) {
  * Heuristique volontairement stricte — au moindre doute, pas de chips.
  */
 export function extractActionChips(text) {
-  const lines = String(text).trimEnd().split(/\r?\n/);
+  const lines = stripLore(String(text)).trimEnd().split(/\r?\n/);
   const chips = [];
   for (let i = lines.length - 1; i >= 0; i--) {
     const line = lines[i].trim();

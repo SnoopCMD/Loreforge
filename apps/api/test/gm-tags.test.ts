@@ -3,6 +3,7 @@ import {
   extractGmEvents,
   GmStreamParser,
   stripGmTags,
+  wrapLore,
   type GmTagEvent,
 } from "../src/sessions/tags";
 
@@ -76,6 +77,39 @@ describe("GmStreamParser", () => {
       { type: "souffle_delta", delta: -1 },
       { type: "scene_break" },
     ]);
+  });
+
+  it("garde le texte d'un <lore> visible, enveloppé de marqueurs", () => {
+    const { text, events } = replay([
+      "Tu croises la ",
+      '<lore term="Garde Blanche" kind="faction">Garde Blanche</lore>',
+      " au pont.",
+    ]);
+    expect(text).toBe(
+      "Tu croises la " +
+        wrapLore("Garde Blanche", "faction", "Garde Blanche") +
+        " au pont.",
+    );
+    expect(events).toEqual([]);
+  });
+
+  it("gère un <lore> coupé entre plusieurs deltas de streaming", () => {
+    const { text } = replay([
+      'Le <lore term="Commandant Kass" kind="perso',
+      'nnage">Commandant',
+      " Kass</lo",
+      "re> te salue.",
+    ]);
+    expect(text).toBe(
+      "Le " +
+        wrapLore("Commandant Kass", "personnage", "Commandant Kass") +
+        " te salue.",
+    );
+  });
+
+  it("un <lore> jamais refermé rend son texte en clair au flush", () => {
+    const { text } = replay(['Vers <lore term="la Source">la Source']);
+    expect(text).toBe("Vers la Source");
   });
 
   it("restitue les '<' qui ne sont pas des balises connues", () => {

@@ -24,13 +24,16 @@ import {
   type RollResult,
 } from "./rules";
 import { GmStreamParser, stripGmTags, type GmTagEvent } from "./tags";
+import { resolveLore } from "./lore";
 import { retrieveCanonExcerpts } from "../rag/store";
 import {
   buildSetupMessage,
   buildSetupQuestions,
   buildSystemPrompt,
   buildTurnMessage,
+  RELANCE_MESSAGE,
   SUMMARY_MESSAGE,
+  turnEndsOpen,
 } from "./prompt";
 
 export const NARRATION_MODEL = "claude-sonnet-5";
@@ -40,9 +43,17 @@ const MAX_ANSWERS = 10;
 // Fenêtre de contexte : derniers tours envoyés au modèle.
 const CONTEXT_TURNS = 40;
 const LOG_TURNS = 20;
+// Relance de fin de tour (§7) : court, sans retry (filet best-effort).
+const MAX_RELANCE_TOKENS = 256;
+// Cache des fiches lore résolues (une semaine).
+const LORE_TTL_SECONDS = 60 * 60 * 24 * 7;
 
 export function sessionKvKey(sessionId: string): string {
   return `session:${sessionId}:state`;
+}
+
+export function loreKvKey(sessionId: string, term: string): string {
+  return `lore:${sessionId}:${term.toLowerCase()}`;
 }
 
 interface SessionMeta {
@@ -109,6 +120,9 @@ export class GameSession extends DurableObject<Env> {
       const meta = await this.ctx.storage.get<SessionMeta>("meta");
       if (!meta) return json({ error: "session_not_initialized" }, 409);
 
+      if (request.method === "GET" && path === "/lore") {
+        return await this.lore(meta, new URL(request.url));
+      }
       if (request.method === "POST" && path === "/setup") {
         return await this.setup(meta, await request.json());
       }
@@ -233,21 +247,23 @@ export class GameSession extends DurableObject<Env> {
       (await this.ctx.storage.get<string[]>("setup_questions")) ?? [];
     const state = (await this.ctx.storage.get<GameState>("state"))!;
 
-    // Les réponses deviennent des faits établis de la session.
+    // Les réponses deviennent des faits établis de la session (en mémoire :
+    // elles ne sont persistées qu'au succès de la scène 1, voir becomePlaying).
     questions.forEach((q, i) => {
       const answer = (answers[i] as string | undefined)?.trim();
       if (answer) state.facts.push(`${q} → ${answer}`);
     });
 
-    meta.status = "playing";
-    await this.ctx.storage.put({ meta, state });
-    await this.env.DB.prepare(
-      `UPDATE game_sessions SET status = 'playing' WHERE id = ?`,
-    )
-      .bind(meta.sessionId)
-      .run();
-
-    return this.generate(meta, state, buildSetupMessage(questions, answers));
+    // Le passage en 'playing' n'est commité qu'à la fin de la génération : une
+    // scène 1 interrompue laisse la session en 'setup', donc rejouable via
+    // POST /setup (le dernier état validé reste l'avant-setup, §résilience).
+    return this.generate(
+      meta,
+      state,
+      buildSetupMessage(questions, answers),
+      null,
+      { becomePlaying: true },
+    );
   }
 
   // ── Tour de jeu ───────────────────────────────────────────────────────
@@ -451,6 +467,7 @@ export class GameSession extends DurableObject<Env> {
     state: GameState,
     userText: string,
     consumedRoll: RollResult | null = null,
+    opts: { becomePlaying?: boolean } = {},
   ): Promise<Response> {
     if (!this.env.ANTHROPIC_API_KEY) {
       return json({ error: "narrator_not_configured" }, 503);
@@ -460,7 +477,16 @@ export class GameSession extends DurableObject<Env> {
 
     const { readable, writable } = new TransformStream();
     // Le DO reste actif tant que la réponse streamée est ouverte.
-    void this.pump(writable, meta, state, userText, system, messages, consumedRoll);
+    void this.pump(
+      writable,
+      meta,
+      state,
+      userText,
+      system,
+      messages,
+      consumedRoll,
+      Boolean(opts.becomePlaying),
+    );
 
     return new Response(readable, {
       headers: {
@@ -479,6 +505,7 @@ export class GameSession extends DurableObject<Env> {
     system: string,
     messages: Anthropic.MessageParam[],
     consumedRoll: RollResult | null,
+    becomePlaying: boolean,
   ): Promise<void> {
     const writer = writable.getWriter();
     const encoder = new TextEncoder();
@@ -547,17 +574,61 @@ export class GameSession extends DurableObject<Env> {
       }
       await handle(parser.flush());
 
-      // Persistance atomique du tour (user + assistant) et de l'état.
+      // Garde-fou de fin de tour (§7) : si le tour retombe fermé (ni question
+      // ni options) ET qu'aucun jet n'est en attente, on relance le modèle
+      // pour une vraie relance — filet best-effort, invisible pour le joueur.
+      if (!state.pending_roll && !turnEndsOpen(stripGmTags(raw))) {
+        try {
+          const relance = await client.messages.create(
+            {
+              model: NARRATION_MODEL,
+              max_tokens: MAX_RELANCE_TOKENS,
+              system,
+              messages: [
+                ...messages,
+                { role: "assistant", content: raw },
+                { role: "user", content: RELANCE_MESSAGE },
+              ],
+            },
+            { maxRetries: 0 },
+          );
+          const clean = stripGmTags(
+            relance.content
+              .filter((b) => b.type === "text")
+              .map((b) => b.text)
+              .join(""),
+          ).trim();
+          if (clean) {
+            const joined = "\n\n" + clean;
+            await send("narration", { text: joined });
+            raw += joined;
+          }
+        } catch (err) {
+          console.error(`[game-session] relance ${meta.sessionId} :`, err);
+        }
+      }
+
+      // Persistance atomique du tour (user + assistant) et de l'état. Le
+      // passage en 'playing' (scène 1) n'est commité qu'ici, au succès.
       const stored =
         (await this.ctx.storage.get<number>("turn_count_stored")) ?? 0;
       state.turn_count += 1;
+      if (becomePlaying) meta.status = "playing";
       await this.ctx.storage.put({
         [turnKey(stored)]: { role: "user", text: userText } as StoredTurn,
         [turnKey(stored + 1)]: { role: "assistant", text: raw } as StoredTurn,
         turn_count_stored: stored + 2,
         state,
         inventions,
+        ...(becomePlaying ? { meta } : {}),
       });
+      if (becomePlaying) {
+        await this.env.DB.prepare(
+          `UPDATE game_sessions SET status = 'playing' WHERE id = ?`,
+        )
+          .bind(meta.sessionId)
+          .run();
+      }
       await this.syncKV(meta, state);
 
       await send("done", { turn: state.turn_count, souffle: state.souffle });
@@ -579,25 +650,68 @@ export class GameSession extends DurableObject<Env> {
 
   // ── Helpers ───────────────────────────────────────────────────────────
 
+  /** Canon Markdown de la bible, relu depuis D1 au premier besoin. */
+  private async ensureCanon(bibleId: string): Promise<string> {
+    if (this.canonCache === null) {
+      const row = await this.env.DB.prepare(
+        `SELECT canon_md FROM bibles WHERE id = ?`,
+      )
+        .bind(bibleId)
+        .first<{ canon_md: string | null }>();
+      this.canonCache = row?.canon_md ?? "";
+    }
+    return this.canonCache;
+  }
+
+  // ── Fiche lore (§7) : résolue une fois par session, cachée en KV ──────────
+
+  private async lore(meta: SessionMeta, url: URL): Promise<Response> {
+    const term = (url.searchParams.get("term") ?? "").trim().slice(0, 120);
+    if (!term) return json({ error: "missing_term" }, 400);
+
+    const key = loreKvKey(meta.sessionId, term);
+    const cached = await this.env.CACHE.get(key);
+    if (cached) {
+      return new Response(cached, {
+        status: 200,
+        headers: { "content-type": "application/json" },
+      });
+    }
+
+    const canon = await this.ensureCanon(meta.bibleId);
+    const inventions =
+      (await this.ctx.storage.get<Invention[]>("inventions")) ?? [];
+    const fiche = resolveLore(
+      canon,
+      inventions,
+      term,
+      url.searchParams.get("kind"),
+    );
+    const payload = JSON.stringify({ ...fiche, bible_id: meta.bibleId });
+    // Best-effort : un échec de cache ne doit pas priver le joueur de la fiche.
+    try {
+      await this.env.CACHE.put(key, payload, { expirationTtl: LORE_TTL_SECONDS });
+    } catch (err) {
+      console.error(`[game-session] cache lore ${meta.sessionId} :`, err);
+    }
+    return new Response(payload, {
+      status: 200,
+      headers: { "content-type": "application/json" },
+    });
+  }
+
   private async systemPrompt(
     meta: SessionMeta,
     state: GameState,
     queryText = "",
   ): Promise<string> {
-    if (this.canonCache === null) {
-      const row = await this.env.DB.prepare(
-        `SELECT canon_md FROM bibles WHERE id = ?`,
-      )
-        .bind(meta.bibleId)
-        .first<{ canon_md: string | null }>();
-      this.canonCache = row?.canon_md ?? "";
-    }
+    const canon = await this.ensureCanon(meta.bibleId);
     // RAG (M6) : bible volumineuse → top-6 d'extraits re-rankés pour ce
     // tour ; null (bindings absents, index périmé...) → troncature.
     const canonExcerpts = await retrieveCanonExcerpts(
       this.env,
       meta.bibleId,
-      this.canonCache,
+      canon,
       queryText || (meta.trame ?? meta.bibleTitle),
       {
         trame: meta.trame,
@@ -610,7 +724,7 @@ export class GameSession extends DurableObject<Env> {
     );
     return buildSystemPrompt({
       bibleTitle: meta.bibleTitle,
-      canonMd: this.canonCache,
+      canonMd: canon,
       canonExcerpts,
       scores: meta.scores,
       gaps: meta.gaps,

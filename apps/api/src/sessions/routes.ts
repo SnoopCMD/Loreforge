@@ -192,6 +192,22 @@ sessions.post("/:id/turn", proxy("/turn"));
 sessions.post("/:id/roll", proxy("/roll"));
 sessions.post("/:id/finish", proxy("/finish"));
 
+// GET /api/sessions/:id/lore?term=&kind= — fiche d'un terme d'univers (§7).
+// Handler dédié : le proxy générique perdrait la query string.
+sessions.get("/:id/lore", async (c) => {
+  const row = await loadOwnedSession(c.env.DB, c.req.param("id"), c.get("user").id);
+  if (!row) return c.json({ error: "not_found" }, 404);
+
+  const qs = new URLSearchParams({
+    term: c.req.query("term") ?? "",
+    kind: c.req.query("kind") ?? "",
+  }).toString();
+  const stub = c.env.GAME_SESSIONS.get(
+    c.env.GAME_SESSIONS.idFromString(row.id),
+  );
+  return stub.fetch(`https://do/lore?${qs}`);
+});
+
 // GET /api/sessions/:id/state — cache chaud KV, sinon DO (qui repeuple KV).
 sessions.get("/:id/state", async (c) => {
   const row = await loadOwnedSession(

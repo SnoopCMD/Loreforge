@@ -109,6 +109,17 @@ Règles dérivées :
 - Axes ≥ 8 (${highAxes.join(", ") || "aucun"}) : cite le canon, n'invente qu'en dernier recours.
 - Axes ≤ 4 (${lowAxes.join(", ") || "aucun"}) : invente librement mais reste cohérent ; marque chaque invention significative entre balises <invention axis="...">...</invention> (invisibles pour le joueur, extraites par le serveur — place-les en fin de tour, hors narration).
 
+== TERMES D'UNIVERS (glossaire cliquable) ==
+Quand tu emploies un nom propre porteur de lore — personnage, faction, lieu ou
+concept d'univers (ex. « Garde Blanche », « Commandant Aurélio Kass »,
+« la Source ») — enveloppe SA PREMIÈRE mention du tour dans une balise
+<lore term="Nom canonique" kind="personnage|faction|lieu|concept">texte
+affiché</lore>. Le texte affiché reste visible et lu normalement ; la balise
+est invisible pour le joueur et rend le terme cliquable. N'annote pas les mots
+ordinaires ni chaque répétition — juste les termes d'univers, une fois par tour.
+Si tu inventes un terme d'univers (axe faible), annote-le AUSSI avec <lore>, et
+définis-le via <invention> pour qu'il ne reste pas « mort ».
+
 == TON ==
 ${tone}
 
@@ -134,8 +145,12 @@ Faits établis en session (jamais contredits) :
 ${facts}
 
 == STYLE DE NARRATION ==
-- Scènes courtes et cinématiques ; termine chaque tour par une question
-  ouverte ou 2-3 options concrètes.
+- Scènes courtes et cinématiques.
+- RÈGLE NON NÉGOCIABLE — fin de tour : chaque tour DOIT se terminer soit par
+  une question ouverte explicite adressée au joueur, soit par 2-3 options
+  concrètes numérotées ou à puces. JAMAIS sur une simple description ou une
+  scène qui « retombe » sans relance. La seule exception est une action risquée
+  suspendue sur <roll reason="..."/> (l'issue devient alors la relance).
 - Fais vivre les PNJ canon avec leurs motivations écrites.
 - Jamais de contradiction avec le canon ni avec les faits établis en session.
 - Réponds en français, uniquement la narration (plus les balises prévues).`;
@@ -171,6 +186,40 @@ ${qa || "(pas de questions de mise en place)"}
 Ouvre la scène 1 : pose le décor, introduis le personnage joueur, termine
 par une question ouverte ou 2-3 options concrètes.`;
 }
+
+// ── Garde-fou de fin de tour (§7) ─────────────────────────────────────────
+
+// Une ligne d'options concrètes de fin de tour (puce ou numéro).
+const OPTION_LINE = /^(?:[-–—•*]|\d{1,2}[.)])\s+\S/;
+
+/**
+ * Le tour se termine-t-il « ouvert » ? Vrai si les 2 dernières phrases posent
+ * une question, OU si la narration se clôt sur ≥ 2 options listées. Sert de
+ * filet serveur : sinon on relance le modèle pour une vraie relance.
+ * Reçoit la narration VISIBLE (balises déjà retirées).
+ */
+export function turnEndsOpen(narration: string): boolean {
+  const text = narration.trim();
+  if (!text) return true; // rien à relancer (cas d'erreur amont)
+
+  // Bloc d'options en fin de narration.
+  const lines = text.split(/\r?\n/).map((l) => l.trim()).filter(Boolean);
+  let opts = 0;
+  for (let i = lines.length - 1; i >= 0; i--) {
+    if (OPTION_LINE.test(lines[i])) opts++;
+    else break;
+  }
+  if (opts >= 2) return true;
+
+  // Point d'interrogation dans les 2 dernières phrases.
+  const sents = text.match(/[^.!?…]+[.!?…]+|\S[^.!?…]*$/g) ?? [text];
+  return sents.slice(-2).join(" ").includes("?");
+}
+
+/** Second appel court quand un tour retombe fermé (filet, invisible au joueur). */
+export const RELANCE_MESSAGE = `Termine ce tour par une question ouverte ou 2-3 options concrètes pour le
+joueur, sans répéter la scène ni la narration précédente. Réponds uniquement
+avec cette relance (1 à 3 phrases), sans aucune balise.`;
 
 /** Dernier message utilisateur avant résumé de fin de session. */
 export const SUMMARY_MESSAGE = `La session est terminée. Rédige un résumé structuré en Markdown avec les
