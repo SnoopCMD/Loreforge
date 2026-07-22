@@ -4,11 +4,7 @@
 
 import { SELF } from "cloudflare:test";
 import { afterEach, beforeAll, describe, expect, it } from "vitest";
-import {
-  assertAnthropicMockConsumed,
-  installAnthropicMock,
-  mockAnthropicText,
-} from "./anthropic-mock";
+import { assertAnthropicMockConsumed, installAnthropicMock } from "./anthropic-mock";
 import { BASE_SECTIONS, renderCanon } from "../src/bibles/sections";
 import { heuristicClassify } from "../src/bibles/classify";
 
@@ -90,7 +86,8 @@ const req = (cookie: string, path: string, method = "GET", body?: unknown) =>
 
 async function createBible(cookie: string): Promise<string> {
   const res = await req(cookie, "/api/bibles", "POST", {
-    markdown: "# Les Mondes Fêlés\n\nLa magie vient des failles entre les Mondes.",
+    markdown:
+      "# Les Mondes Fêlés\n\nUn pitch d'intro.\n\n## Cosmologie et magie\n\nLa magie vient des failles entre les Mondes.",
   });
   return ((await res.json()) as { id: string }).id;
 }
@@ -104,21 +101,16 @@ interface Section {
 }
 
 describe("édition par sections", () => {
-  it("init paresseuse (classification IA) puis autosave, ajout, réordonnancement, suppression", async () => {
+  it("init paresseuse (heuristique) puis autosave, ajout, réordonnancement, suppression", async () => {
     const cookie = await login("sections@example.com");
     const bibleId = await createBible(cookie);
 
-    // 1er GET : la bible n'a pas de sections → classification IA mockée.
-    mockAnthropicText(
-      JSON.stringify({
-        base: [{ key: "cosmology", content_md: "La magie vient des failles entre les Mondes." }],
-        custom: [],
-      }),
-    );
+    // 1er GET : la bible n'a pas de sections → init heuristique synchrone
+    // (aucun appel IA : le titre H2 « Cosmologie et magie » → axe cosmology).
     const first = (await (await req(cookie, `/api/bibles/${bibleId}/sections`)).json()) as {
       sections: Section[];
     };
-    // 8 sections de base présentes, la cosmologie remplie par l'IA.
+    // 8 sections de base présentes, la cosmologie remplie par l'heuristique.
     expect(first.sections.filter((s) => s.is_base)).toHaveLength(BASE_SECTIONS.length);
     const cosmo = first.sections.find((s) => s.axis === "cosmology")!;
     expect(cosmo.content_md).toContain("failles");

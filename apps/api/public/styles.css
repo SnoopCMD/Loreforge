@@ -95,6 +95,9 @@ h2 {
 .mono { font-family: "JetBrains Mono", monospace; }
 
 .app { max-width: 960px; margin: 0 auto; padding: 1.5rem 1rem 4rem; }
+/* L'éditeur de bible (nav + éditeur côte à côte) respire mal dans 960px :
+   on élargit le conteneur quand l'écran « détail bible » est affiché. */
+.app:has(> #screen-bible:not(.hidden)) { max-width: 1240px; }
 
 /* ── Barre supérieure ─────────────────────────────────────────────────── */
 

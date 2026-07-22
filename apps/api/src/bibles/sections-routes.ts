@@ -41,15 +41,17 @@ async function syncCanon(
 }
 
 // GET /:id/sections — liste ordonnée. Init paresseuse au premier accès :
-// classifie le canon existant (IA, repli heuristique) ou crée 8 sections de
-// base vides — migre aussi les bibles créées avant la refonte.
+// répartit le canon existant par titres H2 (heuristique, synchrone) ou crée 8
+// sections de base vides — migre aussi les bibles créées avant la refonte.
+// Volontairement sans IA : le canon existant est déjà structuré en H2 propres,
+// et bloquer le chargement de l'éditeur sur un appel Sonnet (plusieurs dizaines
+// de secondes) figeait l'écran sur « Chargement… ».
 bibleSections.get("/:id/sections", async (c) => {
   const bible = await owned(c);
   if (!bible) return c.json({ error: "not_found" }, 404);
 
   const { rows, initialized } = await ensureSections(c.env.DB, bible, {
-    apiKey: c.env.ANTHROPIC_API_KEY,
-    useAi: true,
+    useAi: false,
   });
   if (initialized) {
     // Le canon a été régénéré à l'init : on réindexe en tâche de fond.
