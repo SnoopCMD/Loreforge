@@ -1,7 +1,7 @@
-// Générations courtes fondées sur le canon (même esprit que les <invention>
-// de session) : combler une zone floue, ou transformer un retour d'auteur en
-// proposition de modification ciblée. Toujours cohérent avec le canon, jamais
-// de méta — que du texte prêt à rejoindre la bible.
+// Génération courte fondée sur le canon (même esprit que les <invention> de
+// session) : transformer un retour d'auteur en proposition de modification
+// ciblée. Toujours cohérent avec le canon, jamais de méta — que du texte prêt
+// à rejoindre la bible.
 
 import Anthropic from "@anthropic-ai/sdk";
 import { AXES, type Axis } from "./logic";
@@ -16,45 +16,6 @@ function clampCanon(canonMd: string): string {
   return c.length > MAX_CANON_CHARS
     ? c.slice(0, MAX_CANON_CHARS) + "\n\n[… canon tronqué …]"
     : c;
-}
-
-/**
- * Rédige 1 à 2 paragraphes façon bible pour combler une zone floue sur un axe
- * donné. Renvoie du markdown prêt à insérer dans la section. Jette si l'appel
- * échoue (l'appelant gère l'erreur HTTP).
- */
-export async function suggestGapFill(
-  apiKey: string,
-  canonMd: string,
-  axis: Axis,
-  description: string,
-): Promise<string> {
-  const client = new Anthropic({ apiKey });
-  const prompt = `Tu enrichis la bible d'un univers de jeu de rôle. Voici le canon
-existant (source de vérité) :
----
-${clampCanon(canonMd)}
----
-
-Une analyse a repéré une ZONE FLOUE sur l'axe « ${axis} » :
-« ${description} »
-
-Rédige 1 à 2 paragraphes en français, façon bible d'univers, qui comblent
-précisément ce manque. Contraintes :
-- Strictement cohérent avec le canon ci-dessus (ne le contredis jamais).
-- Concret et jouable : des faits, des noms, des règles — pas des généralités.
-- Aucune méta, aucun préambule ni titre : uniquement le texte à insérer.`;
-
-  const response = await client.messages.create({
-    model: SUGGEST_MODEL,
-    max_tokens: 1024,
-    messages: [{ role: "user", content: prompt }],
-  });
-  return response.content
-    .filter((b) => b.type === "text")
-    .map((b) => b.text)
-    .join("")
-    .trim();
 }
 
 export interface CommentProposal {

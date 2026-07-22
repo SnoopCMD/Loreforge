@@ -191,6 +191,7 @@ export function heuristicClassify(canonMd: string): ClassifiedSection[] {
 export async function classifyCanon(
   apiKey: string | undefined,
   canonMd: string,
+  onProgress?: (chars: number) => void,
 ): Promise<ClassifiedSection[]> {
   const trimmed = canonMd.trim();
   if (trimmed === "") return emptyBaseSections();
@@ -208,6 +209,16 @@ export async function classifyCanon(
       },
       messages: [{ role: "user", content: buildClassifyPrompt(canonMd) }],
     });
+    if (onProgress) {
+      let chars = 0;
+      stream.on("streamEvent", (event) => {
+        if (event.type === "content_block_delta") {
+          const delta = event.delta as { text?: string };
+          chars += (delta.text ?? "").length;
+          onProgress(chars);
+        }
+      });
+    }
     const response = await stream.finalMessage();
     if (response.stop_reason === "refusal") throw new Error("classify_refused");
 
