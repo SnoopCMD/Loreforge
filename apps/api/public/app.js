@@ -623,6 +623,7 @@ const WS = {
   global: null,
   saveTimer: null,
   dirtyId: null,     // section en attente d'autosave
+  editing: false,    // mode édition (markdown brut) vs lecture (rendu)
 };
 
 async function loadWorkspace() {
@@ -795,6 +796,29 @@ function renderEditor(section) {
   setSaveState("");
   updateWordCount();
   renderAxisBadge(section);
+  setEditMode(false); // ouvre toujours en lecture (rendu formaté)
+}
+
+/** Rend le markdown de la section active en HTML lisible (mode lecture). */
+function renderSectionBody() {
+  const md = $("ws-sec-body").value;
+  $("ws-render").innerHTML = md.trim()
+    ? mdToHtml(md)
+    : '<p class="msg">Section vide — cliquez pour rédiger.</p>';
+}
+
+/** Bascule lecture (rendu) ⇄ édition (markdown brut). */
+function setEditMode(on) {
+  WS.editing = on;
+  $("ws-edit-pane").classList.toggle("hidden", !on);
+  $("ws-render").classList.toggle("hidden", on);
+  $("ws-mode-toggle").textContent = on ? "👁 Aperçu" : "✎ Éditer";
+  if (on) {
+    $("ws-sec-body").focus();
+  } else {
+    flushWsSave();
+    renderSectionBody();
+  }
 }
 
 function renderAxisBadge(section) {
@@ -956,6 +980,12 @@ async function persistWsOrder() {
 // Écouteurs d'édition (les éléments sont statiques dans index.html).
 $("ws-sec-title").addEventListener("input", onEditorInput);
 $("ws-sec-body").addEventListener("input", () => { updateWordCount(); onEditorInput(); });
+// Bascule lecture ⇄ édition ; cliquer le rendu ouvre l'édition.
+$("ws-mode-toggle").addEventListener("click", () => setEditMode(!WS.editing));
+$("ws-render").addEventListener("click", () => setEditMode(true));
+$("ws-render").addEventListener("keydown", (e) => {
+  if (e.key === "Enter" || e.key === " ") { e.preventDefault(); setEditMode(true); }
+});
 $("ws-sec-body").addEventListener("keydown", (e) => {
   if (!(e.ctrlKey || e.metaKey)) return;
   const k = e.key.toLowerCase();
@@ -988,6 +1018,51 @@ function applyMd(kind) {
 // Enregistre les modifications en attente quand on quitte l'écran ou la page.
 window.addEventListener("hashchange", flushWsSave);
 window.addEventListener("beforeunload", flushWsSave);
+
+// Répartition IA à la demande : reclasse le canon existant dans les sections.
+// Confirmation armée car elle remplace le découpage courant (le texte, lui, est
+// préservé). Peut prendre plusieurs dizaines de secondes → spinner, pas de
+// blocage du chargement.
+let redistArmed = false;
+let redistBusy = false;
+function resetRedist() {
+  redistArmed = false;
+  $("redistribute-btn").textContent = "✨ Répartir avec l'IA";
+  $("redistribute-btn").classList.remove("armed");
+}
+$("redistribute-btn").addEventListener("click", async () => {
+  if (redistBusy) return;
+  const btn = $("redistribute-btn");
+  if (!redistArmed) {
+    redistArmed = true;
+    btn.textContent = "Confirmer ? (remplace le découpage)";
+    btn.classList.add("armed");
+    setTimeout(resetRedist, 5000);
+    return;
+  }
+  resetRedist();
+  redistBusy = true;
+  btn.disabled = true;
+  $("redistribute-msg").innerHTML = spin("L’esprit réorganise votre univers…");
+  $("redistribute-msg").className = "msg";
+  try {
+    const res = await api("/bibles/" + currentBible.id + "/sections/redistribute", {
+      method: "POST",
+    });
+    if (!res.ok) throw new Error("redistribute_failed");
+    const body = await res.json();
+    WS.sections = body.sections || [];
+    renderWsNav();
+    selectSection(OVERVIEW);
+    $("redistribute-msg").textContent = "Contenu réparti par l’IA.";
+  } catch {
+    $("redistribute-msg").textContent = "La répartition a échoué — réessayez.";
+    $("redistribute-msg").className = "msg error";
+  } finally {
+    redistBusy = false;
+    btn.disabled = false;
+  }
+});
 
 // L'analyse tourne dans la requête SSE : la page doit rester ouverte,
 // en échange on a une progression réelle et jamais d'analyse zombie.

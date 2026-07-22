@@ -221,8 +221,12 @@
         <section id="ws-overview" class="ws-view hidden">
           <div class="row spread ws-view-head">
             <h2>Vue d'ensemble</h2>
-            <button id="analyze-btn">Analyser la richesse</button>
+            <span class="row ws-view-actions">
+              <button class="ghost" id="redistribute-btn" title="Réorganise le contenu existant dans les bonnes sections">✨ Répartir avec l'IA</button>
+              <button id="analyze-btn">Analyser la richesse</button>
+            </span>
           </div>
+          <p id="redistribute-msg" class="msg"></p>
           <p id="analyze-msg" class="msg"></p>
           <div id="richness-block" class="hidden">
             <div class="radar-wrap">
@@ -239,25 +243,34 @@
           </div>
           <p id="richness-empty" class="msg">Pas encore analysée — lance « Analyser la richesse » pour l'indice de richesse et les zones floues.</p>
         </section>
-        <!-- Éditeur de la section active. -->
+        <!-- Éditeur de la section active. Deux modes : lecture (rendu markdown
+             lisible) et édition (markdown brut + barre d'outils). -->
         <section id="ws-editor" class="ws-view hidden">
           <div class="ws-ed-head">
             <input id="ws-sec-title" class="ws-sec-title" aria-label="Titre de la section" placeholder="Titre de la section" />
-            <button class="ghost ws-sec-del" id="ws-sec-del" title="Supprimer la section">Supprimer</button>
+            <span class="row ws-ed-head-actions">
+              <button class="ghost" id="ws-mode-toggle" title="Basculer lecture / édition">✎ Éditer</button>
+              <button class="ghost ws-sec-del" id="ws-sec-del" title="Supprimer la section">Supprimer</button>
+            </span>
           </div>
           <div class="ws-ed-meta">
             <span id="ws-axis-badge" class="axis-badge hidden"></span>
             <span id="ws-wordcount" class="mono msg"></span>
           </div>
-          <div class="ws-toolbar" id="ws-toolbar" role="toolbar" aria-label="Mise en forme">
-            <button type="button" class="ws-tool" data-md="bold" title="Gras (Ctrl+B)"><b>B</b></button>
-            <button type="button" class="ws-tool" data-md="italic" title="Italique (Ctrl+I)"><i>I</i></button>
-            <span class="ws-tool-sep"></span>
-            <button type="button" class="ws-tool" data-md="h2" title="Titre">H2</button>
-            <button type="button" class="ws-tool" data-md="ul" title="Liste">☰</button>
-            <button type="button" class="ws-tool" data-md="quote" title="Citation">❝</button>
+          <!-- Mode lecture : rendu formaté, cliquer pour éditer. -->
+          <div id="ws-render" class="ws-render" role="button" tabindex="0" aria-label="Contenu de la section — cliquez pour éditer"></div>
+          <!-- Mode édition : markdown brut. -->
+          <div id="ws-edit-pane" class="hidden">
+            <div class="ws-toolbar" id="ws-toolbar" role="toolbar" aria-label="Mise en forme">
+              <button type="button" class="ws-tool" data-md="bold" title="Gras (Ctrl+B)"><b>B</b></button>
+              <button type="button" class="ws-tool" data-md="italic" title="Italique (Ctrl+I)"><i>I</i></button>
+              <span class="ws-tool-sep"></span>
+              <button type="button" class="ws-tool" data-md="h2" title="Titre">H2</button>
+              <button type="button" class="ws-tool" data-md="ul" title="Liste">☰</button>
+              <button type="button" class="ws-tool" data-md="quote" title="Citation">❝</button>
+            </div>
+            <textarea id="ws-sec-body" class="ws-editor" aria-label="Contenu de la section" spellcheck="true"></textarea>
           </div>
-          <textarea id="ws-sec-body" class="ws-editor" aria-label="Contenu de la section" spellcheck="true"></textarea>
         </section>
       </div>
     </div>

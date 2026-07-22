@@ -4,7 +4,11 @@
 
 import { SELF } from "cloudflare:test";
 import { afterEach, beforeAll, describe, expect, it } from "vitest";
-import { assertAnthropicMockConsumed, installAnthropicMock } from "./anthropic-mock";
+import {
+  assertAnthropicMockConsumed,
+  installAnthropicMock,
+  mockAnthropicText,
+} from "./anthropic-mock";
 import { BASE_SECTIONS, renderCanon } from "../src/bibles/sections";
 import { heuristicClassify } from "../src/bibles/classify";
 
@@ -156,6 +160,37 @@ describe("édition par sections", () => {
       sections: Section[];
     };
     expect(afterDel.sections.find((s) => s.id === cosmo.id)).toBeUndefined();
+  });
+
+  it("redistribue le canon via l'IA (à la demande, remplace le découpage)", async () => {
+    const cookie = await login("redist@example.com");
+    const bibleId = await createBible(cookie);
+    // Init heuristique (aucun appel IA).
+    await req(cookie, `/api/bibles/${bibleId}/sections`);
+
+    // Redistribution IA mockée : reclasse tout le canon.
+    mockAnthropicText(
+      JSON.stringify({
+        base: [{ key: "characters", content_md: "Zuma, le premier héros." }],
+        custom: [{ title: "Annexe", content_md: "Notes libres." }],
+      }),
+    );
+    const res = await req(cookie, `/api/bibles/${bibleId}/sections/redistribute`, "POST");
+    expect(res.status).toBe(200);
+    const { sections } = (await res.json()) as { sections: Section[] };
+
+    // 8 sections de base toujours présentes, la classification IA appliquée.
+    expect(sections.filter((s) => s.is_base)).toHaveLength(BASE_SECTIONS.length);
+    const chars = sections.find((s) => s.axis === "characters");
+    expect(chars?.content_md).toContain("Zuma, le premier héros");
+    const annex = sections.find((s) => !s.is_base && s.title === "Annexe");
+    expect(annex?.content_md).toContain("Notes libres");
+
+    // Le canon dérivé reflète la nouvelle répartition.
+    const bible = (await (await req(cookie, `/api/bibles/${bibleId}`)).json()) as {
+      canon_md: string;
+    };
+    expect(bible.canon_md).toContain("Zuma, le premier héros");
   });
 
   it("cloisonne par utilisateur", async () => {

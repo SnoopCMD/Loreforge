@@ -10,8 +10,9 @@ import { requireAuth } from "../auth/middleware";
 import { findOwnedBible } from "./db";
 import { MAX_IMPORT_BYTES } from "./normalize";
 import { reindexBible } from "../rag/store";
-import { ensureSections } from "./classify";
+import { classifyCanon, ensureSections } from "./classify";
 import {
+  insertSections,
   listSections,
   regenerateCanon,
   renderCanon,
@@ -59,6 +60,27 @@ bibleSections.get("/:id/sections", async (c) => {
       reindexBible(c.env, bible.id, renderCanon(bible.title, rows)),
     );
   }
+  return c.json({ sections: rows.map(toPublicSection) });
+});
+
+// POST /:id/sections/redistribute — reclasse le canon courant via l'IA (repli
+// heuristique) et REMPLACE les sections. À la demande (bouton), jamais bloquant
+// au chargement. Le texte est préservé : réparti dans les sections, pas réécrit.
+bibleSections.post("/:id/sections/redistribute", async (c) => {
+  const bible = await owned(c);
+  if (!bible) return c.json({ error: "not_found" }, 404);
+
+  const classified = await classifyCanon(
+    c.env.ANTHROPIC_API_KEY,
+    bible.canon_md ?? "",
+  );
+  await c.env.DB.prepare(`DELETE FROM bible_sections WHERE bible_id = ?`)
+    .bind(bible.id)
+    .run();
+  await insertSections(c.env.DB, bible.id, classified);
+  await syncCanon(c, bible.id, bible.title);
+
+  const rows = await listSections(c.env.DB, bible.id);
   return c.json({ sections: rows.map(toPublicSection) });
 });
 

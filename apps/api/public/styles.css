@@ -95,9 +95,10 @@ h2 {
 .mono { font-family: "JetBrains Mono", monospace; }
 
 .app { max-width: 960px; margin: 0 auto; padding: 1.5rem 1rem 4rem; }
-/* L'éditeur de bible (nav + éditeur côte à côte) respire mal dans 960px :
-   on élargit le conteneur quand l'écran « détail bible » est affiché. */
-.app:has(> #screen-bible:not(.hidden)) { max-width: 1240px; }
+/* L'éditeur de bible (nav large + éditeur côte à côte) respire mal dans 960px :
+   on élargit fortement le conteneur quand l'écran « détail bible » est affiché
+   (borne haute pour ne pas coller aux bords des très grands écrans). */
+.app:has(> #screen-bible:not(.hidden)) { max-width: min(1720px, 96vw); }
 
 /* ── Barre supérieure ─────────────────────────────────────────────────── */
 
@@ -901,7 +902,7 @@ button.armed, .bible-card .card-delete.armed {
 .save-state.saved { color: var(--spirit); }
 .save-state.error { color: var(--ember); }
 
-.ws-grid { display: grid; grid-template-columns: 232px minmax(0, 1fr); gap: 1.5rem; }
+.ws-grid { display: grid; grid-template-columns: 320px minmax(0, 1fr); gap: 1.8rem; }
 
 /* Navigation gauche (desktop) : encadrée comme une barre latérale. */
 .ws-nav {
@@ -1029,6 +1030,34 @@ button.armed, .bible-card .card-delete.armed {
   box-shadow: 0 0 0 1px rgba(103, 232, 249, 0.3);
 }
 .ws-editor::placeholder { color: var(--parchment-dim); }
+
+.ws-ed-head-actions, .ws-view-actions { gap: 0.5rem; flex: none; }
+#redistribute-btn.armed { border-color: var(--ember); color: var(--ember); }
+#redistribute-msg:empty { display: none; }
+
+/* Mode lecture : rendu markdown lisible (cliquer pour éditer). */
+.ws-render {
+  min-height: 60vh; cursor: text;
+  background: var(--void); border: 1px solid var(--line); border-radius: 10px;
+  padding: 1.4rem 1.6rem; color: var(--parchment);
+  font-size: 1.02rem; line-height: 1.75;
+  transition: border-color 0.15s ease;
+}
+.ws-render:hover { border-color: rgba(103, 232, 249, 0.35); }
+.ws-render:focus-visible { outline: 2px solid var(--spirit); outline-offset: 2px; }
+.ws-render > :first-child { margin-top: 0; }
+.ws-render > :last-child { margin-bottom: 0; }
+.ws-render h2 {
+  font-family: Cinzel, serif; font-size: 1.25rem; color: var(--parchment);
+  margin: 1.6rem 0 0.6rem; padding-bottom: 0.3rem;
+  border-bottom: 1px solid var(--line);
+}
+.ws-render h3 { font-family: Cinzel, serif; font-size: 1.05rem; margin: 1.2rem 0 0.4rem; }
+.ws-render p { margin: 0 0 0.9rem; }
+.ws-render ul { margin: 0 0 0.9rem; padding-left: 1.3rem; }
+.ws-render li { margin: 0.25rem 0; }
+.ws-render b, .ws-render strong { color: var(--parchment); font-weight: 700; }
+.ws-render em, .ws-render i { color: var(--parchment); }
 
 .rune.flash { border-left-color: var(--spirit); background: rgba(103, 232, 249, 0.1); }
 
