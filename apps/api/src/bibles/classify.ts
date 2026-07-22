@@ -176,22 +176,38 @@ export function heuristicClassify(canonMd: string): ClassifiedSection[] {
 
 // ── Classification IA (avec repli) ─────────────────────────────────────────
 
-/**
- * Répartit `canonMd` dans les sections. IA si possible (clé présente, bible pas
- * trop grosse), repli heuristique sinon. Ne jette jamais : renvoie toujours au
- * moins les 8 sections de base.
- */
-export async function classifyCanon(
-  apiKey: string | undefined,
-  canonMd: string,
-): Promise<ClassifiedSection[]> {
-  const trimmed = canonMd.trim();
-  if (trimmed === "") return emptyBaseSections();
+interface Block {
+  title: string;
+  body: string;
+}
 
-  const { preamble, sections } = splitH2(canonMd);
-  const blocks = sections.map((s) => ({ title: s.title, body: s.body.join("\n").trim() }));
-  // Rien à classer (pas de titres H2) ou pas de clé : l'heuristique suffit.
-  if (!apiKey || blocks.length === 0) return heuristicClassify(canonMd);
+const KEY_TO_TITLE = new Map(BASE_SECTIONS.map((s) => [s.key, s.title]));
+
+/** Repli sans IA : chaque bloc rejoint une base par mot-clé de titre, sinon custom. */
+function heuristicBlocks(preamble: string, blocks: Block[]): ClassifiedSection[] {
+  const baseContent = new Map<string, string>();
+  const taken = new Set<string>();
+  const custom: Array<{ title: string; content_md: string }> = [];
+  if (preamble) { baseContent.set("intro", preamble); taken.add("intro"); }
+  for (const b of blocks) {
+    const key = matchBaseKey(b.title, taken);
+    if (key) { taken.add(key); baseContent.set(key, b.body); }
+    else custom.push({ title: b.title || "Section", content_md: b.body });
+  }
+  return assemble(baseContent, custom);
+}
+
+/**
+ * Classe une liste de BLOCS (titre + corps) dans les sections via un PLAN IA
+ * (bloc → catégorie). Le contenu est réassemblé localement, jamais réécrit.
+ * Repli heuristique si pas de clé, aucun bloc, ou échec. Ne jette jamais.
+ */
+async function classifyBlocks(
+  apiKey: string | undefined,
+  preamble: string,
+  blocks: Block[],
+): Promise<ClassifiedSection[]> {
+  if (!apiKey || blocks.length === 0) return heuristicBlocks(preamble, blocks);
 
   try {
     const client = new Anthropic({ apiKey });
@@ -231,8 +247,14 @@ export async function classifyCanon(
       const target = targetByIndex.get(i);
       if (target && target !== "custom" && validKeys.has(target)) {
         // Conserve le titre d'origine en sous-section (### ) pour ne rien perdre
-        // quand plusieurs blocs atterrissent dans la même section de base.
-        const piece = b.body ? `### ${b.title}\n\n${b.body}` : `### ${b.title}`;
+        // quand plusieurs blocs atterrissent dans la même base — sauf si le titre
+        // du bloc est déjà celui de la section cible (pas de doublon).
+        const sameTitle = b.title.trim() === (KEY_TO_TITLE.get(target) ?? "");
+        const piece = sameTitle
+          ? b.body
+          : b.body
+            ? `### ${b.title}\n\n${b.body}`
+            : `### ${b.title}`;
         const prev = baseContent.get(target);
         baseContent.set(target, prev ? `${prev}\n\n${piece}` : piece);
       } else {
@@ -243,8 +265,39 @@ export async function classifyCanon(
     return assemble(baseContent, custom);
   } catch (err) {
     console.error("[sections] classification IA échouée, repli heuristique :", err);
-    return heuristicClassify(canonMd);
+    return heuristicBlocks(preamble, blocks);
   }
+}
+
+/**
+ * Répartit un canon (découpé en blocs H2) dans les sections. IA si possible,
+ * heuristique sinon. Utilisé pour migrer un canon brut (import).
+ */
+export async function classifyCanon(
+  apiKey: string | undefined,
+  canonMd: string,
+): Promise<ClassifiedSection[]> {
+  const trimmed = canonMd.trim();
+  if (trimmed === "") return emptyBaseSections();
+  const { preamble, sections } = splitH2(canonMd);
+  const blocks = sections.map((s) => ({ title: s.title, body: s.body.join("\n").trim() }));
+  return classifyBlocks(apiKey, preamble, blocks);
+}
+
+/**
+ * Répartit des SECTIONS existantes (répartition à la demande) : 1 section = 1
+ * bloc, pas de re-découpage du canon — les sous-titres ### internes restent
+ * intacts. Sections vides ignorées (les 8 bases sont toujours produites).
+ */
+export async function classifySections(
+  apiKey: string | undefined,
+  sections: Array<{ title: string; content_md: string }>,
+): Promise<ClassifiedSection[]> {
+  const blocks = sections
+    .filter((s) => (s.content_md ?? "").trim() !== "")
+    .map((s) => ({ title: s.title, body: s.content_md.trim() }));
+  if (blocks.length === 0) return emptyBaseSections();
+  return classifyBlocks(apiKey, "", blocks);
 }
 
 /**

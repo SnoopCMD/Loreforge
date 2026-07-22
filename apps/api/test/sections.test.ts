@@ -162,26 +162,20 @@ describe("édition par sections", () => {
     expect(afterDel.sections.find((s) => s.id === cosmo.id)).toBeUndefined();
   });
 
-  it("redistribue via un PLAN IA : déplace le bloc, préserve le contenu", async () => {
+  it("redistribue via un PLAN IA : déplace la section, préserve le contenu", async () => {
     const cookie = await login("redist@example.com");
     const bibleId = await createBible(cookie);
-    // Init heuristique : le bloc « Cosmologie » (contenant « failles ») est
-    // en position 1 du canon (intro=0, cosmology=1, chronology=2, …).
+    // Init heuristique. Seules 2 sections sont non vides → 2 blocs :
+    // [0] Introduction / pitch, [1] Cosmologie (contenant « failles »).
     await req(cookie, `/api/bibles/${bibleId}/sections`);
 
-    // L'IA ne renvoie qu'un plan bloc→cible. On déplace « failles » (index 1)
-    // vers l'axe personnages ; le reste garde sa place.
+    // L'IA ne renvoie qu'un plan section→cible. On déplace « failles » (index 1)
+    // vers l'axe personnages ; l'intro garde sa place.
     mockAnthropicText(
       JSON.stringify({
         assignments: [
           { index: 0, target: "intro" },
           { index: 1, target: "characters" },
-          { index: 2, target: "chronology" },
-          { index: 3, target: "characters" },
-          { index: 4, target: "factions" },
-          { index: 5, target: "plots" },
-          { index: 6, target: "geography" },
-          { index: 7, target: "tone" },
         ],
       }),
     );

@@ -10,7 +10,7 @@ import { requireAuth } from "../auth/middleware";
 import { findOwnedBible } from "./db";
 import { MAX_IMPORT_BYTES } from "./normalize";
 import { reindexBible } from "../rag/store";
-import { classifyCanon, ensureSections } from "./classify";
+import { classifySections, ensureSections } from "./classify";
 import {
   insertSections,
   listSections,
@@ -63,15 +63,17 @@ bibleSections.get("/:id/sections", async (c) => {
   return c.json({ sections: rows.map(toPublicSection) });
 });
 
-// POST /:id/sections/redistribute — reclasse le canon courant et REMPLACE les
-// sections. Le modèle ne renvoie qu'un PLAN (bloc → catégorie) ; le contenu est
-// réassemblé localement, jamais réécrit ni ré-émis. Sortie minuscule → appel
-// rapide (quelques secondes), sans risque de troncature ni d'éviction Workers.
+// POST /:id/sections/redistribute — reclasse les SECTIONS existantes et les
+// REMPLACE. Le modèle ne renvoie qu'un PLAN (section → catégorie) ; le contenu
+// est réassemblé localement, jamais réécrit ni ré-émis. 1 section = 1 bloc (pas
+// de re-découpage du canon). Sortie minuscule → appel de quelques secondes,
+// sans risque de troncature ni d'éviction Workers.
 bibleSections.post("/:id/sections/redistribute", async (c) => {
   const bible = await owned(c);
   if (!bible) return c.json({ error: "not_found" }, 404);
 
-  const classified = await classifyCanon(c.env.ANTHROPIC_API_KEY, bible.canon_md ?? "");
+  const current = await listSections(c.env.DB, bible.id);
+  const classified = await classifySections(c.env.ANTHROPIC_API_KEY, current);
   await c.env.DB.prepare(`DELETE FROM bible_sections WHERE bible_id = ?`)
     .bind(bible.id)
     .run();
