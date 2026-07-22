@@ -16,9 +16,6 @@ import {
 } from "./sections";
 
 const CLASSIFY_MODEL = "claude-sonnet-5";
-// Au-delà, on ne renvoie pas toute la bible au modèle (coût/latence) : le repli
-// heuristique redistribue par titres sans appel IA.
-const MAX_CLASSIFY_CHARS = 40_000;
 
 export interface ClassifiedSection {
   title: string;
@@ -27,58 +24,54 @@ export interface ClassifiedSection {
   axis: Axis | null;
 }
 
-const CLASSIFY_OUTPUT_SCHEMA = {
+// Le modèle ne renvoie qu'un PLAN (quel bloc H2 va dans quelle catégorie), pas
+// le contenu : la sortie reste minuscule quelle que soit la taille de la bible.
+// On réassemble le texte localement, sans jamais le faire ré-émettre au modèle
+// (rapide, jamais tronqué, contenu préservé au caractère près).
+const MAPPING_SCHEMA = {
   type: "object",
   additionalProperties: false,
-  required: ["base", "custom"],
+  required: ["assignments"],
   properties: {
-    base: {
+    assignments: {
       type: "array",
       items: {
         type: "object",
         additionalProperties: false,
-        required: ["key", "content_md"],
+        required: ["index", "target"],
         properties: {
-          key: { type: "string" },
-          content_md: { type: "string" },
-        },
-      },
-    },
-    custom: {
-      type: "array",
-      items: {
-        type: "object",
-        additionalProperties: false,
-        required: ["title", "content_md"],
-        properties: {
-          title: { type: "string" },
-          content_md: { type: "string" },
+          index: { type: "integer" },
+          target: { type: "string", enum: [...BASE_SECTIONS.map((s) => s.key), "custom"] },
         },
       },
     },
   },
 } as const;
 
-function buildClassifyPrompt(canonMd: string): string {
-  const list = BASE_SECTIONS.map((s) => `- ${s.key} : « ${s.title} »`).join("\n");
-  return `Tu réorganises la bible d'un univers de jeu de rôle dans des sections
-prédéfinies. Voici les sections de base (clé : intitulé) :
+const EXCERPT_CHARS = 240;
+
+function buildMappingPrompt(blocks: Array<{ title: string; body: string }>): string {
+  const cats = BASE_SECTIONS.map((s) => `- ${s.key} : ${s.title}`).join("\n");
+  const list = blocks
+    .map((b, i) => {
+      const excerpt = b.body.replace(/\s+/g, " ").trim().slice(0, EXCERPT_CHARS);
+      return `[${i}] « ${b.title} » — ${excerpt || "(vide)"}`;
+    })
+    .join("\n");
+  return `Tu réorganises la bible d'un univers de jeu de rôle. Voici des sections
+existantes (index, titre, extrait). Classe CHAQUE section dans une catégorie.
+
+Catégories de base :
+${cats}
+- custom : ne correspond à aucune des catégories ci-dessus (la section gardera
+  son propre titre).
+
+Sections :
 ${list}
 
-Consignes :
-- Répartis TOUT le contenu ci-dessous dans ces sections, sans rien perdre.
-- PRÉSERVE le texte tel quel (Markdown) : ne réécris pas, ne résume pas, ne
-  paraphrase pas. Découpe et déplace, c'est tout.
-- Un passage qui ne correspond à aucune section de base va dans "custom" avec un
-  titre court et clair.
-- Laisse content_md vide ("") pour une section de base sans contenu pertinent.
-
-Contenu de la bible :
----
-${canonMd}
----
-
-Réponds en JSON strict : { "base": [{ "key", "content_md" }], "custom": [{ "title", "content_md" }] }.`;
+Pour CHAQUE index, choisis une cible (une clé de base, ou "custom"). Ne juge que
+d'après le sens du titre et de l'extrait. Réponds en JSON strict :
+{ "assignments": [{ "index", "target" }] }.`;
 }
 
 /** Ordonne les sections de base (remplies ou vides) puis les personnalisées. */
@@ -191,61 +184,61 @@ export function heuristicClassify(canonMd: string): ClassifiedSection[] {
 export async function classifyCanon(
   apiKey: string | undefined,
   canonMd: string,
-  onProgress?: (chars: number) => void,
 ): Promise<ClassifiedSection[]> {
   const trimmed = canonMd.trim();
   if (trimmed === "") return emptyBaseSections();
-  if (!apiKey || trimmed.length > MAX_CLASSIFY_CHARS) {
-    return heuristicClassify(canonMd);
-  }
+
+  const { preamble, sections } = splitH2(canonMd);
+  const blocks = sections.map((s) => ({ title: s.title, body: s.body.join("\n").trim() }));
+  // Rien à classer (pas de titres H2) ou pas de clé : l'heuristique suffit.
+  if (!apiKey || blocks.length === 0) return heuristicClassify(canonMd);
 
   try {
     const client = new Anthropic({ apiKey });
-    const stream = client.messages.stream({
+    // Sortie minuscule (juste le plan) : un create non-streamé de quelques
+    // secondes suffit, aucun risque de troncature ni d'éviction.
+    const response = await client.messages.create({
       model: CLASSIFY_MODEL,
-      max_tokens: 16000,
+      max_tokens: 2048,
       output_config: {
-        format: { type: "json_schema", schema: CLASSIFY_OUTPUT_SCHEMA },
+        format: { type: "json_schema", schema: MAPPING_SCHEMA },
       },
-      messages: [{ role: "user", content: buildClassifyPrompt(canonMd) }],
+      messages: [{ role: "user", content: buildMappingPrompt(blocks) }],
     });
-    if (onProgress) {
-      let chars = 0;
-      stream.on("streamEvent", (event) => {
-        if (event.type === "content_block_delta") {
-          const delta = event.delta as { text?: string };
-          chars += (delta.text ?? "").length;
-          onProgress(chars);
-        }
-      });
-    }
-    const response = await stream.finalMessage();
     if (response.stop_reason === "refusal") throw new Error("classify_refused");
-
     const text = response.content
       .filter((b) => b.type === "text")
       .map((b) => b.text)
       .join("");
     const payload = JSON.parse(text) as {
-      base?: Array<{ key?: unknown; content_md?: unknown }>;
-      custom?: Array<{ title?: unknown; content_md?: unknown }>;
+      assignments?: Array<{ index?: unknown; target?: unknown }>;
     };
 
     const validKeys = new Set(BASE_SECTIONS.map((s) => s.key));
-    const baseContent = new Map<string, string>();
-    for (const b of payload.base ?? []) {
-      if (typeof b?.key === "string" && validKeys.has(b.key) && typeof b.content_md === "string") {
-        // Concatène si le modèle répète une clé.
-        const prev = baseContent.get(b.key);
-        baseContent.set(b.key, prev ? `${prev}\n\n${b.content_md}` : b.content_md);
+    const targetByIndex = new Map<number, string>();
+    for (const a of payload.assignments ?? []) {
+      if (typeof a?.index === "number" && typeof a?.target === "string") {
+        targetByIndex.set(a.index, a.target);
       }
     }
-    const custom = (payload.custom ?? [])
-      .filter((c) => typeof c?.content_md === "string")
-      .map((c) => ({
-        title: typeof c.title === "string" ? c.title : "Section",
-        content_md: c.content_md as string,
-      }));
+
+    // Réassemblage LOCAL : on déplace les blocs, on ne réécrit rien.
+    const baseContent = new Map<string, string>();
+    const custom: Array<{ title: string; content_md: string }> = [];
+    if (preamble) baseContent.set("intro", preamble);
+
+    blocks.forEach((b, i) => {
+      const target = targetByIndex.get(i);
+      if (target && target !== "custom" && validKeys.has(target)) {
+        // Conserve le titre d'origine en sous-section (### ) pour ne rien perdre
+        // quand plusieurs blocs atterrissent dans la même section de base.
+        const piece = b.body ? `### ${b.title}\n\n${b.body}` : `### ${b.title}`;
+        const prev = baseContent.get(target);
+        baseContent.set(target, prev ? `${prev}\n\n${piece}` : piece);
+      } else {
+        custom.push({ title: b.title || "Section", content_md: b.body });
+      }
+    });
 
     return assemble(baseContent, custom);
   } catch (err) {

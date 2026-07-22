@@ -162,35 +162,46 @@ describe("édition par sections", () => {
     expect(afterDel.sections.find((s) => s.id === cosmo.id)).toBeUndefined();
   });
 
-  it("redistribue le canon via l'IA (à la demande, remplace le découpage)", async () => {
+  it("redistribue via un PLAN IA : déplace le bloc, préserve le contenu", async () => {
     const cookie = await login("redist@example.com");
     const bibleId = await createBible(cookie);
-    // Init heuristique (aucun appel IA).
+    // Init heuristique : le bloc « Cosmologie » (contenant « failles ») est
+    // en position 1 du canon (intro=0, cosmology=1, chronology=2, …).
     await req(cookie, `/api/bibles/${bibleId}/sections`);
 
-    // Redistribution IA mockée : reclasse tout le canon.
+    // L'IA ne renvoie qu'un plan bloc→cible. On déplace « failles » (index 1)
+    // vers l'axe personnages ; le reste garde sa place.
     mockAnthropicText(
       JSON.stringify({
-        base: [{ key: "characters", content_md: "Zuma, le premier héros." }],
-        custom: [{ title: "Annexe", content_md: "Notes libres." }],
+        assignments: [
+          { index: 0, target: "intro" },
+          { index: 1, target: "characters" },
+          { index: 2, target: "chronology" },
+          { index: 3, target: "characters" },
+          { index: 4, target: "factions" },
+          { index: 5, target: "plots" },
+          { index: 6, target: "geography" },
+          { index: 7, target: "tone" },
+        ],
       }),
     );
     const res = await req(cookie, `/api/bibles/${bibleId}/sections/redistribute`, "POST");
     expect(res.status).toBe(200);
     const { sections } = (await res.json()) as { sections: Section[] };
 
-    // 8 sections de base toujours présentes, la classification IA appliquée.
+    // 8 sections de base toujours présentes ; le contenu a migré vers personnages.
     expect(sections.filter((s) => s.is_base)).toHaveLength(BASE_SECTIONS.length);
     const chars = sections.find((s) => s.axis === "characters");
-    expect(chars?.content_md).toContain("Zuma, le premier héros");
-    const annex = sections.find((s) => !s.is_base && s.title === "Annexe");
-    expect(annex?.content_md).toContain("Notes libres");
+    expect(chars?.content_md).toContain("failles");
+    // La cosmologie a été vidée de ce bloc.
+    const cosmo = sections.find((s) => s.axis === "cosmology");
+    expect(cosmo?.content_md).not.toContain("failles");
 
-    // Le canon dérivé reflète la nouvelle répartition.
+    // Le canon dérivé reflète la nouvelle répartition (contenu préservé).
     const bible = (await (await req(cookie, `/api/bibles/${bibleId}`)).json()) as {
       canon_md: string;
     };
-    expect(bible.canon_md).toContain("Zuma, le premier héros");
+    expect(bible.canon_md).toContain("failles");
   });
 
   it("cloisonne par utilisateur", async () => {

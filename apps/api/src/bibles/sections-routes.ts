@@ -4,7 +4,6 @@
 // findOwnedBible sur chaque appel.
 
 import { Hono } from "hono";
-import { streamSSE } from "hono/streaming";
 import type { Context } from "hono";
 import type { AppEnv } from "../env";
 import { requireAuth } from "../auth/middleware";
@@ -64,55 +63,22 @@ bibleSections.get("/:id/sections", async (c) => {
   return c.json({ sections: rows.map(toPublicSection) });
 });
 
-// POST /:id/sections/redistribute — reclasse le canon courant via l'IA (repli
-// heuristique) et REMPLACE les sections. Le texte est préservé : réparti, pas
-// réécrit. La classification peut durer plusieurs minutes (grosse bible) : en
-// SSE, le flux tient la connexion active — un appel non-streamé se ferait
-// évincer par le runtime Workers, laissant le client bloqué (même leçon que
-// l'analyse de richesse, cf. richness/analyze.ts). JSON = repli pour les tests.
+// POST /:id/sections/redistribute — reclasse le canon courant et REMPLACE les
+// sections. Le modèle ne renvoie qu'un PLAN (bloc → catégorie) ; le contenu est
+// réassemblé localement, jamais réécrit ni ré-émis. Sortie minuscule → appel
+// rapide (quelques secondes), sans risque de troncature ni d'éviction Workers.
 bibleSections.post("/:id/sections/redistribute", async (c) => {
   const bible = await owned(c);
   if (!bible) return c.json({ error: "not_found" }, 404);
 
-  const applyClassified = async (
-    classified: Awaited<ReturnType<typeof classifyCanon>>,
-  ) => {
-    await c.env.DB.prepare(`DELETE FROM bible_sections WHERE bible_id = ?`)
-      .bind(bible.id)
-      .run();
-    await insertSections(c.env.DB, bible.id, classified);
-    await syncCanon(c, bible.id, bible.title);
-    const rows = await listSections(c.env.DB, bible.id);
-    return rows.map(toPublicSection);
-  };
-
-  if ((c.req.header("accept") ?? "").includes("text/event-stream")) {
-    return streamSSE(c, async (stream) => {
-      let lastTick = 0;
-      try {
-        const classified = await classifyCanon(
-          c.env.ANTHROPIC_API_KEY,
-          bible.canon_md ?? "",
-          (chars) => {
-            const now = Date.now();
-            if (now - lastTick < 2000) return;
-            lastTick = now;
-            void stream.writeSSE({ event: "progress", data: JSON.stringify({ output_chars: chars }) });
-          },
-        );
-        const sections = await applyClassified(classified);
-        await stream.writeSSE({ event: "done", data: JSON.stringify({ sections }) });
-      } catch (err) {
-        console.error(`[sections] redistribution échouée pour ${bible.id} :`, err);
-        await stream.writeSSE({ event: "error", data: JSON.stringify({ error: "redistribute_failed" }) });
-      }
-    });
-  }
-
-  const sections = await applyClassified(
-    await classifyCanon(c.env.ANTHROPIC_API_KEY, bible.canon_md ?? ""),
-  );
-  return c.json({ sections });
+  const classified = await classifyCanon(c.env.ANTHROPIC_API_KEY, bible.canon_md ?? "");
+  await c.env.DB.prepare(`DELETE FROM bible_sections WHERE bible_id = ?`)
+    .bind(bible.id)
+    .run();
+  await insertSections(c.env.DB, bible.id, classified);
+  await syncCanon(c, bible.id, bible.title);
+  const rows = await listSections(c.env.DB, bible.id);
+  return c.json({ sections: rows.map(toPublicSection) });
 });
 
 // POST /:id/sections — ajoute une section personnalisée en fin de liste.

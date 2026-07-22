@@ -1045,44 +1045,19 @@ $("redistribute-btn").addEventListener("click", async () => {
   btn.disabled = true;
   $("redistribute-msg").innerHTML = spin("L’esprit réorganise votre univers…");
   $("redistribute-msg").className = "msg";
-  // SSE (comme l'analyse) : le flux tient la connexion active pendant une
-  // classification qui peut durer — sinon le Worker est évincé et l'écran reste
-  // bloqué sur le spinner. Gros idle timeout : la classification met un moment
-  // avant de produire ses premiers signes.
-  const startedAt = Date.now();
-  let ok = false;
   try {
-    await sse(
-      "/bibles/" + currentBible.id + "/sections/redistribute",
-      {},
-      {
-        progress(p) {
-          const sec = Math.floor((Date.now() - startedAt) / 1000);
-          $("redistribute-msg").innerHTML = spin(
-            "L’esprit réorganise votre univers — " + sec + " s, " +
-              Math.round((p.output_chars || 0) / 1000) + " k signes. Gardez la page ouverte.",
-          );
-        },
-        done(data) {
-          ok = true;
-          WS.sections = (data && data.sections) || [];
-          renderWsNav();
-          selectSection(OVERVIEW);
-          $("redistribute-msg").textContent = "Contenu réparti par l’IA.";
-        },
-        error() {
-          $("redistribute-msg").textContent = "La répartition a échoué — réessayez.";
-          $("redistribute-msg").className = "msg error";
-        },
-      },
-      { idleTimeoutMs: 90000 },
-    );
-    if (!ok) throw new Error("no_done");
+    const res = await api("/bibles/" + currentBible.id + "/sections/redistribute", {
+      method: "POST",
+    });
+    if (!res.ok) throw new Error("redistribute_failed");
+    const body = await res.json();
+    WS.sections = body.sections || [];
+    renderWsNav();
+    selectSection(OVERVIEW);
+    $("redistribute-msg").textContent = "Contenu réparti par l’IA.";
   } catch {
-    if (!ok) {
-      $("redistribute-msg").textContent = "La répartition a échoué — réessayez.";
-      $("redistribute-msg").className = "msg error";
-    }
+    $("redistribute-msg").textContent = "La répartition a échoué — réessayez.";
+    $("redistribute-msg").className = "msg error";
   } finally {
     redistBusy = false;
     btn.disabled = false;
@@ -1238,11 +1213,16 @@ function openGapPanel(gap) {
   $("gap-axis").className = "axis-badge";
   $("gap-why").textContent = gap.description;
   const hasSection = !!WS.sections.find((s) => s.axis === gap.axis);
+  const ta = $("gap-answer");
+  ta.value = "";
+  $("gap-msg").textContent = hasSection
+    ? ""
+    : "Aucune section rattachée à cet axe — créez-en une d'abord.";
+  $("gap-msg").className = "msg";
   $("gap-goto").disabled = !hasSection;
-  const resolveBtn = $("gap-resolve");
-  resolveBtn.disabled = false;
-  resolveBtn.textContent = gap.resolved ? "Rouvrir la lacune" : "Marquer comme comblée";
+  $("gap-insert").disabled = true;
   $("gap-modal").classList.remove("hidden");
+  ta.focus();
 }
 
 async function setGapResolved(gap, resolved) {
@@ -1260,18 +1240,33 @@ $("gap-close").addEventListener("click", closeGapPanel);
 $("gap-modal").addEventListener("click", (e) => {
   if (e.target === $("gap-modal")) closeGapPanel();
 });
+$("gap-answer").addEventListener("input", () => {
+  $("gap-insert").disabled = !$("gap-answer").value.trim() ||
+    !WS.sections.find((s) => activeGap && s.axis === activeGap.axis);
+});
 $("gap-goto").addEventListener("click", () => {
   if (!activeGap) return;
   const gap = activeGap;
   closeGapPanel();
   openSectionForAxis(gap.axis);
 });
-$("gap-resolve").addEventListener("click", async () => {
+// Ajoute la réponse de l'auteur à la section de l'axe (append, jamais d'écrasement),
+// sauvegarde, puis marque la lacune comblée.
+$("gap-insert").addEventListener("click", async () => {
   if (!activeGap) return;
   const gap = activeGap;
-  $("gap-resolve").disabled = true;
-  await setGapResolved(gap, !gap.resolved);
+  const text = $("gap-answer").value.trim();
+  const section = WS.sections.find((s) => s.axis === gap.axis);
+  if (!text || !section) return;
+  $("gap-insert").disabled = true;
+  $("gap-msg").innerHTML = spin("Ajout à la bible…");
+
+  const base = (section.content_md || "").trim();
+  section.content_md = base ? base + "\n\n" + text : text;
+  await saveWsSection(section.id);
+  await setGapResolved(gap, true);
   closeGapPanel();
+  selectSection(section.id); // montre la section enrichie
 });
 
 /** Ouvre la section de base rattachée à un axe (pour combler une lacune). */
