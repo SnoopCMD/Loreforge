@@ -242,6 +242,7 @@ bibles.delete("/:id", async (c) => {
     c.env.DB.prepare(`DELETE FROM characters WHERE bible_id = ?`).bind(id),
     c.env.DB.prepare(`DELETE FROM richness_scores WHERE bible_id = ?`).bind(id),
     c.env.DB.prepare(`DELETE FROM sheet_schemas WHERE bible_id = ?`).bind(id),
+    c.env.DB.prepare(`DELETE FROM bible_sections WHERE bible_id = ?`).bind(id),
     c.env.DB.prepare(`DELETE FROM bibles WHERE id = ?`).bind(id),
   ]);
 

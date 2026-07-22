@@ -6,8 +6,9 @@ import { Hono } from "hono";
 import type { AppEnv } from "../env";
 import { requireAuth } from "../auth/middleware";
 import { findOwnedBible } from "./db";
-import { mergeProposal } from "./merge";
 import { reindexBible } from "../rag/store";
+import { ensureSections } from "./classify";
+import { appendCanonizedSection, regenerateCanon } from "./sections";
 
 const STATUSES = ["pending", "accepted", "rejected"] as const;
 
@@ -100,15 +101,17 @@ proposals.post("/:id/proposals/:pid", async (c) => {
     return c.json({ proposal: { ...row, status: "rejected" } });
   }
 
-  const merged = mergeProposal(bible.canon_md ?? "", row.content_md, row.axis);
-  await c.env.DB.batch([
-    c.env.DB.prepare(
-      `UPDATE bibles SET canon_md = ?, updated_at = ? WHERE id = ?`,
-    ).bind(merged, Date.now(), bible.id),
-    c.env.DB.prepare(
-      `UPDATE canon_proposals SET status = 'accepted' WHERE id = ?`,
-    ).bind(row.id),
-  ]);
+  // Canonisation via les sections (invariant : canon_md est dérivé). Les
+  // sections sont initialisées si besoin (heuristique, sans appel IA), puis
+  // l'ajout rejoint la section « Canonisé en session » et le canon est régénéré.
+  await ensureSections(c.env.DB, bible, { useAi: false });
+  await appendCanonizedSection(c.env.DB, bible.id, row.axis, row.content_md);
+  const merged = await regenerateCanon(c.env.DB, bible.id, bible.title);
+  await c.env.DB.prepare(
+    `UPDATE canon_proposals SET status = 'accepted' WHERE id = ?`,
+  )
+    .bind(row.id)
+    .run();
   // Réindex Vectorize (M6) en tâche de fond — no-op sous le seuil RAG.
   c.executionCtx.waitUntil(reindexBible(c.env, bible.id, merged));
   return c.json({ proposal: { ...row, status: "accepted" }, canon_md: merged });

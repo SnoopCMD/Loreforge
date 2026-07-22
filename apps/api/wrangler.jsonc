@@ -1,6 +1,9 @@
 {
   "$schema": "node_modules/wrangler/config-schema.json",
   "name": "loreforge-api",
+  // Compte unique (T.coumond@gmail.com) — fixé pour lever toute ambiguïté de
+  // résolution de compte (évite les 7403 fugaces sur les opérations remote).
+  "account_id": "1ffbfd0e64658684688252c4bed28044",
   "main": "src/index.ts",
   "compatibility_date": "2025-09-06",
   "assets": {

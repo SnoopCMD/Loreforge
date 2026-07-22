@@ -206,25 +206,60 @@
   </div>
   <p id="detail-msg" class="msg"></p>
 
-  <div class="panel">
-    <div class="row spread">
+  <!-- Plan de travail par sections : nav (desktop) / chips (mobile) + éditeur. -->
+  <div class="panel workspace" id="bible-workspace">
+    <div class="row spread ws-bar">
       <span id="detail-status" class="status"></span>
-      <button id="analyze-btn">Analyser la richesse</button>
+      <span id="save-state" class="save-state" aria-live="polite"></span>
     </div>
-    <p id="analyze-msg" class="msg"></p>
-    <div id="richness-block" class="hidden">
-      <div class="radar-wrap">
-        <svg id="radar" width="340" height="320" viewBox="0 0 340 320" role="img" aria-label="Radar de richesse à 5 axes">
-          <g class="radar-grid"></g>
-          <g class="radar-value"></g>
-          <g class="radar-labels"></g>
-        </svg>
-        <div class="global-score"><span id="global-score"></span><small>indice global /10</small></div>
+    <!-- Mobile : sélecteur de sections en chips scrollables. -->
+    <div class="ws-chips" id="ws-chips" role="tablist" aria-label="Sections"></div>
+    <div class="ws-grid">
+      <nav class="ws-nav" id="ws-nav" aria-label="Sections de la bible"></nav>
+      <div class="ws-main">
+        <!-- Vue d'ensemble : radar + lacunes + analyse. -->
+        <section id="ws-overview" class="ws-view hidden">
+          <div class="row spread ws-view-head">
+            <h2>Vue d'ensemble</h2>
+            <button id="analyze-btn">Analyser la richesse</button>
+          </div>
+          <p id="analyze-msg" class="msg"></p>
+          <div id="richness-block" class="hidden">
+            <div class="radar-wrap">
+              <svg id="radar" width="340" height="320" viewBox="0 0 340 320" role="img" aria-label="Radar de richesse à 5 axes">
+                <g class="radar-grid"></g>
+                <g class="radar-value"></g>
+                <g class="radar-labels"></g>
+              </svg>
+              <div class="global-score"><span id="global-score"></span><small>indice global /10</small></div>
+            </div>
+            <ul id="score-list" class="score-list"></ul>
+            <h2>Zones floues</h2>
+            <div id="gaps-list"></div>
+          </div>
+          <p id="richness-empty" class="msg">Pas encore analysée — lance « Analyser la richesse » pour l'indice de richesse et les zones floues.</p>
+        </section>
+        <!-- Éditeur de la section active. -->
+        <section id="ws-editor" class="ws-view hidden">
+          <div class="ws-ed-head">
+            <input id="ws-sec-title" class="ws-sec-title" aria-label="Titre de la section" placeholder="Titre de la section" />
+            <button class="ghost ws-sec-del" id="ws-sec-del" title="Supprimer la section">Supprimer</button>
+          </div>
+          <div class="ws-ed-meta">
+            <span id="ws-axis-badge" class="axis-badge hidden"></span>
+            <span id="ws-wordcount" class="mono msg"></span>
+          </div>
+          <div class="ws-toolbar" id="ws-toolbar" role="toolbar" aria-label="Mise en forme">
+            <button type="button" class="ws-tool" data-md="bold" title="Gras (Ctrl+B)"><b>B</b></button>
+            <button type="button" class="ws-tool" data-md="italic" title="Italique (Ctrl+I)"><i>I</i></button>
+            <span class="ws-tool-sep"></span>
+            <button type="button" class="ws-tool" data-md="h2" title="Titre">H2</button>
+            <button type="button" class="ws-tool" data-md="ul" title="Liste">☰</button>
+            <button type="button" class="ws-tool" data-md="quote" title="Citation">❝</button>
+          </div>
+          <textarea id="ws-sec-body" class="ws-editor" aria-label="Contenu de la section" spellcheck="true"></textarea>
+        </section>
       </div>
-      <!-- Le radar seul est illisible en petit : liste score/axe (§8.3). -->
-      <ul id="score-list" class="score-list"></ul>
-      <h2>Zones floues</h2>
-      <div id="gaps-list"></div>
     </div>
   </div>
 
@@ -258,25 +293,6 @@
     <div id="character-fiche"></div>
   </div>
 
-  <div class="panel">
-    <div class="row spread">
-      <h2 id="canon-title">Canon</h2>
-      <button class="ghost" id="add-section-btn">+ Ajouter une section</button>
-    </div>
-    <p class="msg">Réorganisez, renommez, ajoutez ou retirez des sections, puis enregistrez.</p>
-    <div id="section-list"></div>
-    <div class="row">
-      <button id="save-canon-btn">Enregistrer</button>
-      <span id="save-msg" class="msg"></span>
-    </div>
-    <details id="raw-editor-details">
-      <summary class="msg">Éditeur brut (Markdown complet)</summary>
-      <textarea id="canon-editor"></textarea>
-      <div class="row">
-        <button class="ghost" id="save-raw-btn">Enregistrer le brut</button>
-      </div>
-    </details>
-  </div>
 </section>
 
 <!-- ── Choix du personnage : deux portes (SPEC §6bis) ──────────────────── -->

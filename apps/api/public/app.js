@@ -4,9 +4,9 @@
 
 import {
   AXES, AXIS_LABELS, FORMAT_LABELS, GENERIC_FIELDS, OUTCOME_LABELS,
-  STATUS_LABELS, buildCanonFromSections, createSseParser,
+  STATUS_LABELS, createSseParser,
   createSpeechSegmenter, esc, extractActionChips, labelFor, mdInline,
-  mdToHtml, parseCanonSections, stripLore,
+  mdToHtml, stripLore,
 } from "/core.js";
 
 const $ = (id) => document.getElementById(id);
@@ -532,15 +532,14 @@ async function showBible(id) {
   if (!res.ok) { location.hash = "#/"; return; }
   currentBible = await res.json();
   $("detail-title").textContent = currentBible.title;
-  setCanon(currentBible.canon_md || "");
   $("detail-msg").textContent = "";
   $("rename-row").classList.add("hidden");
   resetDeleteButton();
   $("analyze-msg").textContent = "";
-  $("save-msg").textContent = "";
   $("session-msg").textContent = "";
   $("character-fiche").innerHTML = "";
   renderStatus(currentBible.status);
+  loadWorkspace();
   refreshRichness();
   loadProposals(id);
   loadCharacters(id);
@@ -606,111 +605,389 @@ $("delete-btn").addEventListener("click", async () => {
   $("detail-msg").className = "msg error";
 });
 
-// ── Éditeur du canon par sections ────────────────────────────────────────
+// ── Plan de travail : édition par sections ───────────────────────────────
+//
+// Les sections sont la source de vérité (API /bibles/:id/sections) ; canon_md
+// est régénéré côté serveur. Autosave par section (debounce 2 s). La nav gauche
+// (desktop) et les chips (mobile) partagent le même modèle.
 
-let canonDoc = { h1: "", preamble: "", sections: [] };
+const OVERVIEW = "__overview__";
+const AXIS_ICON = {
+  cosmology: "☾", characters: "☗", plots: "⚔", geography: "⌖", tone: "◐",
+};
 
-/** Met à jour les deux vues (sections + brut) depuis un canon_md. */
-function setCanon(md) {
-  $("canon-editor").value = md;
-  canonDoc = parseCanonSections(md);
-  renderSections();
+const WS = {
+  sections: [],      // sections chargées
+  active: OVERVIEW,  // id de section ou OVERVIEW
+  scores: null,      // derniers scores de richesse (badges d'axe)
+  global: null,
+  saveTimer: null,
+  dirtyId: null,     // section en attente d'autosave
+};
+
+async function loadWorkspace() {
+  clearTimeout(WS.saveTimer);
+  WS.sections = [];
+  WS.active = OVERVIEW;
+  WS.dirtyId = null;
+  setSaveState("");
+  $("ws-chips").innerHTML = "";
+  $("ws-nav").innerHTML = '<p class="msg">Chargement…</p>';
+  selectSection(OVERVIEW);
+
+  const res = await api("/bibles/" + currentBible.id + "/sections");
+  if (!res.ok) {
+    $("ws-nav").innerHTML = '<p class="msg error">Sections indisponibles — rechargez la page.</p>';
+    return;
+  }
+  const body = await res.json();
+  WS.sections = body.sections || [];
+  renderWsNav();
 }
 
-function renderSections() {
-  const list = $("section-list");
-  list.innerHTML = "";
-
-  if (canonDoc.preamble !== "") {
-    list.appendChild(sectionCard(null));
-  }
-  canonDoc.sections.forEach((_, i) => list.appendChild(sectionCard(i)));
-  if (canonDoc.sections.length === 0 && canonDoc.preamble === "") {
-    list.innerHTML = '<p class="msg">Canon vide — ajoutez une première section.</p>';
-  }
+function sectionIcon(s) {
+  return s.axis ? AXIS_ICON[s.axis] || "✦" : s.is_base ? "✦" : "✎";
 }
 
-/** Carte d'une section ; index null = préambule (avant la première section). */
-function sectionCard(index) {
-  const isPreamble = index === null;
-  const section = isPreamble ? null : canonDoc.sections[index];
-  const card = document.createElement("div");
-  card.className = "section-card";
-  card.innerHTML =
-    '<div class="row spread section-head">' +
-    (isPreamble
-      ? '<span class="msg">Introduction (avant la première section)</span>'
-      : '<input type="text" class="section-title" placeholder="Titre de la section" />') +
-    '<span class="row section-tools">' +
-    (isPreamble
+function scoreClass(score) {
+  return score >= 8 ? "hi" : score <= 4 ? "lo" : "";
+}
+
+function scoreDot(axis) {
+  if (!axis || !WS.scores || typeof WS.scores[axis] !== "number") return null;
+  const dot = document.createElement("span");
+  dot.className = "score-dot " + scoreClass(WS.scores[axis]);
+  dot.textContent = WS.scores[axis];
+  return dot;
+}
+
+function renderWsNav() {
+  const nav = $("ws-nav");
+  const chips = $("ws-chips");
+  nav.innerHTML = "";
+  chips.innerHTML = "";
+
+  nav.appendChild(wsNavItem(OVERVIEW, "◎", "Vue d'ensemble", null, true));
+  chips.appendChild(wsChip(OVERVIEW, "◎ Vue d'ensemble", null));
+
+  const groups = [
+    ["Sections de base", WS.sections.filter((s) => s.is_base)],
+    ["Personnalisées", WS.sections.filter((s) => !s.is_base)],
+  ];
+  for (const [label, list] of groups) {
+    if (!list.length) continue;
+    const h = document.createElement("div");
+    h.className = "ws-group";
+    h.textContent = label;
+    nav.appendChild(h);
+    for (const s of list) {
+      nav.appendChild(wsNavItem(s.id, sectionIcon(s), s.title, s.axis, false));
+      chips.appendChild(wsChip(s.id, s.title, s.axis));
+    }
+  }
+
+  const add = document.createElement("button");
+  add.type = "button";
+  add.className = "ws-add";
+  add.textContent = "+ Ajouter une section";
+  add.addEventListener("click", addWsSection);
+  nav.appendChild(add);
+
+  const addChip = document.createElement("button");
+  addChip.type = "button";
+  addChip.className = "ws-chip add";
+  addChip.textContent = "+ Ajouter";
+  addChip.addEventListener("click", addWsSection);
+  chips.appendChild(addChip);
+
+  highlightActive();
+}
+
+function wsNavItem(id, icon, label, axis, isOverview) {
+  const el = document.createElement("div");
+  el.className = "ws-item" + (isOverview ? " overview" : "");
+  el.dataset.id = id;
+  el.setAttribute("role", "tab");
+  el.tabIndex = 0;
+  el.innerHTML =
+    '<span class="ws-ico" aria-hidden="true"></span>' +
+    '<span class="ws-label"></span>' +
+    (isOverview
       ? ""
-      : '<button class="ghost sec-up" title="Monter">↑</button>' +
-        '<button class="ghost sec-down" title="Descendre">↓</button>' +
-        '<button class="ghost sec-del" title="Retirer la section">✕</button>') +
-    "</span></div>" +
-    '<textarea class="section-body"></textarea>';
+      : '<span class="ws-reorder">' +
+        '<button type="button" class="ws-up" title="Monter" tabindex="-1">↑</button>' +
+        '<button type="button" class="ws-down" title="Descendre" tabindex="-1">↓</button>' +
+        "</span>");
+  el.querySelector(".ws-ico").textContent = icon;
+  el.querySelector(".ws-label").textContent = label || "Sans titre";
+  const dot = isOverview
+    ? (WS.global != null
+        ? Object.assign(document.createElement("span"), {
+            className: "score-dot " + scoreClass(WS.global),
+            textContent: WS.global,
+          })
+        : null)
+    : scoreDot(axis);
+  if (dot) el.appendChild(dot);
 
-  const body = card.querySelector(".section-body");
-  if (isPreamble) {
-    body.value = canonDoc.preamble;
-    body.addEventListener("input", () => { canonDoc.preamble = body.value; });
-    return card;
-  }
-
-  const title = card.querySelector(".section-title");
-  title.value = section.title;
-  body.value = section.body;
-  title.addEventListener("input", () => { section.title = title.value; });
-  body.addEventListener("input", () => { section.body = body.value; });
-
-  card.querySelector(".sec-up").addEventListener("click", () => moveSection(index, -1));
-  card.querySelector(".sec-down").addEventListener("click", () => moveSection(index, 1));
-  card.querySelector(".sec-del").addEventListener("click", () => {
-    canonDoc.sections.splice(index, 1);
-    renderSections();
+  el.addEventListener("click", (e) => {
+    if (e.target.closest(".ws-reorder")) return;
+    selectSection(id);
   });
-  return card;
+  el.addEventListener("keydown", (e) => {
+    if (e.key === "Enter" || e.key === " ") { e.preventDefault(); selectSection(id); }
+  });
+  if (!isOverview) {
+    el.querySelector(".ws-up").addEventListener("click", (e) => { e.stopPropagation(); moveWsSection(id, -1); });
+    el.querySelector(".ws-down").addEventListener("click", (e) => { e.stopPropagation(); moveWsSection(id, 1); });
+  }
+  return el;
 }
 
-function moveSection(index, delta) {
-  const target = index + delta;
-  if (target < 0 || target >= canonDoc.sections.length) return;
-  const [s] = canonDoc.sections.splice(index, 1);
-  canonDoc.sections.splice(target, 0, s);
-  renderSections();
+function wsChip(id, label, axis) {
+  const chip = document.createElement("button");
+  chip.type = "button";
+  chip.className = "ws-chip";
+  chip.dataset.id = id;
+  chip.setAttribute("role", "tab");
+  chip.textContent = label;
+  const score = axis && WS.scores ? WS.scores[axis] : null;
+  if (typeof score === "number") {
+    const s = document.createElement("span");
+    s.className = "s " + scoreClass(score);
+    s.textContent = score;
+    chip.appendChild(s);
+  }
+  chip.addEventListener("click", () => selectSection(id));
+  return chip;
 }
 
-$("add-section-btn").addEventListener("click", () => {
-  canonDoc.sections.push({ title: "", body: "" });
-  renderSections();
-  const cards = $("section-list").querySelectorAll(".section-card");
-  const last = cards[cards.length - 1];
-  last.scrollIntoView({ block: "center" });
-  last.querySelector(".section-title").focus();
+function highlightActive() {
+  for (const el of $("ws-nav").querySelectorAll(".ws-item")) {
+    const on = el.dataset.id === WS.active;
+    el.classList.toggle("active", on);
+    el.setAttribute("aria-selected", on ? "true" : "false");
+  }
+  for (const el of $("ws-chips").querySelectorAll(".ws-chip")) {
+    if (el.dataset.id) el.classList.toggle("active", el.dataset.id === WS.active);
+  }
+}
+
+function selectSection(id) {
+  flushWsSave(); // n'abandonne pas une saisie en attente sur la section quittée
+  WS.active = id;
+  const isOverview = id === OVERVIEW;
+  $("ws-overview").classList.toggle("hidden", !isOverview);
+  $("ws-editor").classList.toggle("hidden", isOverview);
+  if (!isOverview) {
+    const section = WS.sections.find((s) => s.id === id);
+    if (!section) { selectSection(OVERVIEW); return; }
+    renderEditor(section);
+  }
+  highlightActive();
+}
+
+function renderEditor(section) {
+  resetWsDelete();
+  $("ws-sec-title").value = section.title;
+  $("ws-sec-body").value = section.content_md;
+  $("ws-sec-body").scrollTop = 0;
+  setSaveState("");
+  updateWordCount();
+  renderAxisBadge(section);
+}
+
+function renderAxisBadge(section) {
+  const badge = $("ws-axis-badge");
+  if (!section.axis) { badge.classList.add("hidden"); badge.innerHTML = ""; return; }
+  const score = WS.scores ? WS.scores[section.axis] : null;
+  const label = AXIS_LABELS[section.axis] || section.axis;
+  badge.className = "axis-badge" + (typeof score === "number" && score <= 4 ? " lo" : "");
+  badge.innerHTML =
+    "<span>Axe " + esc(label) + "</span>" +
+    (typeof score === "number"
+      ? " <b>" + score + "/10</b> · <a href=\"#\" class=\"gaps-link\">lacunes</a>"
+      : " <span class=\"msg\">non analysé</span>");
+  const link = badge.querySelector(".gaps-link");
+  if (link) {
+    link.addEventListener("click", (e) => {
+      e.preventDefault();
+      selectSection(OVERVIEW);
+      flashGapsForAxis(section.axis);
+    });
+  }
+}
+
+function updateWordCount() {
+  const n = $("ws-sec-body").value.trim().split(/\s+/).filter(Boolean).length;
+  $("ws-wordcount").textContent = n + (n === 1 ? " mot" : " mots");
+}
+
+const SAVE_LABELS = {
+  dirty: "● Modifié…",
+  saving: "● Enregistrement…",
+  saved: "✓ Enregistré",
+  error: "⚠ Échec — réessayez",
+  "": "",
+};
+function setSaveState(state) {
+  const el = $("save-state");
+  el.textContent = SAVE_LABELS[state] ?? "";
+  el.className = "save-state" + (state ? " " + state : "");
+}
+
+function onEditorInput() {
+  const section = WS.sections.find((s) => s.id === WS.active);
+  if (!section) return;
+  section.title = $("ws-sec-title").value;
+  section.content_md = $("ws-sec-body").value;
+  setSaveState("dirty");
+  scheduleWsSave(section.id);
+}
+
+function scheduleWsSave(id) {
+  WS.dirtyId = id;
+  clearTimeout(WS.saveTimer);
+  WS.saveTimer = setTimeout(() => saveWsSection(id), 2000);
+}
+
+function flushWsSave() {
+  if (WS.dirtyId) saveWsSection(WS.dirtyId);
+}
+
+async function saveWsSection(id) {
+  clearTimeout(WS.saveTimer);
+  const section = WS.sections.find((s) => s.id === id);
+  if (!section) return;
+  WS.dirtyId = null;
+  setSaveState("saving");
+  const res = await api("/bibles/" + currentBible.id + "/sections/" + id, {
+    method: "PUT",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({ title: section.title, content_md: section.content_md }),
+  });
+  if (!res.ok) { setSaveState("error"); return; }
+  const updated = await res.json();
+  section.updated_at = updated.updated_at;
+  // Répercute un éventuel changement de titre dans la nav sans tout reconstruire.
+  for (const el of document.querySelectorAll('[data-id="' + id + '"] .ws-label')) {
+    el.textContent = section.title || "Sans titre";
+  }
+  for (const chip of $("ws-chips").querySelectorAll('.ws-chip[data-id="' + id + '"]')) {
+    chip.childNodes[0].nodeValue = section.title;
+  }
+  if (WS.active === id) setSaveState("saved");
+}
+
+async function addWsSection() {
+  flushWsSave();
+  const res = await api("/bibles/" + currentBible.id + "/sections", {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({}),
+  });
+  if (!res.ok) { setSaveState("error"); return; }
+  const section = await res.json();
+  WS.sections.push(section);
+  renderWsNav();
+  selectSection(section.id);
+  const title = $("ws-sec-title");
+  title.focus();
+  title.select();
+}
+
+let wsDelArmed = false;
+function resetWsDelete() {
+  wsDelArmed = false;
+  const btn = $("ws-sec-del");
+  btn.textContent = "Supprimer";
+  btn.classList.remove("armed");
+}
+$("ws-sec-del").addEventListener("click", async () => {
+  if (WS.active === OVERVIEW) return;
+  const btn = $("ws-sec-del");
+  if (!wsDelArmed) {
+    wsDelArmed = true;
+    btn.textContent = "Confirmer ?";
+    btn.classList.add("armed");
+    setTimeout(resetWsDelete, 4000);
+    return;
+  }
+  resetWsDelete();
+  const id = WS.active;
+  const res = await api("/bibles/" + currentBible.id + "/sections/" + id, { method: "DELETE" });
+  if (!res.ok) { setSaveState("error"); return; }
+  WS.sections = WS.sections.filter((s) => s.id !== id);
+  renderWsNav();
+  selectSection(OVERVIEW);
 });
 
-async function saveCanon(canonMd) {
-  const res = await api("/bibles/" + currentBible.id, {
+// Réordonnancement DANS le même groupe (base / personnalisées) : le serveur
+// reçoit l'ordre complet aplati.
+function moveWsSection(id, delta) {
+  const s = WS.sections.find((x) => x.id === id);
+  if (!s) return;
+  const group = WS.sections.filter((x) => x.is_base === s.is_base);
+  const gi = group.findIndex((x) => x.id === id);
+  const target = group[gi + delta];
+  if (!target) return;
+  const i1 = WS.sections.indexOf(s);
+  const i2 = WS.sections.indexOf(target);
+  WS.sections[i1] = target;
+  WS.sections[i2] = s;
+  renderWsNav();
+  persistWsOrder();
+}
+
+async function persistWsOrder() {
+  const order = WS.sections.map((s) => s.id);
+  const res = await api("/bibles/" + currentBible.id + "/sections/reorder", {
     method: "PATCH",
     headers: { "content-type": "application/json" },
-    body: JSON.stringify({ canon_md: canonMd }),
+    body: JSON.stringify({ order }),
   });
   if (res.ok) {
-    currentBible = await res.json();
-    setCanon(currentBible.canon_md || "");
+    const body = await res.json();
+    WS.sections = body.sections;
+    renderWsNav();
   }
-  $("save-msg").textContent = res.ok ? "Canon enregistré." : "Échec de l’enregistrement.";
-  $("save-msg").className = res.ok ? "msg" : "msg error";
 }
 
-$("save-canon-btn").addEventListener("click", () => {
-  canonDoc.h1 = currentBible.title;
-  saveCanon(buildCanonFromSections(canonDoc));
+// Écouteurs d'édition (les éléments sont statiques dans index.html).
+$("ws-sec-title").addEventListener("input", onEditorInput);
+$("ws-sec-body").addEventListener("input", () => { updateWordCount(); onEditorInput(); });
+$("ws-sec-body").addEventListener("keydown", (e) => {
+  if (!(e.ctrlKey || e.metaKey)) return;
+  const k = e.key.toLowerCase();
+  if (k === "b") { e.preventDefault(); applyMd("bold"); }
+  else if (k === "i") { e.preventDefault(); applyMd("italic"); }
+});
+$("ws-toolbar").addEventListener("click", (e) => {
+  const btn = e.target.closest(".ws-tool");
+  if (btn) applyMd(btn.dataset.md);
 });
 
-$("save-raw-btn").addEventListener("click", () => {
-  saveCanon($("canon-editor").value);
-});
+/** Applique une transformation markdown à la sélection de l'éditeur. */
+function applyMd(kind) {
+  const ta = $("ws-sec-body");
+  const { selectionStart: a, selectionEnd: b, value } = ta;
+  const sel = value.slice(a, b);
+  const atLineStart = a === 0 || value[a - 1] === "\n";
+  let ins = sel;
+  if (kind === "bold") ins = "**" + (sel || "gras") + "**";
+  else if (kind === "italic") ins = "*" + (sel || "italique") + "*";
+  else if (kind === "h2") ins = (atLineStart ? "" : "\n\n") + "## " + (sel || "Titre");
+  else if (kind === "ul") ins = sel ? sel.split("\n").map((l) => "- " + l).join("\n") : "- ";
+  else if (kind === "quote") ins = (atLineStart ? "" : "\n\n") + "> " + (sel || "");
+  ta.setRangeText(ins, a, b, "end");
+  ta.focus();
+  updateWordCount();
+  onEditorInput();
+}
+
+// Enregistre les modifications en attente quand on quitte l'écran ou la page.
+window.addEventListener("hashchange", flushWsSave);
+window.addEventListener("beforeunload", flushWsSave);
 
 // L'analyse tourne dans la requête SSE : la page doit rester ouverte,
 // en échange on a une progression réelle et jamais d'analyse zombie.
@@ -786,6 +1063,7 @@ async function refreshRichness() {
     renderStatus("analyzed");
     $("analyze-msg").textContent = "";
     $("richness-block").classList.remove("hidden");
+    $("richness-empty").classList.add("hidden");
     renderRadarInto($("radar"), body.scores, { cx: 170, cy: 160, r: 110, labels: true });
     $("global-score").textContent = body.global;
     const scoreList = $("score-list");
@@ -798,6 +1076,12 @@ async function refreshRichness() {
       scoreList.appendChild(li);
     }
     renderGaps(body.gaps);
+    // Alimente les badges d'axe du plan de travail.
+    WS.scores = body.scores;
+    WS.global = body.global;
+    if (WS.sections.length) renderWsNav();
+    const active = WS.sections.find((s) => s.id === WS.active);
+    if (active) renderAxisBadge(active);
   } else {
     // "failed" = analyse morte côté serveur (zombie récupéré) ; sinon,
     // le passage analyzing -> none signale aussi un échec.
@@ -807,6 +1091,7 @@ async function refreshRichness() {
     }
     renderStatus(currentBible.status === "analyzed" ? "analyzed" : "draft");
     $("richness-block").classList.add("hidden");
+    $("richness-empty").classList.remove("hidden");
   }
 }
 
@@ -818,18 +1103,33 @@ function renderGaps(gaps) {
     return;
   }
   for (const gap of gaps) {
-    // Rune éteinte : cliquer ouvre l'éditeur de canon pour combler la lacune.
+    // Rune éteinte : cliquer ouvre la section de l'axe concerné pour la combler.
     const btn = document.createElement("button");
     btn.type = "button";
     btn.className = "rune";
+    btn.dataset.axis = gap.axis;
     btn.innerHTML = '<span class="axis"></span><span class="desc"></span>';
     btn.querySelector(".axis").textContent = AXIS_LABELS[gap.axis] || gap.axis;
     btn.querySelector(".desc").textContent = gap.description;
-    btn.addEventListener("click", () => {
-      $("canon-title").scrollIntoView({ block: "start" });
-      $("canon-editor").focus({ preventScroll: true });
-    });
+    btn.addEventListener("click", () => openSectionForAxis(gap.axis));
     list.appendChild(btn);
+  }
+}
+
+/** Ouvre la section de base rattachée à un axe (pour combler une lacune). */
+function openSectionForAxis(axis) {
+  const section = WS.sections.find((s) => s.axis === axis);
+  if (section) { selectSection(section.id); $("ws-sec-body").focus({ preventScroll: true }); }
+}
+
+/** Met en évidence brièvement les lacunes d'un axe dans la vue d'ensemble. */
+function flashGapsForAxis(axis) {
+  $("richness-block").scrollIntoView({ block: "start" });
+  for (const rune of $("gaps-list").querySelectorAll(".rune")) {
+    if (rune.dataset.axis === axis) {
+      rune.classList.add("flash");
+      setTimeout(() => rune.classList.remove("flash"), 1600);
+    }
   }
 }
 
@@ -893,8 +1193,9 @@ async function loadProposals(bibleId) {
   for (const p of proposals) {
     list.appendChild(
       proposalItem(p, bibleId, {
-        // Le canon renvoyé par l'accept remplace l'éditeur (état serveur).
-        onAccepted(canonMd) { if (canonMd !== null) setCanon(canonMd); },
+        // L'accept a rejoint la section « Canonisé en session » : on recharge
+        // le plan de travail pour refléter le nouvel état serveur.
+        onAccepted(canonMd) { if (canonMd !== null) loadWorkspace(); },
       }),
     );
   }
