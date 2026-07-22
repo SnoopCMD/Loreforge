@@ -48,6 +48,8 @@ export interface SystemPromptInput {
   canonExcerpts?: string | null;
   scores: RichnessScores | null;
   gaps: RichnessGap[];
+  /** Retours d'auteur de sessions passées (contexte à honorer). */
+  authorFeedback?: string[];
   toneProfile: string | null;
   characterName: string | null;
   characterSheet: string | null; // JSON brut de characters.sheet_json
@@ -96,6 +98,15 @@ ${input.canonExcerpts}`;
     ? input.state.facts.map((f) => `- ${f}`).join("\n")
     : "- (aucun pour l'instant)";
 
+  const feedbackBlock = input.authorFeedback?.length
+    ? `
+
+== RETOURS DE L'AUTEUR (sessions passées) ==
+L'auteur a laissé ces remarques sur des sessions précédentes de cet univers.
+Honore-les (ton, orientation, préférences) sans jamais contredire le canon :
+${input.authorFeedback.map((f) => `- ${f}`).join("\n")}`
+    : "";
+
   return `Tu es le Maître de Jeu de l'univers « ${input.bibleTitle} ».
 
 == CANON (source de vérité absolue) ==
@@ -121,7 +132,7 @@ Si tu inventes un terme d'univers (axe faible), annote-le AUSSI avec <lore>, et
 définis-le via <invention> pour qu'il ne reste pas « mort ».
 
 == TON ==
-${tone}
+${tone}${feedbackBlock}
 
 == RÈGLES DE JEU ==
 Système Souffle : d6 serveur uniquement. Ne lance JAMAIS de dé toi-même ni

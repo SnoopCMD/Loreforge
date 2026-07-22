@@ -189,6 +189,85 @@ describe("boucle canon", () => {
     expect(left.proposals).toHaveLength(0);
   });
 
+  it("édition avant validation : accept avec content_md remplace le texte canonisé", async () => {
+    const cookie = await login("edit5@example.com");
+    const bibleId = await createBible(cookie);
+    await playSessionWithInventions(cookie, bibleId);
+    const { proposals } = (await (
+      await get(cookie, `/api/bibles/${bibleId}/proposals`)
+    ).json()) as { proposals: Proposal[] };
+
+    const accepted = await post(cookie, `/api/bibles/${bibleId}/proposals/${proposals[0].id}`, {
+      action: "accept",
+      content_md: "La cité-pont de Vhal, RÉÉCRITE par l'auteur.",
+    });
+    expect(accepted.status).toBe(200);
+    const { canon_md } = (await accepted.json()) as { canon_md: string };
+    expect(canon_md).toContain("RÉÉCRITE par l'auteur");
+  });
+
+  it("from-comment : un retour sur un passage crée une proposition source=comment", async () => {
+    const cookie = await login("fc@example.com");
+    const bibleId = await createBible(cookie);
+    const { sessionId } = await playSessionWithInventions(cookie, bibleId);
+
+    mockAnthropicText(
+      JSON.stringify({ relevant: true, axis: "tone", content_md: "Le registre se fait plus sombre." }),
+    );
+    const res = await post(cookie, `/api/bibles/${bibleId}/proposals/from-comment`, {
+      session_id: sessionId,
+      passage: "Une scène lumineuse.",
+      comment: "trop clair par rapport à ma bible",
+    });
+    expect(res.status).toBe(200);
+    const body = (await res.json()) as { relevant: boolean; proposal: Proposal & { source: string; source_comment: string } };
+    expect(body.relevant).toBe(true);
+    expect(body.proposal.source).toBe("comment");
+    expect(body.proposal.source_comment).toContain("trop clair");
+    expect(body.proposal.content_md).toContain("plus sombre");
+
+    // La proposition apparaît bien dans la liste, avec sa source exposée.
+    const listed = (await (
+      await get(cookie, `/api/bibles/${bibleId}/proposals`)
+    ).json()) as { proposals: Array<{ source: string }> };
+    expect(listed.proposals.some((p) => p.source === "comment")).toBe(true);
+  });
+
+  it("from-comment : un retour sans conséquence de canon ne crée pas de proposition", async () => {
+    const cookie = await login("fc2@example.com");
+    const bibleId = await createBible(cookie);
+    const { sessionId } = await playSessionWithInventions(cookie, bibleId);
+
+    mockAnthropicText(JSON.stringify({ relevant: false, axis: "plots", content_md: "" }));
+    const res = await post(cookie, `/api/bibles/${bibleId}/proposals/from-comment`, {
+      session_id: sessionId,
+      passage: "Kass sourit.",
+      comment: "j'adore ce personnage",
+    });
+    expect(res.status).toBe(200);
+    const body = (await res.json()) as { relevant: boolean; proposal: unknown };
+    expect(body.relevant).toBe(false);
+    expect(body.proposal).toBeNull();
+  });
+
+  it("from-feedback : note le retour et propose une modif si pertinent", async () => {
+    const cookie = await login("ff@example.com");
+    const bibleId = await createBible(cookie);
+    const { sessionId } = await playSessionWithInventions(cookie, bibleId);
+
+    mockAnthropicText(
+      JSON.stringify({ relevant: true, axis: "plots", content_md: "Une trame de fond émerge." }),
+    );
+    const res = await post(cookie, `/api/bibles/${bibleId}/proposals/from-feedback`, {
+      session_id: sessionId,
+      comment: "creuser la piste de la faille",
+    });
+    expect(res.status).toBe(200);
+    const body = (await res.json()) as { noted: boolean; proposal: Proposal | null };
+    expect(body.noted).toBe(true);
+    expect(body.proposal?.content_md).toContain("trame de fond");
+  });
+
   it("valide l'action, le statut de filtre et la propriété de la bible", async () => {
     const alice = await login("alice5@example.com");
     const bob = await login("bob5@example.com");

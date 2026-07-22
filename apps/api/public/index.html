@@ -432,10 +432,17 @@
   <h2>La session s'achève</h2>
   <div class="panel">
     <div class="summary-md" id="end-summary"></div>
+    <p class="msg summary-hint">💬 Survolez un passage pour le commenter — votre retour part à l'IA.</p>
+  </div>
+  <div class="panel" id="end-feedback-panel">
+    <h2>Votre retour sur la session</h2>
+    <p class="msg">Un mot général (ton, direction, ce qui vous a plu) : noté comme contexte pour les prochaines sessions, et transformé en proposition si ça touche au canon.</p>
+    <textarea id="feedback-input" placeholder="Ex. « le ton était trop sombre par rapport à ma bible », « j'adore la tournure avec Kass, à creuser »…"></textarea>
+    <div class="row"><button id="feedback-send">Envoyer mon retour</button><span class="msg" id="feedback-msg"></span></div>
   </div>
   <div class="panel" id="end-inventions-panel">
     <h2>Propositions de canonisation</h2>
-    <p class="msg">Ce que le MJ a inventé dans les zones floues. Accepter fusionne le texte dans le canon de votre bible.</p>
+    <p class="msg">Ce que le MJ a inventé, et vos retours transformés en propositions. Accepter fusionne le texte dans le canon de votre bible.</p>
     <div id="end-inventions"></div>
   </div>
   <div class="row">
@@ -445,6 +452,27 @@
 </div>
 
 <div id="overlay-root"></div>
+
+<!-- Panneau d'une zone floue : explication + proposition éditable + actions. -->
+<div id="gap-modal" class="modal-backdrop hidden">
+  <div class="modal gap-panel" role="dialog" aria-modal="true" aria-labelledby="gap-title">
+    <button type="button" class="modal-close" id="gap-close" aria-label="Fermer">✕</button>
+    <div class="gap-head">
+      <span class="axis-badge" id="gap-axis"></span>
+      <h3 id="gap-title">Zone floue</h3>
+    </div>
+    <p class="gap-why" id="gap-why"></p>
+    <label class="gap-proposal-label" for="gap-proposal">Proposition de contenu (modifiable)</label>
+    <div id="gap-proposal-wrap">
+      <textarea id="gap-proposal" class="ws-editor" rows="8" aria-label="Proposition de contenu"></textarea>
+    </div>
+    <p class="msg" id="gap-msg"></p>
+    <div class="row gap-actions">
+      <button class="ghost" id="gap-goto">Aller à la section</button>
+      <button id="gap-insert">Insérer cette proposition</button>
+    </div>
+  </div>
+</div>
 
 <script type="module" src="/app.js"></script>
 </body>

@@ -4,7 +4,8 @@ import type { AppEnv, Env } from "../env";
 import { requireAuth } from "../auth/middleware";
 import { findOwnedBible } from "../bibles/db";
 import { computeRichness } from "./analyze";
-import { computeGlobal, type RichnessGap, type RichnessResult } from "./logic";
+import { computeGlobal, type Axis, type RichnessResult } from "./logic";
+import { suggestGapFill } from "./suggest";
 
 // Monté sur /api/bibles, en parallèle du routeur d'import (SPEC §5) :
 // POST /api/bibles/:id/analyze et GET /api/bibles/:id/richness.
@@ -45,6 +46,31 @@ interface RichnessRow {
   gaps_json: string;
   computed_at: number;
 }
+
+// Lacune actionnable : la version stockée gagne un id stable (cache + marquage)
+// et un drapeau « résolu ». Les anciennes analyses n'ont que {axis, description}.
+interface StoredGap {
+  id: string;
+  axis: Axis;
+  description: string;
+  resolved: boolean;
+}
+
+/** Normalise gaps_json en lacunes id-ées (id déterministe si absent). */
+function normalizeGaps(raw: unknown): StoredGap[] {
+  if (!Array.isArray(raw)) return [];
+  return raw.map((g, i) => {
+    const axis = (g?.axis as Axis) ?? "plots";
+    return {
+      id: typeof g?.id === "string" && g.id ? g.id : `${axis}-${i}`,
+      axis,
+      description: typeof g?.description === "string" ? g.description : "",
+      resolved: g?.resolved === true,
+    };
+  });
+}
+
+const gapKvKey = (bibleId: string, gapId: string) => `gapfill:${bibleId}:${gapId}`;
 
 // POST /api/bibles/:id/analyze — lance le calcul en tâche de fond (202, poll).
 richness.post("/:id/analyze", async (c) => {
@@ -282,7 +308,85 @@ richness.get("/:id/richness", async (c) => {
       geography: row.geography,
     },
     global: row.global,
-    gaps: JSON.parse(row.gaps_json) as RichnessGap[],
+    gaps: normalizeGaps(JSON.parse(row.gaps_json)),
     computed_at: row.computed_at,
   });
+});
+
+// POST /api/bibles/:id/gaps/:gapId/suggest — génère (et cache) une proposition
+// de contenu pour combler une zone floue. Fondée sur le canon, façon <invention>.
+richness.post("/:id/gaps/:gapId/suggest", async (c) => {
+  if (!c.env.ANTHROPIC_API_KEY) {
+    return c.json({ error: "analyzer_not_configured" }, 503);
+  }
+  const bible = await findOwnedBible(c.env.DB, c.req.param("id"), c.get("user").id);
+  if (!bible) return c.json({ error: "not_found" }, 404);
+
+  const row = await c.env.DB.prepare(
+    `SELECT gaps_json FROM richness_scores WHERE bible_id = ?`,
+  )
+    .bind(bible.id)
+    .first<{ gaps_json: string }>();
+  if (!row) return c.json({ error: "not_analyzed" }, 404);
+
+  const gapId = c.req.param("gapId");
+  const gap = normalizeGaps(JSON.parse(row.gaps_json)).find((g) => g.id === gapId);
+  if (!gap) return c.json({ error: "gap_not_found" }, 404);
+
+  // Cache chaud : une lacune donnée n'est rédigée qu'une fois.
+  const key = gapKvKey(bible.id, gapId);
+  const cached = await c.env.CACHE.get(key);
+  if (cached) return c.json({ gap, proposed_md: cached });
+
+  let proposed: string;
+  try {
+    proposed = await suggestGapFill(
+      c.env.ANTHROPIC_API_KEY,
+      bible.canon_md ?? "",
+      gap.axis,
+      gap.description,
+    );
+  } catch (err) {
+    console.error(`[richness] suggestion de lacune échouée ${gapId} :`, err);
+    return c.json({ error: "suggest_failed" }, 502);
+  }
+  if (proposed) await c.env.CACHE.put(key, proposed, { expirationTtl: 60 * 60 * 24 * 7 });
+  return c.json({ gap, proposed_md: proposed });
+});
+
+// PATCH /api/bibles/:id/gaps/:gapId — { resolved: boolean } marque la lacune
+// comme comblée (persistée dans gaps_json ; réinitialisée à la ré-analyse).
+richness.patch("/:id/gaps/:gapId", async (c) => {
+  const bible = await findOwnedBible(c.env.DB, c.req.param("id"), c.get("user").id);
+  if (!bible) return c.json({ error: "not_found" }, 404);
+
+  let body: { resolved?: unknown };
+  try {
+    body = await c.req.json();
+  } catch {
+    return c.json({ error: "invalid_json" }, 400);
+  }
+  if (typeof body.resolved !== "boolean") {
+    return c.json({ error: "invalid_resolved" }, 400);
+  }
+
+  const row = await c.env.DB.prepare(
+    `SELECT gaps_json FROM richness_scores WHERE bible_id = ?`,
+  )
+    .bind(bible.id)
+    .first<{ gaps_json: string }>();
+  if (!row) return c.json({ error: "not_analyzed" }, 404);
+
+  const gapId = c.req.param("gapId");
+  const gaps = normalizeGaps(JSON.parse(row.gaps_json));
+  const gap = gaps.find((g) => g.id === gapId);
+  if (!gap) return c.json({ error: "gap_not_found" }, 404);
+  gap.resolved = body.resolved;
+
+  await c.env.DB.prepare(
+    `UPDATE richness_scores SET gaps_json = ? WHERE bible_id = ?`,
+  )
+    .bind(JSON.stringify(gaps), bible.id)
+    .run();
+  return c.json({ gap });
 });

@@ -1170,26 +1170,118 @@ async function refreshRichness() {
   }
 }
 
+let currentGaps = [];
+
 function renderGaps(gaps) {
+  currentGaps = gaps || [];
   const list = $("gaps-list");
   list.innerHTML = "";
-  if (!gaps.length) {
+  if (!currentGaps.length) {
     list.innerHTML = '<p class="msg">Aucune zone floue détectée.</p>';
     return;
   }
-  for (const gap of gaps) {
-    // Rune éteinte : cliquer ouvre la section de l'axe concerné pour la combler.
+  for (const gap of currentGaps) {
+    // Rune éteinte (§8.1) : cliquer ouvre le panneau pour la combler.
     const btn = document.createElement("button");
     btn.type = "button";
-    btn.className = "rune";
+    btn.className = "rune" + (gap.resolved ? " resolved" : "");
     btn.dataset.axis = gap.axis;
-    btn.innerHTML = '<span class="axis"></span><span class="desc"></span>';
+    btn.dataset.gapId = gap.id;
+    btn.innerHTML =
+      '<span class="axis"></span><span class="desc"></span>' +
+      '<span class="rune-state" aria-hidden="true"></span>';
     btn.querySelector(".axis").textContent = AXIS_LABELS[gap.axis] || gap.axis;
     btn.querySelector(".desc").textContent = gap.description;
-    btn.addEventListener("click", () => openSectionForAxis(gap.axis));
+    btn.querySelector(".rune-state").textContent = gap.resolved ? "✓ comblée" : "";
+    btn.addEventListener("click", () => openGapPanel(gap));
     list.appendChild(btn);
   }
 }
+
+// ── Panneau d'une zone floue (génère une proposition, insère dans la section) ──
+
+let activeGap = null;
+
+function closeGapPanel() {
+  $("gap-modal").classList.add("hidden");
+  activeGap = null;
+}
+
+async function openGapPanel(gap) {
+  activeGap = gap;
+  $("gap-axis").textContent = "Axe " + (AXIS_LABELS[gap.axis] || gap.axis);
+  $("gap-axis").className = "axis-badge";
+  $("gap-why").textContent = gap.description;
+  const ta = $("gap-proposal");
+  ta.value = "";
+  $("gap-msg").textContent = "";
+  const insertBtn = $("gap-insert");
+  const hasSection = !!WS.sections.find((s) => s.axis === gap.axis);
+  $("gap-goto").disabled = !hasSection;
+  insertBtn.disabled = true;
+  $("gap-modal").classList.remove("hidden");
+
+  // Génère (ou récupère du cache serveur) une proposition rédigée.
+  $("gap-msg").innerHTML = spin("L’esprit rédige une proposition…");
+  try {
+    const res = await api(
+      "/bibles/" + currentBible.id + "/gaps/" + encodeURIComponent(gap.id) + "/suggest",
+      { method: "POST" },
+    );
+    if (activeGap !== gap) return; // panneau fermé entre-temps
+    if (!res.ok) throw new Error("suggest_failed");
+    const body = await res.json();
+    ta.value = body.proposed_md || "";
+    $("gap-msg").textContent = hasSection
+      ? ""
+      : "Aucune section rattachée à cet axe — créez-en une pour insérer.";
+    insertBtn.disabled = !hasSection || !ta.value.trim();
+  } catch {
+    if (activeGap !== gap) return;
+    $("gap-msg").textContent = "Génération impossible — réessayez.";
+    $("gap-msg").className = "msg error";
+  }
+}
+
+$("gap-close").addEventListener("click", closeGapPanel);
+$("gap-modal").addEventListener("click", (e) => {
+  if (e.target === $("gap-modal")) closeGapPanel();
+});
+$("gap-proposal").addEventListener("input", () => {
+  $("gap-insert").disabled = !$("gap-proposal").value.trim() ||
+    !WS.sections.find((s) => activeGap && s.axis === activeGap.axis);
+});
+$("gap-goto").addEventListener("click", () => {
+  if (!activeGap) return;
+  const gap = activeGap;
+  closeGapPanel();
+  openSectionForAxis(gap.axis);
+});
+$("gap-insert").addEventListener("click", async () => {
+  if (!activeGap) return;
+  const gap = activeGap;
+  const text = $("gap-proposal").value.trim();
+  const section = WS.sections.find((s) => s.axis === gap.axis);
+  if (!text || !section) return;
+  $("gap-insert").disabled = true;
+  $("gap-msg").innerHTML = spin("Insertion…");
+
+  // Ajout (jamais d'écrasement) en fin de section, puis sauvegarde.
+  const base = (section.content_md || "").trim();
+  section.content_md = base ? base + "\n\n" + text : text;
+  await saveWsSection(section.id);
+  // Marque la lacune comblée côté serveur (grisée, pas supprimée).
+  await api("/bibles/" + currentBible.id + "/gaps/" + encodeURIComponent(gap.id), {
+    method: "PATCH",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({ resolved: true }),
+  });
+  const g = currentGaps.find((x) => x.id === gap.id);
+  if (g) g.resolved = true;
+  renderGaps(currentGaps);
+  closeGapPanel();
+  selectSection(section.id); // montre le contenu inséré
+});
 
 /** Ouvre la section de base rattachée à un axe (pour combler une lacune). */
 function openSectionForAxis(axis) {
@@ -1210,41 +1302,141 @@ function flashGapsForAxis(axis) {
 
 // ── Propositions de canon (boucle M5) ────────────────────────────────────
 
+const PROPOSAL_SOURCE_LABELS = { auto: "session", gap: "lacune", comment: "retour" };
+
+// Attache une affordance de commentaire (💬) à un élément : un clic ouvre un
+// champ inline ; à l'envoi, l'IA génère une proposition ciblée (from-comment).
+function attachCommenter(hostRow, { bibleId, sessionId, passageFn, onProposal }) {
+  const btn = document.createElement("button");
+  btn.type = "button";
+  btn.className = "comment-btn";
+  btn.title = "Commenter ce passage";
+  btn.textContent = "💬";
+  const box = document.createElement("div");
+  box.className = "comment-inline hidden";
+  box.innerHTML =
+    '<textarea class="comment-field" rows="2" placeholder="Votre remarque à l’IA…"></textarea>' +
+    '<div class="row"><button type="button" class="comment-send">Envoyer</button>' +
+    '<span class="msg comment-msg"></span></div>';
+  btn.addEventListener("click", () => {
+    box.classList.toggle("hidden");
+    if (!box.classList.contains("hidden")) box.querySelector(".comment-field").focus();
+  });
+  box.querySelector(".comment-send").addEventListener("click", async () => {
+    const field = box.querySelector(".comment-field");
+    const send = box.querySelector(".comment-send");
+    const msg = box.querySelector(".comment-msg");
+    const comment = field.value.trim();
+    if (!comment || !sessionId) { msg.textContent = "Session inconnue."; return; }
+    send.disabled = true;
+    msg.innerHTML = spin("L’esprit réfléchit…");
+    const res = await api(
+      "/bibles/" + bibleId + "/proposals/from-comment",
+      jsonPost({ session_id: sessionId, passage: passageFn(), comment }),
+    );
+    const body = await res.json().catch(() => ({}));
+    if (!res.ok) {
+      msg.textContent = "Échec — réessayez.";
+      msg.className = "msg error comment-msg";
+      send.disabled = false;
+      return;
+    }
+    if (body.relevant && body.proposal && onProposal) {
+      msg.textContent = "Proposition ajoutée ci-dessous.";
+      onProposal(body.proposal);
+    } else {
+      msg.textContent = "Retour noté — aucune modif de canon suggérée.";
+    }
+    field.value = "";
+    field.disabled = send.disabled = true;
+  });
+  return { btn, box };
+}
+
 function proposalItem(p, bibleId, { onAccepted } = {}) {
   const div = document.createElement("div");
-  div.className = "invention-item";
+  div.className = "invention-item source-" + (p.source || "auto");
   div.innerHTML =
-    '<div class="row spread"><span class="axis"></span><span class="row actions"></span></div>' +
+    '<div class="row spread prop-head"><span class="row head-left">' +
+    '<span class="axis"></span><span class="src-badge"></span></span>' +
+    '<span class="row actions"></span></div>' +
     '<div class="content"></div>';
   div.querySelector(".axis").textContent = AXIS_LABELS[p.axis] || p.axis;
-  div.querySelector(".content").textContent = p.content_md;
+  const srcBadge = div.querySelector(".src-badge");
+  const srcLabel = PROPOSAL_SOURCE_LABELS[p.source || "auto"];
+  if (srcLabel) srcBadge.textContent = srcLabel;
+  else srcBadge.remove();
+  const content = div.querySelector(".content");
+  content.textContent = p.content_md;
   const actions = div.querySelector(".actions");
+
+  // Commenter la proposition elle-même (crée une proposition dérivée).
+  if (p.session_id) {
+    const { btn, box } = attachCommenter(actions, {
+      bibleId,
+      sessionId: p.session_id,
+      passageFn: () => content.textContent,
+      onProposal: (np) => div.parentNode &&
+        div.parentNode.appendChild(proposalItem(np, bibleId, { onAccepted })),
+    });
+    actions.appendChild(btn);
+    div.appendChild(box);
+  }
+
   const setDecided = (status) => {
-    actions.innerHTML = "";
+    for (const b of actions.querySelectorAll("button:not(.comment-btn)")) b.remove();
     const chip = document.createElement("span");
     chip.className = "status " + status;
     chip.textContent = status === "accepted" ? "canonisé" : "rejeté";
-    actions.appendChild(chip);
+    actions.insertBefore(chip, actions.firstChild);
     div.classList.add(status);
   };
   if (p.status !== "pending") {
     setDecided(p.status);
     return div;
   }
+
+  // Édition avant validation : rend le contenu modifiable en place.
+  let editing = false;
+  const edit = document.createElement("button");
+  edit.className = "ghost";
+  edit.textContent = "Éditer";
+  edit.addEventListener("click", () => {
+    editing = !editing;
+    if (editing) {
+      const ta = document.createElement("textarea");
+      ta.className = "prop-edit";
+      ta.value = content.textContent;
+      ta.rows = 5;
+      content.replaceWith(ta);
+      ta.focus();
+      edit.textContent = "Aperçu";
+    } else {
+      const ta = div.querySelector(".prop-edit");
+      const div2 = document.createElement("div");
+      div2.className = "content";
+      div2.textContent = ta.value;
+      ta.replaceWith(div2);
+      edit.textContent = "Éditer";
+    }
+  });
+
   const accept = document.createElement("button");
   accept.textContent = "Canoniser";
   const reject = document.createElement("button");
   reject.className = "ghost";
   reject.textContent = "Rejeter";
   const decide = async (action) => {
-    accept.disabled = reject.disabled = true;
-    const res = await api(
-      "/bibles/" + bibleId + "/proposals/" + p.id,
-      jsonPost({ action }),
-    );
+    // Récupère le texte édité éventuel avant d'envoyer.
+    const ta = div.querySelector(".prop-edit");
+    const editedContent = ta ? ta.value.trim() : null;
+    accept.disabled = reject.disabled = edit.disabled = true;
+    const payload = { action };
+    if (action === "accept" && editedContent) payload.content_md = editedContent;
+    const res = await api("/bibles/" + bibleId + "/proposals/" + p.id, jsonPost(payload));
     const body = await res.json();
     if (!res.ok && body.error !== "already_decided") {
-      accept.disabled = reject.disabled = false;
+      accept.disabled = reject.disabled = edit.disabled = false;
       return;
     }
     const status = res.ok ? body.proposal.status : body.status;
@@ -1253,7 +1445,9 @@ function proposalItem(p, bibleId, { onAccepted } = {}) {
   };
   accept.addEventListener("click", () => decide("accept"));
   reject.addEventListener("click", () => decide("reject"));
-  actions.append(accept, reject);
+  actions.insertBefore(reject, actions.firstChild);
+  actions.insertBefore(edit, reject);
+  actions.insertBefore(accept, edit);
   return div;
 }
 
@@ -2790,6 +2984,15 @@ async function showEnd(id) {
 
   const list = $("end-inventions");
   list.innerHTML = "";
+
+  // Résumé commentable : chaque bloc gagne une affordance 💬 (si la bible est
+  // connue, donc si on peut créer des propositions).
+  $("end-feedback-panel").classList.toggle("hidden", !info);
+  if (info) {
+    makeSummaryCommentable(info.id, id, list);
+    wireFeedback(info.id, id, list);
+  }
+
   let shown = false;
   if (info) {
     const res = await api(
@@ -2814,6 +3017,67 @@ async function showEnd(id) {
     shown = true;
   }
   $("end-inventions-panel").classList.toggle("hidden", !shown);
+}
+
+// Ajoute une proposition à la liste de fin et révèle le panneau si besoin.
+function appendEndProposal(list, np, bibleId) {
+  $("end-inventions-panel").classList.remove("hidden");
+  list.appendChild(proposalItem(np, bibleId));
+}
+
+// Rend chaque bloc du résumé commentable (icône 💬 en marge).
+function makeSummaryCommentable(bibleId, sessionId, list) {
+  const summary = $("end-summary");
+  const blocks = [...summary.children];
+  for (const block of blocks) {
+    if (block.classList.contains("msg")) continue; // pas les notes
+    const wrap = document.createElement("div");
+    wrap.className = "sum-block";
+    block.replaceWith(wrap);
+    wrap.appendChild(block);
+    const { btn, box } = attachCommenter(wrap, {
+      bibleId,
+      sessionId,
+      passageFn: () => block.textContent,
+      onProposal: (np) => appendEndProposal(list, np, bibleId),
+    });
+    wrap.appendChild(btn);
+    wrap.appendChild(box);
+  }
+}
+
+// Champ de retour général : note le contexte + génère une proposition si utile.
+function wireFeedback(bibleId, sessionId, list) {
+  const input = $("feedback-input");
+  const btn = $("feedback-send");
+  const msg = $("feedback-msg");
+  input.value = "";
+  msg.textContent = "";
+  input.disabled = btn.disabled = false;
+  btn.onclick = async () => {
+    const comment = input.value.trim();
+    if (!comment) return;
+    btn.disabled = true;
+    msg.innerHTML = spin("Envoi de votre retour…");
+    const res = await api(
+      "/bibles/" + bibleId + "/proposals/from-feedback",
+      jsonPost({ session_id: sessionId, comment }),
+    );
+    const body = await res.json().catch(() => ({}));
+    if (!res.ok) {
+      msg.textContent = "Échec — réessayez.";
+      msg.className = "msg error";
+      btn.disabled = false;
+      return;
+    }
+    if (body.proposal) {
+      msg.textContent = "Retour noté — une proposition a été ajoutée.";
+      appendEndProposal(list, body.proposal, bibleId);
+    } else {
+      msg.textContent = "Retour noté pour les prochaines sessions.";
+    }
+    input.disabled = btn.disabled = true;
+  };
 }
 
 // PWA (§8.3) : service worker — assets en stale-while-revalidate, relecture

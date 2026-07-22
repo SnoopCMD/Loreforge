@@ -1061,6 +1061,89 @@ button.armed, .bible-card .card-delete.armed {
 
 .rune.flash { border-left-color: var(--spirit); background: rgba(103, 232, 249, 0.1); }
 
+/* Zone floue comblée : rune « rallumée » — grisée/barrée, pas supprimée. */
+.rune .desc { display: block; }
+.rune-state {
+  display: block; margin-top: 0.15rem;
+  font-family: "JetBrains Mono", monospace; font-size: 0.68rem; color: var(--spirit);
+}
+.rune.resolved { border-left-color: var(--spirit); opacity: 0.6; }
+.rune.resolved .desc { text-decoration: line-through; }
+
+/* ── Modal générique (zone floue) ────────────────────────────────────────── */
+.modal-backdrop {
+  position: fixed; inset: 0; z-index: 60;
+  background: rgba(6, 2, 12, 0.72);
+  display: flex; align-items: center; justify-content: center; padding: 1rem;
+}
+.modal {
+  position: relative; width: 100%; max-width: 640px;
+  max-height: 90vh; overflow-y: auto;
+  background: var(--nebula); border: 1px solid var(--line); border-radius: 14px;
+  padding: 1.5rem 1.6rem;
+  box-shadow: 0 24px 60px rgba(0, 0, 0, 0.5);
+}
+.modal-close {
+  position: absolute; top: 0.7rem; right: 0.7rem;
+  min-height: 0; padding: 0.2rem 0.55rem; background: transparent;
+  border: 1px solid var(--line); color: var(--parchment-dim); font-size: 0.9rem;
+}
+.modal-close:hover { color: var(--parchment); border-color: var(--spirit); }
+.gap-head { display: flex; align-items: center; gap: 0.7rem; margin-bottom: 0.6rem; flex-wrap: wrap; }
+.gap-head h3 { margin: 0; font-family: Cinzel, serif; }
+.gap-why {
+  color: var(--parchment); margin-bottom: 1rem;
+  border-left: 3px solid var(--ember); padding-left: 0.8rem;
+}
+.gap-proposal-label {
+  display: block; font-size: 0.78rem; color: var(--parchment-dim);
+  text-transform: uppercase; letter-spacing: 0.08em; margin-bottom: 0.35rem;
+}
+#gap-proposal { min-height: 0; }
+.gap-actions { justify-content: flex-end; margin-top: 1rem; gap: 0.6rem; }
+
+/* ── Propositions : badge de source, édition, commentaires ────────────────── */
+.src-badge {
+  font-family: "JetBrains Mono", monospace; font-size: 0.6rem;
+  text-transform: uppercase; letter-spacing: 0.1em;
+  padding: 0.1rem 0.45rem; border-radius: 99px;
+  border: 1px solid var(--line); color: var(--parchment-dim);
+}
+.invention-item.source-comment { border-left-color: var(--arcane); }
+.invention-item.source-comment .src-badge { color: var(--arcane); border-color: var(--arcane); }
+.prop-head .head-left { gap: 0.5rem; align-items: center; }
+.prop-edit {
+  width: 100%; margin-top: 0.35rem; min-height: 0;
+  background: var(--void); border: 1px solid var(--spirit); border-radius: 8px;
+  padding: 0.6rem 0.7rem; color: var(--parchment); line-height: 1.6;
+}
+
+.comment-btn {
+  min-height: 0; padding: 0.15rem 0.5rem; font-size: 0.85rem;
+  background: transparent; border: 1px solid var(--line); border-radius: 8px;
+}
+.comment-btn:hover { border-color: var(--arcane); }
+.comment-inline { margin-top: 0.6rem; }
+.comment-field {
+  width: 100%; min-height: 0; margin-bottom: 0.4rem;
+  background: var(--void); border: 1px solid var(--line); border-radius: 8px;
+  padding: 0.5rem 0.6rem; color: var(--parchment);
+}
+.comment-send { padding: 0.3rem 0.9rem; font-size: 0.8rem; min-height: 0; }
+.comment-msg { font-size: 0.78rem; }
+
+/* Résumé commentable : 💬 en marge au survol du bloc. */
+.summary-hint { font-size: 0.78rem; opacity: 0.75; }
+.sum-block { position: relative; padding-right: 2.2rem; border-radius: 8px; }
+.sum-block:hover { background: rgba(124, 58, 237, 0.06); }
+.sum-block > .comment-btn {
+  position: absolute; top: 0.1rem; right: 0.2rem;
+  opacity: 0; transition: opacity 0.15s ease;
+}
+.sum-block:hover > .comment-btn,
+.sum-block:focus-within > .comment-btn { opacity: 1; }
+.sum-block .comment-inline { padding-right: 0; }
+
 /* Workspace mobile : nav → chips scrollables en haut, éditeur plein écran. */
 @media (max-width: 820px) {
   .ws-grid { grid-template-columns: minmax(0, 1fr); }

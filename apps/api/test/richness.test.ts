@@ -93,8 +93,10 @@ describe("POST /api/bibles/:id/analyze + GET richness", () => {
       geography: 4,
     });
     expect(done.global).toBe(6); // 32/5 arrondi
+    // Les lacunes sont normalisées (id stable + drapeau resolved) pour être
+    // actionnables côté éditeur (zones floues cliquables).
     expect(done.gaps).toEqual([
-      { axis: "geography", description: "Aucune carte des Mondes." },
+      { id: "geography-0", axis: "geography", description: "Aucune carte des Mondes.", resolved: false },
     ]);
 
     // Le statut de la bible est passé à 'analyzed'.
@@ -132,6 +134,60 @@ describe("POST /api/bibles/:id/analyze + GET richness", () => {
     });
     expect(res.status).toBe(200);
     expect(await res.json()).toEqual({ status: "none" });
+  });
+
+  it("zone floue : suggestion (cachée) puis marquage résolu", async () => {
+    const cookie = await login("gaps@example.com");
+    const bibleId = await createBible(cookie);
+
+    mockAnthropic(
+      JSON.stringify({
+        cosmology: 9,
+        characters: 6,
+        plots: 8,
+        tone: 5,
+        geography: 4,
+        gaps: [{ axis: "geography", description: "Aucune carte des Mondes." }],
+      }),
+    );
+    await SELF.fetch(`${BASE}/api/bibles/${bibleId}/analyze`, {
+      method: "POST",
+      headers: { cookie },
+    });
+    await pollRichness(cookie, bibleId, (s) => s === "analyzed");
+
+    // 1re suggestion : un appel IA mocké renvoie le texte proposé.
+    mockAnthropic("Une carte des Mondes : trois archipels reliés par les failles.");
+    const suggest = await SELF.fetch(
+      `${BASE}/api/bibles/${bibleId}/gaps/geography-0/suggest`,
+      { method: "POST", headers: { cookie } },
+    );
+    expect(suggest.status).toBe(200);
+    const sBody = (await suggest.json()) as { gap: { id: string }; proposed_md: string };
+    expect(sBody.gap.id).toBe("geography-0");
+    expect(sBody.proposed_md).toContain("trois archipels");
+
+    // 2e suggestion : servie par le cache KV — AUCUN appel IA (mock non armé).
+    const again = await SELF.fetch(
+      `${BASE}/api/bibles/${bibleId}/gaps/geography-0/suggest`,
+      { method: "POST", headers: { cookie } },
+    );
+    expect(again.status).toBe(200);
+    expect(((await again.json()) as { proposed_md: string }).proposed_md).toContain(
+      "trois archipels",
+    );
+
+    // Marquage résolu : persisté dans gaps_json.
+    const patch = await SELF.fetch(`${BASE}/api/bibles/${bibleId}/gaps/geography-0`, {
+      method: "PATCH",
+      headers: { "content-type": "application/json", cookie },
+      body: JSON.stringify({ resolved: true }),
+    });
+    expect(patch.status).toBe(200);
+    const richness = (await (
+      await SELF.fetch(`${BASE}/api/bibles/${bibleId}/richness`, { headers: { cookie } })
+    ).json()) as { gaps: Array<{ id: string; resolved: boolean }> };
+    expect(richness.gaps.find((g) => g.id === "geography-0")?.resolved).toBe(true);
   });
 
   it("404 pour la bible d'un autre utilisateur", async () => {

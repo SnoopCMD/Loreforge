@@ -67,6 +67,8 @@ interface SessionMeta {
   toneProfile: string | null;
   scores: RichnessScores | null;
   gaps: RichnessGap[];
+  /** Retours d'auteur des sessions passées (contexte, SPEC §3) — plus récents d'abord. */
+  authorFeedback: string[];
   format: string;
   trame: string | null;
   status: "setup" | "playing" | "finished";
@@ -182,6 +184,17 @@ export class GameSession extends DurableObject<Env> {
       ? (JSON.parse(richness.gaps_json) as RichnessGap[])
       : [];
 
+    // Retours d'auteur des sessions terminées de cette bible : contexte pour
+    // le MJ (les 3 plus récents), relus au prompt (SPEC §3).
+    const feedbackRows = await this.env.DB.prepare(
+      `SELECT author_feedback FROM game_sessions
+       WHERE bible_id = ? AND author_feedback IS NOT NULL AND author_feedback != ''
+       ORDER BY finished_at DESC LIMIT 3`,
+    )
+      .bind(payload.bibleId)
+      .all<{ author_feedback: string }>();
+    const authorFeedback = feedbackRows.results.map((r) => r.author_feedback);
+
     let characterName: string | null = null;
     let characterSheet: string | null = null;
     if (payload.characterId) {
@@ -206,6 +219,7 @@ export class GameSession extends DurableObject<Env> {
       toneProfile: bible.tone_profile,
       scores,
       gaps,
+      authorFeedback,
       format: payload.format,
       trame: payload.trame,
       status: "setup",
@@ -728,6 +742,7 @@ export class GameSession extends DurableObject<Env> {
       canonExcerpts,
       scores: meta.scores,
       gaps: meta.gaps,
+      authorFeedback: meta.authorFeedback ?? [],
       toneProfile: meta.toneProfile,
       characterName: meta.characterName,
       characterSheet: meta.characterSheet,
