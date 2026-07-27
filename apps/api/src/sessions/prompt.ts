@@ -9,6 +9,7 @@ import {
 } from "../richness/logic";
 import {
   describeOutcome,
+  SKILL_TIERS,
   SOUFFLE_MAX,
   type GameState,
   type RollResult,
@@ -44,8 +45,6 @@ export function buildSetupQuestions(
 export interface SystemPromptInput {
   bibleTitle: string;
   canonMd: string;
-  /** Extraits RAG (M6) : remplacent la bible entière quand elle est grosse. */
-  canonExcerpts?: string | null;
   scores: RichnessScores | null;
   gaps: RichnessGap[];
   /** Retours d'auteur de sessions passées (contexte à honorer). */
@@ -55,22 +54,19 @@ export interface SystemPromptInput {
   characterSheet: string | null; // JSON brut de characters.sheet_json
   format: string;
   trame: string | null;
-  state: GameState;
 }
 
+/**
+ * Prompt système STABLE : tout ce qui est fixé à l'init de la session et rien
+ * d'autre. Il doit rester identique à l'octet près d'un tour à l'autre — c'est
+ * le préfixe mis en cache par l'API (prompt caching) ; l'état volatile (Souffle,
+ * faits, compétences, extraits RAG) voyage dans le bloc [CONTEXTE DU TOUR] du
+ * message joueur, via buildTurnContext().
+ */
 export function buildSystemPrompt(input: SystemPromptInput): string {
-  let canon: string;
-  if (input.canonExcerpts) {
-    canon = `(Bible volumineuse : seuls les extraits pertinents pour ce tour
-sont fournis. S'ils ne suffisent pas, reste prudent et cohérent avec eux.)
-
-${input.canonExcerpts}`;
-  } else {
-    canon = input.canonMd;
-    if (canon.length > MAX_CANON_CHARS) {
-      canon =
-        canon.slice(0, MAX_CANON_CHARS) + "\n\n[... bible tronquée ...]";
-    }
+  let canon = input.canonMd;
+  if (canon.length > MAX_CANON_CHARS) {
+    canon = canon.slice(0, MAX_CANON_CHARS) + "\n\n[... bible tronquée ...]";
   }
 
   const scoresLine = input.scores
@@ -93,10 +89,6 @@ ${input.canonExcerpts}`;
   const character = input.characterName
     ? `Personnage joueur : ${input.characterName}\nFiche : ${input.characterSheet ?? "{}"}`
     : "Pas de fiche de personnage : improvise une fiche minimale avec le joueur dès la première scène.";
-
-  const facts = input.state.facts.length
-    ? input.state.facts.map((f) => `- ${f}`).join("\n")
-    : "- (aucun pour l'instant)";
 
   const feedbackBlock = input.authorFeedback?.length
     ? `
@@ -151,9 +143,42 @@ Aux ruptures de scène, émets <scene_break/>.
 
 Partie : format ${input.format}, trame ${input.trame ?? "libre"}.
 ${character}
-Souffle actuel : ${input.state.souffle}/${SOUFFLE_MAX}.
-Faits établis en session (jamais contredits) :
-${facts}
+
+== COMPÉTENCES DU PERSONNAGE (mémoire longue) ==
+Le personnage acquiert et fait progresser des compétences (pouvoirs, savoir-
+faire, techniques). Paliers, du plus fragile au plus assimilé :
+${SKILL_TIERS.map((t, i) => `${i + 1}. ${t}`).join(" → ")}.
+- Quand le personnage apprend une compétence, progresse d'un palier, ou qu'une
+  capacité de sa fiche mérite d'être suivie, émets (hors narration, invisible) :
+  <skill name="Nom de la compétence" tier="découverte|apprentissage|maîtrise|inné" note="limite ou portée, courte"/>
+- La liste à jour t'est fournie chaque tour dans le CONTEXTE DU TOUR. Elle fait
+  foi : ne « redécouvre » JAMAIS une compétence déjà listée, et n'exige jamais
+  de réapprentissage.
+- Jets de dés selon le palier :
+  · découverte : usage incertain → <roll/> requis.
+  · apprentissage : usage simple réussi ; <roll/> seulement en situation
+    difficile ou sous pression.
+  · maîtrise : usage réussi d'office, sans jet, décrit avec l'aisance d'un
+    expert ; <roll/> uniquement si l'enjeu dépasse la compétence (opposition
+    exceptionnelle, finalité incertaine, conditions extrêmes).
+  · inné : l'usage n'appelle JAMAIS de jet ; seules les conséquences externes
+    peuvent en appeler un.
+- Un jet raté sur une compétence maîtrisée porte sur l'enjeu, jamais sur la
+  capacité elle-même (l'expert ne « rate » pas son geste de base).
+
+== MÉMOIRE DES FAITS ==
+Quand un événement marquant établit un fait durable (mort d'un PNJ, promesse,
+lieu découvert, objet obtenu, révélation), enregistre-le (hors narration,
+invisible) : <fait texte="résumé du fait, une phrase"/>. Les faits établis te
+sont refournis chaque tour dans le CONTEXTE DU TOUR et ne sont jamais
+contredits, même si la scène d'origine est sortie de l'historique.
+
+== CONTEXTE DU TOUR ==
+Le dernier message joueur commence par un bloc [CONTEXTE DU TOUR ...] injecté
+par le serveur : Souffle courant, faits établis, compétences acquises et, si la
+bible est volumineuse, des extraits complémentaires pertinents pour ce tour.
+Ce bloc est la vérité serveur : appuie-toi dessus en priorité. Il est invisible
+pour le joueur — ne le recopie jamais, n'y fais jamais référence explicitement.
 
 == STYLE DE NARRATION ==
 - Scènes courtes et cinématiques.
@@ -165,6 +190,42 @@ ${facts}
 - Fais vivre les PNJ canon avec leurs motivations écrites.
 - Jamais de contradiction avec le canon ni avec les faits établis en session.
 - Réponds en français, uniquement la narration (plus les balises prévues).`;
+}
+
+/**
+ * Bloc d'état volatile injecté en tête du message joueur ENVOYÉ au modèle
+ * (jamais stocké dans l'historique : le préfixe des messages reste ainsi
+ * identique d'une requête à l'autre et le cache de prompt tient, et les gros
+ * extraits RAG ne sont facturés qu'une fois).
+ */
+export function buildTurnContext(
+  state: GameState,
+  canonExcerpts?: string | null,
+): string {
+  const facts = state.facts.length
+    ? state.facts.map((f) => `- ${f}`).join("\n")
+    : "- (aucun pour l'instant)";
+  const skills = (state.skills ?? []).length
+    ? (state.skills ?? [])
+        .map((s) => `- ${s.name} — ${s.tier}${s.note ? ` (${s.note})` : ""}`)
+        .join("\n")
+    : "- (aucune pour l'instant)";
+
+  const excerptsBlock = canonExcerpts
+    ? `
+Extraits de la bible pertinents pour ce tour (bible volumineuse — si un détail
+manque, reste prudent et cohérent avec le canon fourni au système) :
+${canonExcerpts}
+`
+    : "";
+
+  return `[CONTEXTE DU TOUR — vérité serveur, invisible pour le joueur, ne jamais recopier]
+Souffle : ${state.souffle}/${SOUFFLE_MAX}
+Faits établis (jamais contredits) :
+${facts}
+Compétences acquises (nom — palier) :
+${skills}
+${excerptsBlock}[FIN DU CONTEXTE]`;
 }
 
 /** Message utilisateur du tour : injecte le résultat du d6 s'il y en a un.

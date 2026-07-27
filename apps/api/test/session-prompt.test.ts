@@ -4,6 +4,7 @@ import {
   buildSetupMessage,
   buildSetupQuestions,
   buildSystemPrompt,
+  buildTurnContext,
   buildTurnMessage,
   MAX_SETUP_QUESTIONS,
   turnEndsOpen,
@@ -44,7 +45,7 @@ describe("buildSetupQuestions (SPEC §4)", () => {
 });
 
 describe("buildSystemPrompt (SPEC §7)", () => {
-  const prompt = buildSystemPrompt({
+  const input = {
     bibleTitle: "Les Mondes Fêlés",
     canonMd: "# Les Mondes Fêlés\n\nLa magie vient des failles.",
     scores,
@@ -54,8 +55,8 @@ describe("buildSystemPrompt (SPEC §7)", () => {
     characterSheet: '{"pouvoir":"marche-faille"}',
     format: "oneshot",
     trame: null,
-    state: { ...initialGameState(), souffle: 2, facts: ["Karnos existe."] },
-  });
+  };
+  const prompt = buildSystemPrompt(input);
 
   it("contient le canon, le titre et les règles dérivées par axe", () => {
     expect(prompt).toContain("« Les Mondes Fêlés »");
@@ -64,13 +65,26 @@ describe("buildSystemPrompt (SPEC §7)", () => {
     expect(prompt).toContain("Axes ≤ 4 (tone, geography)");
   });
 
-  it("contient l'état courant, la fiche et le contrat de balises", () => {
-    expect(prompt).toContain("Souffle actuel : 2/3");
-    expect(prompt).toContain("Karnos existe.");
+  it("contient la fiche et le contrat de balises", () => {
     expect(prompt).toContain("Kael");
     expect(prompt).toContain('<roll reason="..."/>');
     expect(prompt).toContain('<invention axis="...">');
     expect(prompt).toContain("trame libre");
+  });
+
+  it("annonce le système de compétences et la mémoire des faits", () => {
+    expect(prompt).toContain('<skill name="Nom de la compétence"');
+    expect(prompt).toContain("découverte");
+    expect(prompt).toContain("inné : l'usage n'appelle JAMAIS de jet");
+    expect(prompt).toContain('<fait texte="');
+    expect(prompt).toContain("CONTEXTE DU TOUR");
+  });
+
+  it("est stable : ne contient ni Souffle courant ni faits de session", () => {
+    // Le prompt système est le préfixe mis en cache : l'état volatile n'y a
+    // pas sa place (il voyage dans buildTurnContext).
+    expect(prompt).not.toContain("Souffle actuel");
+    expect(buildSystemPrompt(input)).toBe(prompt);
   });
 
   it("ton par défaut si tone_profile absent", () => {
@@ -80,6 +94,37 @@ describe("buildSystemPrompt (SPEC §7)", () => {
   it("annonce le glossaire cliquable et la règle de fin de tour non négociable", () => {
     expect(prompt).toContain('<lore term="Nom canonique"');
     expect(prompt).toContain("NON NÉGOCIABLE");
+  });
+});
+
+describe("buildTurnContext (état volatile par tour)", () => {
+  const state = {
+    ...initialGameState(),
+    souffle: 2,
+    facts: ["Karnos existe."],
+    skills: [
+      { name: "Marche-faille", tier: "maîtrise" as const, note: "3 m max" },
+    ],
+  };
+
+  it("contient Souffle, faits et compétences avec palier", () => {
+    const ctx = buildTurnContext(state);
+    expect(ctx).toContain("Souffle : 2/3");
+    expect(ctx).toContain("- Karnos existe.");
+    expect(ctx).toContain("- Marche-faille — maîtrise (3 m max)");
+    expect(ctx).toContain("[FIN DU CONTEXTE]");
+    expect(ctx).not.toContain("Extraits de la bible");
+  });
+
+  it("inclut les extraits RAG quand fournis", () => {
+    const ctx = buildTurnContext(state, "[Extrait — Karnos]\nLa cité...");
+    expect(ctx).toContain("Extraits de la bible");
+    expect(ctx).toContain("La cité...");
+  });
+
+  it("tolère un état d'ancienne session sans skills", () => {
+    const legacy = { ...initialGameState(), skills: undefined } as never;
+    expect(buildTurnContext(legacy)).toContain("(aucune pour l'instant)");
   });
 });
 

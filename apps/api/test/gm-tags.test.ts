@@ -124,6 +124,35 @@ describe("GmStreamParser", () => {
     expect(events).toEqual([]);
   });
 
+  it("extrait <skill .../> avec note optionnelle, même coupée en streaming", () => {
+    const { text, events } = replay([
+      "Tu sens la faille répondre. <sk",
+      'ill name="Marche-faille" tier="apprentis',
+      'sage" note="3 m max"/> Le froid se dissipe.',
+    ]);
+    expect(text).toBe("Tu sens la faille répondre.  Le froid se dissipe.");
+    expect(events).toEqual([
+      {
+        type: "skill_update",
+        name: "Marche-faille",
+        tier: "apprentissage",
+        note: "3 m max",
+      },
+    ]);
+  });
+
+  it("extrait <skill .../> sans note et <fait .../>", () => {
+    const { text, events } = replay([
+      '<skill name="Chant du fleuve" tier="maîtrise"/>Voilà.',
+      '<fait texte="Le pont de Karnos est détruit."/>',
+    ]);
+    expect(text).toBe("Voilà.");
+    expect(events).toEqual([
+      { type: "skill_update", name: "Chant du fleuve", tier: "maîtrise" },
+      { type: "fact", text: "Le pont de Karnos est détruit." },
+    ]);
+  });
+
   it("loggue une invention jamais refermée au flush, sans l'afficher", () => {
     const { text, events } = replay([
       'Avant. <invention axis="plots">Un pacte secret',

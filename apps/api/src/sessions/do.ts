@@ -15,6 +15,8 @@ import Anthropic from "@anthropic-ai/sdk";
 import type { Env } from "../env";
 import type { RichnessGap, RichnessScores } from "../richness/logic";
 import {
+  addFact,
+  applySkillUpdate,
   applySouffleDelta,
   initialGameState,
   outcomeForRoll,
@@ -30,6 +32,7 @@ import {
   buildSetupMessage,
   buildSetupQuestions,
   buildSystemPrompt,
+  buildTurnContext,
   buildTurnMessage,
   RELANCE_MESSAGE,
   SUMMARY_MESSAGE,
@@ -42,6 +45,10 @@ const MAX_PLAYER_INPUT_CHARS = 4000;
 const MAX_ANSWERS = 10;
 // Fenêtre de contexte : derniers tours envoyés au modèle.
 const CONTEXT_TURNS = 40;
+// Prompt caching (coût) : le préfixe stable (system + historique) est mis en
+// cache côté API ; TTL 1h car le rythme d'une partie dépasse souvent les 5 min
+// entre deux tours. Relecture ≈ 0,1× le prix d'un token d'entrée.
+const CACHE_CONTROL = { type: "ephemeral", ttl: "1h" } as const;
 const LOG_TURNS = 20;
 // Relance de fin de tour (§7) : court, sans retry (filet best-effort).
 const MAX_RELANCE_TOKENS = 256;
@@ -271,10 +278,11 @@ export class GameSession extends DurableObject<Env> {
     // Le passage en 'playing' n'est commité qu'à la fin de la génération : une
     // scène 1 interrompue laisse la session en 'setup', donc rejouable via
     // POST /setup (le dernier état validé reste l'avant-setup, §résilience).
+    const stored = buildSetupMessage(questions, answers);
     return this.generate(
       meta,
       state,
-      buildSetupMessage(questions, answers),
+      { stored, sent: await this.withTurnContext(meta, state, stored) },
       null,
       { becomePlaying: true },
     );
@@ -305,10 +313,11 @@ export class GameSession extends DurableObject<Env> {
     }
     state.last_roll = null;
 
+    const stored = buildTurnMessage(input.trim(), consumedRoll);
     return this.generate(
       meta,
       state,
-      buildTurnMessage(input.trim(), consumedRoll),
+      { stored, sent: await this.withTurnContext(meta, state, stored) },
       consumedRoll,
     );
   }
@@ -373,6 +382,7 @@ export class GameSession extends DurableObject<Env> {
       souffle: state.souffle,
       souffle_max: SOUFFLE_MAX,
       facts: state.facts,
+      skills: state.skills ?? [],
       pending_roll: state.pending_roll,
       last_roll: state.last_roll,
       turn_count: state.turn_count,
@@ -407,8 +417,12 @@ export class GameSession extends DurableObject<Env> {
     }
 
     const state = (await this.ctx.storage.get<GameState>("state"))!;
-    const messages = await this.buildMessages(SUMMARY_MESSAGE);
-    const system = await this.systemPrompt(meta, state);
+    // Le résumé profite du contexte serveur (faits, compétences) mais pas des
+    // extraits RAG (inutiles pour synthétiser ce qui s'est joué).
+    const messages = await this.buildMessages(
+      buildTurnContext(state) + "\n\n" + SUMMARY_MESSAGE,
+    );
+    const system = await this.systemBlocks(meta);
 
     const client = new Anthropic({ apiKey: this.env.ANTHROPIC_API_KEY });
     let summaryMd: string;
@@ -479,15 +493,17 @@ export class GameSession extends DurableObject<Env> {
   private async generate(
     meta: SessionMeta,
     state: GameState,
-    userText: string,
+    // sent : contexte de tour + saisie, envoyé au modèle ; stored : saisie
+    // seule, persistée dans l'historique (préfixe stable → cache de prompt).
+    text: { sent: string; stored: string },
     consumedRoll: RollResult | null = null,
     opts: { becomePlaying?: boolean } = {},
   ): Promise<Response> {
     if (!this.env.ANTHROPIC_API_KEY) {
       return json({ error: "narrator_not_configured" }, 503);
     }
-    const system = await this.systemPrompt(meta, state, userText);
-    const messages = await this.buildMessages(userText);
+    const system = await this.systemBlocks(meta);
+    const messages = await this.buildMessages(text.sent);
 
     const { readable, writable } = new TransformStream();
     // Le DO reste actif tant que la réponse streamée est ouverte.
@@ -495,7 +511,7 @@ export class GameSession extends DurableObject<Env> {
       writable,
       meta,
       state,
-      userText,
+      text.stored,
       system,
       messages,
       consumedRoll,
@@ -515,8 +531,8 @@ export class GameSession extends DurableObject<Env> {
     writable: WritableStream,
     meta: SessionMeta,
     state: GameState,
-    userText: string,
-    system: string,
+    storedText: string,
+    system: Anthropic.TextBlockParam[],
     messages: Anthropic.MessageParam[],
     consumedRoll: RollResult | null,
     becomePlaying: boolean,
@@ -572,6 +588,25 @@ export class GameSession extends DurableObject<Env> {
                 content: event.content,
                 turn: state.turn_count + 1,
               });
+              break;
+            case "skill_update":
+              // Mémoire longue : la compétence survit à la fenêtre d'historique.
+              state.skills ??= [];
+              if (
+                applySkillUpdate(
+                  state.skills,
+                  event.name,
+                  event.tier,
+                  event.note,
+                )
+              ) {
+                await send("state_patch", { skills: state.skills });
+              }
+              break;
+            case "fact":
+              if (addFact(state.facts, event.text)) {
+                await send("state_patch", { facts: state.facts });
+              }
               break;
           }
         }
@@ -629,7 +664,7 @@ export class GameSession extends DurableObject<Env> {
       state.turn_count += 1;
       if (becomePlaying) meta.status = "playing";
       await this.ctx.storage.put({
-        [turnKey(stored)]: { role: "user", text: userText } as StoredTurn,
+        [turnKey(stored)]: { role: "user", text: storedText } as StoredTurn,
         [turnKey(stored + 1)]: { role: "assistant", text: raw } as StoredTurn,
         turn_count_stored: stored + 2,
         state,
@@ -714,19 +749,54 @@ export class GameSession extends DurableObject<Env> {
     });
   }
 
-  private async systemPrompt(
+  /**
+   * Prompt système stable de la session, en bloc unique marqué pour le prompt
+   * caching : identique à l'octet près d'un tour à l'autre, il n'est facturé
+   * plein tarif qu'une fois (puis ~0,1× en relecture).
+   */
+  private async systemBlocks(
+    meta: SessionMeta,
+  ): Promise<Anthropic.TextBlockParam[]> {
+    const canon = await this.ensureCanon(meta.bibleId);
+    return [
+      {
+        type: "text",
+        text: buildSystemPrompt({
+          bibleTitle: meta.bibleTitle,
+          canonMd: canon,
+          scores: meta.scores,
+          gaps: meta.gaps,
+          authorFeedback: meta.authorFeedback ?? [],
+          toneProfile: meta.toneProfile,
+          characterName: meta.characterName,
+          characterSheet: meta.characterSheet,
+          format: meta.format,
+          trame: meta.trame,
+        }),
+        cache_control: CACHE_CONTROL,
+      },
+    ];
+  }
+
+  /**
+   * Préfixe le message du tour avec le bloc d'état volatile (Souffle, faits,
+   * compétences, extraits RAG). Ce préfixe n'est jamais stocké : l'historique
+   * reste stable pour le cache, et les extraits ne sont facturés qu'une fois.
+   */
+  private async withTurnContext(
     meta: SessionMeta,
     state: GameState,
-    queryText = "",
+    storedText: string,
   ): Promise<string> {
     const canon = await this.ensureCanon(meta.bibleId);
     // RAG (M6) : bible volumineuse → top-6 d'extraits re-rankés pour ce
-    // tour ; null (bindings absents, index périmé...) → troncature.
+    // tour ; null (bindings absents, index périmé, bible modeste...) → le
+    // canon du prompt système (tronqué au besoin) suffit.
     const canonExcerpts = await retrieveCanonExcerpts(
       this.env,
       meta.bibleId,
       canon,
-      queryText || (meta.trame ?? meta.bibleTitle),
+      storedText || (meta.trame ?? meta.bibleTitle),
       {
         trame: meta.trame,
         names: [
@@ -736,30 +806,28 @@ export class GameSession extends DurableObject<Env> {
       },
       (p) => this.ctx.waitUntil(p),
     );
-    return buildSystemPrompt({
-      bibleTitle: meta.bibleTitle,
-      canonMd: canon,
-      canonExcerpts,
-      scores: meta.scores,
-      gaps: meta.gaps,
-      authorFeedback: meta.authorFeedback ?? [],
-      toneProfile: meta.toneProfile,
-      characterName: meta.characterName,
-      characterSheet: meta.characterSheet,
-      format: meta.format,
-      trame: meta.trame,
-      state,
-    });
+    return buildTurnContext(state, canonExcerpts) + "\n\n" + storedText;
   }
 
-  /** Historique stocké + nouveau message utilisateur, fenêtré. */
+  /**
+   * Historique stocké + nouveau message utilisateur, fenêtré. Le dernier tour
+   * stocké porte le point de cache : à la requête suivante, tout le préfixe
+   * (system + historique) est relu depuis le cache, seuls le nouveau tour et
+   * le contexte volatile sont facturés plein tarif.
+   */
   private async buildMessages(
-    userText: string,
+    sentText: string,
   ): Promise<Anthropic.MessageParam[]> {
     const turns = await this.listTurns(CONTEXT_TURNS);
     return [
-      ...turns.map((t) => ({ role: t.role, content: t.text })),
-      { role: "user" as const, content: userText },
+      ...turns.map((t, i): Anthropic.MessageParam => ({
+        role: t.role,
+        content:
+          i === turns.length - 1 && t.text !== ""
+            ? [{ type: "text", text: t.text, cache_control: CACHE_CONTROL }]
+            : t.text,
+      })),
+      { role: "user" as const, content: sentText },
     ];
   }
 

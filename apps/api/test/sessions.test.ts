@@ -210,12 +210,16 @@ describe("M3 — moteur de session (DO GameSession)", () => {
     const reroll = await post(cookie, `/api/sessions/${session_id}/roll`, {});
     expect(reroll.status).toBe(409);
 
-    // Tour 2 : le résultat est injecté, Souffle -1, invention loggée.
+    // Tour 2 : le résultat est injecté, Souffle -1, invention loggée,
+    // compétence et fait enregistrés (mémoire longue).
     mockAnthropicStream([
       "Tu retombes de l'autre côté. ",
       '<souffle delta="-1"/>',
       '<invention axis="geography">La faille de Karnos chante la nuit.',
-      "</invention>La nuit tombe.",
+      "</invention>",
+      '<skill name="Saut de faille" tier="apprentissage"/>',
+      '<fait texte="Kael a franchi la faille de Karnos."/>',
+      "La nuit tombe.",
     ]);
     const turn2 = await readSse(
       await post(cookie, `/api/sessions/${session_id}/turn`, {
@@ -228,6 +232,16 @@ describe("M3 — moteur de session (DO GameSession)", () => {
     expect(turn2.find((e) => e.event === "state_patch")?.data).toEqual({
       souffle: 2,
     });
+    expect(
+      turn2.find((e) => e.event === "state_patch" && "skills" in e.data)?.data,
+    ).toEqual({
+      skills: [{ name: "Saut de faille", tier: "apprentissage" }],
+    });
+    // Les réponses de setup sont déjà des faits : le patch porte la liste à jour.
+    const factsPatch = turn2.find(
+      (e) => e.event === "state_patch" && "facts" in e.data,
+    )?.data.facts as string[];
+    expect(factsPatch.at(-1)).toBe("Kael a franchi la faille de Karnos.");
     // L'invention est invisible dans la narration.
     expect(narrationOf(turn2)).toBe(
       "Tu retombes de l'autre côté. La nuit tombe.",
@@ -243,6 +257,12 @@ describe("M3 — moteur de session (DO GameSession)", () => {
     expect(state.turn_count).toBe(3);
     expect(state.pending_roll).toBeNull();
     expect(state.last_roll).toBeNull();
+    expect(state.skills).toEqual([
+      { name: "Saut de faille", tier: "apprentissage" },
+    ]);
+    expect((state.facts as string[]).at(-1)).toBe(
+      "Kael a franchi la faille de Karnos.",
+    );
     const log = state.log as Array<{ role: string; text: string }>;
     expect(log).toHaveLength(6);
     expect(log.at(-1)?.text).not.toContain("invention");

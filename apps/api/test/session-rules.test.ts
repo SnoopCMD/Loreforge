@@ -1,11 +1,16 @@
 import { describe, expect, it } from "vitest";
 import {
+  addFact,
+  applySkillUpdate,
   applySouffleDelta,
   describeOutcome,
   initialGameState,
+  MAX_FACTS,
+  normalizeTier,
   outcomeForRoll,
   rollD6,
   SOUFFLE_MAX,
+  type SkillEntry,
 } from "../src/sessions/rules";
 
 describe("outcomeForRoll (SPEC §6)", () => {
@@ -49,13 +54,68 @@ describe("applySouffleDelta", () => {
 });
 
 describe("initialGameState", () => {
-  it("3 Souffle, aucun fait, aucun jet", () => {
+  it("3 Souffle, aucun fait, aucune compétence, aucun jet", () => {
     expect(initialGameState()).toEqual({
       souffle: SOUFFLE_MAX,
       facts: [],
+      skills: [],
       pending_roll: null,
       last_roll: null,
       turn_count: 0,
     });
+  });
+});
+
+describe("normalizeTier", () => {
+  it("tolère accents, casse et synonymes", () => {
+    expect(normalizeTier("Maîtrise")).toBe("maîtrise");
+    expect(normalizeTier("maitrise")).toBe("maîtrise");
+    expect(normalizeTier("INNE")).toBe("inné");
+    expect(normalizeTier("novice")).toBe("découverte");
+    expect(normalizeTier("decouverte")).toBe("découverte");
+    expect(normalizeTier("légendaire")).toBeNull();
+  });
+});
+
+describe("applySkillUpdate (mémoire des compétences)", () => {
+  it("ajoute une nouvelle compétence avec note", () => {
+    const skills: SkillEntry[] = [];
+    expect(
+      applySkillUpdate(skills, "Marche-faille", "apprentissage", "3 m max"),
+    ).toBe(true);
+    expect(skills).toEqual([
+      { name: "Marche-faille", tier: "apprentissage", note: "3 m max" },
+    ]);
+  });
+
+  it("fait progresser mais ne régresse jamais", () => {
+    const skills: SkillEntry[] = [
+      { name: "Marche-faille", tier: "maîtrise" },
+    ];
+    expect(applySkillUpdate(skills, "marche-faille", "découverte")).toBe(false);
+    expect(skills[0].tier).toBe("maîtrise");
+    expect(applySkillUpdate(skills, "Marche-Faille", "inné")).toBe(true);
+    expect(skills[0].tier).toBe("inné");
+    expect(skills).toHaveLength(1); // upsert par nom, accents/casse ignorés
+  });
+
+  it("ignore palier inconnu ou nom vide", () => {
+    const skills: SkillEntry[] = [];
+    expect(applySkillUpdate(skills, "Feu", "cosmique")).toBe(false);
+    expect(applySkillUpdate(skills, "  ", "maîtrise")).toBe(false);
+    expect(skills).toEqual([]);
+  });
+});
+
+describe("addFact", () => {
+  it("ajoute, déduplique et borne en FIFO", () => {
+    const facts: string[] = [];
+    expect(addFact(facts, "Karnos est tombée.")).toBe(true);
+    expect(addFact(facts, "Karnos est tombée.")).toBe(false);
+    expect(addFact(facts, "  ")).toBe(false);
+    for (let i = 0; i < MAX_FACTS + 10; i++) addFact(facts, `fait ${i}`);
+    expect(facts).toHaveLength(MAX_FACTS);
+    expect(facts[facts.length - 1]).toBe(`fait ${MAX_FACTS + 9}`);
+    expect(facts).not.toContain("Karnos est tombée."); // sorti en FIFO
   });
 });

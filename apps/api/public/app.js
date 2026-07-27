@@ -2034,6 +2034,7 @@ const S = {
   lastRoll: null,
   turnCount: 0,
   facts: [],
+  skills: [],
   character: null,
   streaming: false,
   rollShown: false, // le jet vient d'être affiché via /roll → ignorer l'event SSE
@@ -2469,6 +2470,17 @@ function updateRail() {
     li.textContent = fact;
     facts.appendChild(li);
   }
+  const skills = $("rail-skills");
+  if (skills) {
+    skills.innerHTML = "";
+    for (const skill of S.skills) {
+      const li = document.createElement("li");
+      li.textContent = skill.name + " — " + skill.tier + (skill.note ? " (" + skill.note + ")" : "");
+      skills.appendChild(li);
+    }
+    const heading = skills.previousElementSibling;
+    if (heading) heading.style.display = S.skills.length ? "" : "none";
+  }
 }
 
 $("rail-toggle").addEventListener("click", () => {
@@ -2604,6 +2616,8 @@ function runGeneration(sessionId, path, body, retryText = null) {
     state_patch: (d) => {
       if (typeof d.souffle === "number") S.souffle = d.souffle;
       if ("pending_roll" in d) S.pendingRoll = d.pending_roll;
+      if (Array.isArray(d.skills)) S.skills = d.skills;
+      if (Array.isArray(d.facts)) S.facts = d.facts;
       updateRail();
     },
     scene_break: () => addSceneSep(),
@@ -2858,6 +2872,7 @@ async function enterSession(id) {
   S.lastRoll = state.last_roll;
   S.turnCount = state.turn_count;
   S.facts = state.facts || [];
+  S.skills = state.skills || [];
   S.character = state.character;
 
   let lastGmEl = null;

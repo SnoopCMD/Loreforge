@@ -12,6 +12,9 @@
 //   <roll reason="..."/>                   demande de jet d6 serveur
 //   <souffle delta="-1"/>                  dépense/regain de Souffle
 //   <scene_break/>                         rupture de scène (event SSE)
+//   <skill name="..." tier="..." note="..."/>  acquis/progression d'une
+//       compétence du personnage (note optionnelle), invisible pour le joueur
+//   <fait texte="..."/>                    fait établi à mémoriser (invisible)
 // Tout autre usage de '<' (dialogue, comparaison...) est restitué tel quel.
 
 // Marqueurs lore (mêmes codes que public/core.js : LORE_OPEN/SEP/CLOSE).
@@ -37,7 +40,9 @@ export type GmTagEvent =
   | { type: "invention"; axis: string; content: string }
   | { type: "roll_request"; reason: string }
   | { type: "souffle_delta"; delta: number }
-  | { type: "scene_break" };
+  | { type: "scene_break" }
+  | { type: "skill_update"; name: string; tier: string; note?: string }
+  | { type: "fact"; text: string };
 
 export interface ParsedChunk {
   /** Narration visible par le joueur (balises retirées). */
@@ -56,10 +61,14 @@ const OPEN_LORE =
 const ROLL = /^<roll\s+reason="([^"]*)"\s*\/>/;
 const SOUFFLE = /^<souffle\s+delta="([+-]?\d+)"\s*\/>/;
 const SCENE_BREAK = /^<scene_break\s*\/>/;
+// name et tier obligatoires ; note optionnelle, attributs dans n'importe quel ordre.
+const SKILL =
+  /^<skill(?=\s)(?=[^>]*\bname="([^"]*)")(?=[^>]*\btier="([^"]*)")(?:[^>]*\bnote="([^"]*)")?[^>]*\/>/;
+const FAIT = /^<fait\s+texte="([^"]*)"\s*\/>/;
 const CLOSE_INVENTION = "</invention>";
 const CLOSE_LORE = "</lore>";
 
-const TAG_NAMES = ["invention", "lore", "roll", "souffle", "scene_break"];
+const TAG_NAMES = ["invention", "lore", "roll", "souffle", "scene_break", "skill", "fait"];
 
 /** Le début de buffer (commençant par '<') peut-il encore devenir une balise ? */
 function couldBeTag(buf: string): boolean {
@@ -110,6 +119,20 @@ function matchTag(buf: string): TagMatch | "incomplete" | null {
   }
   if ((m = buf.match(SCENE_BREAK))) {
     return { length: m[0].length, event: { type: "scene_break" } };
+  }
+  if ((m = buf.match(SKILL))) {
+    return {
+      length: m[0].length,
+      event: {
+        type: "skill_update",
+        name: m[1],
+        tier: m[2],
+        ...(m[3] !== undefined ? { note: m[3] } : {}),
+      },
+    };
+  }
+  if ((m = buf.match(FAIT))) {
+    return { length: m[0].length, event: { type: "fact", text: m[1] } };
   }
   if (buf.length <= MAX_TAG_LEN && couldBeTag(buf)) return "incomplete";
   return null;
