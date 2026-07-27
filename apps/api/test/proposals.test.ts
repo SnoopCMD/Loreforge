@@ -155,9 +155,13 @@ describe("boucle canon", () => {
       canon_md: string;
     };
     expect(acceptedBody.proposal.status).toBe("accepted");
-    expect(acceptedBody.canon_md).toContain("## Canonisé en session");
-    expect(acceptedBody.canon_md).toContain("### Géographie");
-    expect(acceptedBody.canon_md).toContain("cité-pont de Vhal");
+    // L'ajout rejoint la section de base de son axe, marqué comme canonisé —
+    // pas de section fourre-tout tant que la base existe.
+    expect(acceptedBody.canon_md).toContain("## Géographie & lieux");
+    expect(acceptedBody.canon_md).toContain(
+      "**Canonisé en session :** La cité-pont de Vhal",
+    );
+    expect(acceptedBody.canon_md).not.toContain("## Canonisé en session");
 
     const rejected = await post(
       cookie,
@@ -187,6 +191,38 @@ describe("boucle canon", () => {
       await get(cookie, `/api/bibles/${bibleId}/proposals?status=pending`)
     ).json()) as { proposals: Proposal[] };
     expect(left.proposals).toHaveLength(0);
+  });
+
+  it("accept sans section d'axe : repli sur « Canonisé en session »", async () => {
+    const cookie = await login("canon3@example.com");
+    const bibleId = await createBible(cookie);
+    await playSessionWithInventions(cookie, bibleId);
+
+    // Init des sections puis suppression de la base Géographie : l'axe n'a
+    // plus de section d'accueil.
+    const { sections } = (await (
+      await get(cookie, `/api/bibles/${bibleId}/sections`)
+    ).json()) as { sections: Array<{ id: string; axis: string | null }> };
+    const geoSection = sections.find((s) => s.axis === "geography")!;
+    await SELF.fetch(`${BASE}/api/bibles/${bibleId}/sections/${geoSection.id}`, {
+      method: "DELETE",
+      headers: { cookie },
+    });
+
+    const { proposals } = (await (
+      await get(cookie, `/api/bibles/${bibleId}/proposals`)
+    ).json()) as { proposals: Proposal[] };
+    const geo = proposals.find((p) => p.axis === "geography")!;
+    const accepted = await post(
+      cookie,
+      `/api/bibles/${bibleId}/proposals/${geo.id}`,
+      { action: "accept" },
+    );
+    expect(accepted.status).toBe(200);
+    const { canon_md } = (await accepted.json()) as { canon_md: string };
+    expect(canon_md).toContain("## Canonisé en session");
+    expect(canon_md).toContain("### Géographie");
+    expect(canon_md).toContain("cité-pont de Vhal");
   });
 
   it("édition avant validation : accept avec content_md remplace le texte canonisé", async () => {

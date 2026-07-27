@@ -116,10 +116,43 @@ export async function regenerateCanon(
 }
 
 /**
- * Ajoute une invention canonisée (§5) à la section « Canonisé en session »,
- * un sous-titre ### par axe — remplace l'ancien merge direct dans canon_md
- * pour préserver l'invariant « sections = source de vérité ». Le canon doit
- * être régénéré par l'appelant après cet appel.
+ * Route une invention canonisée (§5) vers la section de base portant l'axe
+ * concerné (Personnages, Géographie, Ton…) : la bible reste organisée par
+ * thème au lieu d'empiler les canonisations dans un fourre-tout. L'ajout est
+ * marqué « Canonisé en session » pour rester repérable dans l'atelier.
+ * Renvoie false si aucune section ne porte cet axe (supprimée par l'auteur) —
+ * l'appelant se replie alors sur appendCanonizedSection. Le canon doit être
+ * régénéré par l'appelant.
+ */
+export async function appendToAxisSection(
+  db: D1Database,
+  bibleId: string,
+  axis: string,
+  contentMd: string,
+): Promise<boolean> {
+  const row = await db
+    .prepare(
+      `SELECT * FROM bible_sections WHERE bible_id = ? AND axis = ? LIMIT 1`,
+    )
+    .bind(bibleId, axis)
+    .first<SectionRow>();
+  if (!row) return false;
+
+  const block = `**Canonisé en session :** ${contentMd.trim()}`;
+  const base = row.content_md.trim();
+  await db
+    .prepare(
+      `UPDATE bible_sections SET content_md = ?, updated_at = ? WHERE id = ?`,
+    )
+    .bind(base === "" ? block : `${base}\n\n${block}`, Date.now(), row.id)
+    .run();
+  return true;
+}
+
+/**
+ * Repli de canonisation : l'ajout rejoint la section « Canonisé en session »,
+ * un sous-titre ### par axe — utilisé quand la section de base de l'axe
+ * n'existe plus. Le canon doit être régénéré par l'appelant après cet appel.
  */
 export async function appendCanonizedSection(
   db: D1Database,

@@ -61,6 +61,43 @@ Une secte à part.`;
     expect(custom?.content_md).toContain("secte");
   });
 
+  it("empile plusieurs H2 dans la même base (export Notion, sans éclatement)", () => {
+    const canon = `# Univers
+
+## 5. Panthéon — Les Dieux
+Les dieux naissent et meurent.
+
+## Personnages sans trame
+Sera, Camille la Sainte.
+
+## Trame 1 — La Course
+La plus large.
+
+## Croisements entre trames
+Zaw croise tout.
+
+## King of the Hill
+Jeu de société.`;
+    const out = heuristicClassify(canon);
+
+    // Les deux blocs « personnages » s'empilent dans la même base, chacun
+    // sous son titre d'origine — aucun ne repart en section custom.
+    const chars = out.find((s) => s.axis === "characters")!;
+    expect(chars.content_md).toContain("### 5. Panthéon — Les Dieux");
+    expect(chars.content_md).toContain("### Personnages sans trame");
+    expect(chars.content_md.indexOf("Panthéon")).toBeLessThan(
+      chars.content_md.indexOf("Sera, Camille"),
+    );
+
+    const plots = out.find((s) => s.axis === "plots")!;
+    expect(plots.content_md).toContain("La plus large.");
+    expect(plots.content_md).toContain("Zaw croise tout.");
+
+    // Le hors-catégorie reste custom — mais lui seul.
+    const custom = out.filter((s) => !s.is_base);
+    expect(custom.map((s) => s.title)).toEqual(["King of the Hill"]);
+  });
+
   it("bible vide → 8 sections de base vides", () => {
     const out = heuristicClassify("");
     expect(out).toHaveLength(BASE_SECTIONS.length);

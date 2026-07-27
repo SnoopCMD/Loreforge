@@ -133,11 +133,14 @@ describe("DELETE /api/bibles/:id", () => {
 });
 
 describe("import ZIP (export Notion)", () => {
-  it("concatène les .md du zip dans l'ordre des chemins", async () => {
+  it("concatène les .md du zip dans l'ordre NATUREL des chemins (1, 2, 10)", async () => {
     const cookie = await login("author@example.com");
+    // Notion numérote sans zéro de tête : le tri lexicographique donnerait
+    // 1, 10, 2 — le tri naturel doit rétablir l'ordre de lecture.
     const zip = zipSync({
-      "Mon Univers/01 Cosmologie.md": strToU8("# Cosmologie\n\nTrois lunes."),
-      "Mon Univers/02 Peuples.md": strToU8("# Peuples\n\nLes Sylvains."),
+      "Mon Univers/1 Cosmologie.md": strToU8("# Cosmologie\n\nTrois lunes."),
+      "Mon Univers/2 Peuples.md": strToU8("# Peuples\n\nLes Sylvains."),
+      "Mon Univers/10 Annexes.md": strToU8("# Annexes\n\nCartes marginales."),
       "Mon Univers/notes.bin": strToU8("binaire ignoré"),
       "__MACOSX/._junk.md": strToU8("poubelle"),
     });
@@ -145,10 +148,14 @@ describe("import ZIP (export Notion)", () => {
     expect(res.status).toBe(201);
     const bible = (await res.json()) as BibleJson;
     expect(bible.source_type).toBe("notion_export");
-    // Premier H1 = titre ; le second est démoté en H2 par la normalisation.
+    // Premier H1 = titre ; les suivants sont démotés en H2 par la normalisation.
     expect(bible.title).toBe("Cosmologie");
     expect(bible.canon_md).toContain("Trois lunes.");
     expect(bible.canon_md).toContain("## Peuples");
+    expect(bible.canon_md).toContain("## Annexes");
+    expect(bible.canon_md.indexOf("## Peuples")).toBeLessThan(
+      bible.canon_md.indexOf("## Annexes"),
+    );
     expect(bible.canon_md).not.toContain("binaire");
     // Le zip brut est conservé dans R2.
     const stored = await env.BUCKET.get(`bibles/${bible.id}/source.zip`);

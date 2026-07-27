@@ -109,24 +109,45 @@ function normalize(s: string): string {
 }
 
 // Mots-clés de titre → clé de section de base (premier match l'emporte).
+// « univers » est volontairement absent (trop générique : « Projets dans
+// l'Univers X » n'est pas de la cosmologie).
 const KEYWORDS: Record<string, string[]> = {
   intro: ["introduction", "pitch", "presentation", "resume", "synopsis", "apercu"],
-  cosmology: ["cosmologie", "magie", "regle", "monde", "univers", "mythe", "divin"],
-  chronology: ["chronologie", "histoire", "timeline", "epoque", "ere", "calendrier"],
-  characters: ["personnage", "protagoniste", "heros", "pnj", "figure"],
-  factions: ["faction", "organisation", "ordre", "guilde", "camp", "clan", "maison"],
-  plots: ["trame", "conflit", "intrigue", "quete", "enjeu", "tension", "guerre"],
-  geography: ["geographie", "lieu", "carte", "region", "cite", "ville", "territoire"],
-  tone: ["ton", "style", "ambiance", "registre", "esthetique"],
+  cosmology: ["cosmologie", "cosmogonie", "magie", "regle", "monde", "mythe", "divin", "creation", "classe", "hierarchie"],
+  chronology: ["chronologie", "histoire", "timeline", "epoque", "ere", "calendrier", "origine", "legende"],
+  characters: ["personnage", "protagoniste", "heros", "pnj", "figure", "pantheon", "dieu", "deesse", "demon", "creature", "bestiaire", "entite", "peuple"],
+  factions: ["faction", "organisation", "ordre", "guilde", "camp", "clan", "maison", "culte", "corporation", "confrerie", "secte"],
+  plots: ["trame", "conflit", "intrigue", "quete", "enjeu", "tension", "guerre", "arc narratif"],
+  geography: ["geographie", "lieu", "carte", "region", "cite", "ville", "territoire", "royaume", "continent"],
+  tone: ["ton", "style", "ambiance", "registre", "esthetique", "narration"],
 };
 
-function matchBaseKey(title: string, taken: Set<string>): string | null {
+function matchBaseKey(title: string): string | null {
   const n = normalize(title);
   for (const key of Object.keys(KEYWORDS)) {
-    if (taken.has(key)) continue;
     if (KEYWORDS[key].some((kw) => n.includes(kw))) return key;
   }
   return null;
+}
+
+/**
+ * Empile un bloc dans sa section de base : le titre d'origine est conservé en
+ * sous-titre ### (rien n'est perdu quand plusieurs blocs rejoignent la même
+ * base), sauf s'il répète le titre de la section cible.
+ */
+function stackBlock(
+  baseContent: Map<string, string>,
+  key: string,
+  b: Block,
+): void {
+  const sameTitle = b.title.trim() === (KEY_TO_TITLE.get(key) ?? "");
+  const piece = sameTitle
+    ? b.body
+    : b.body
+      ? `### ${b.title}\n\n${b.body}`
+      : `### ${b.title}`;
+  const prev = baseContent.get(key);
+  baseContent.set(key, prev ? `${prev}\n\n${piece}` : piece);
 }
 
 /** Découpe le canon en { préambule, sections H2 } sans casser les fences. */
@@ -154,24 +175,11 @@ function splitH2(canonMd: string): { preamble: string; sections: Array<{ title: 
 
 export function heuristicClassify(canonMd: string): ClassifiedSection[] {
   const { preamble, sections } = splitH2(canonMd);
-  const baseContent = new Map<string, string>();
-  const taken = new Set<string>();
-  const custom: Array<{ title: string; content_md: string }> = [];
-
-  if (preamble) { baseContent.set("intro", preamble); taken.add("intro"); }
-
-  for (const s of sections) {
-    const body = s.body.join("\n").trim();
-    const key = matchBaseKey(s.title, taken);
-    if (key) {
-      taken.add(key);
-      // Conserve le titre d'origine s'il diffère (le corps garde son sens).
-      baseContent.set(key, body);
-    } else {
-      custom.push({ title: s.title || "Section", content_md: body });
-    }
-  }
-  return assemble(baseContent, custom);
+  const blocks = sections.map((s) => ({
+    title: s.title,
+    body: s.body.join("\n").trim(),
+  }));
+  return heuristicBlocks(preamble, blocks);
 }
 
 // ── Classification IA (avec repli) ─────────────────────────────────────────
@@ -183,15 +191,19 @@ interface Block {
 
 const KEY_TO_TITLE = new Map(BASE_SECTIONS.map((s) => [s.key, s.title]));
 
-/** Repli sans IA : chaque bloc rejoint une base par mot-clé de titre, sinon custom. */
+/**
+ * Repli sans IA : chaque bloc rejoint une base par mot-clé de titre (en s'y
+ * EMPILANT — plusieurs blocs peuvent alimenter la même base, comme la voie
+ * IA), sinon custom. C'est ce qui évite l'éclatement des gros imports (export
+ * Notion : des dizaines de H2) en autant de sections personnalisées.
+ */
 function heuristicBlocks(preamble: string, blocks: Block[]): ClassifiedSection[] {
   const baseContent = new Map<string, string>();
-  const taken = new Set<string>();
   const custom: Array<{ title: string; content_md: string }> = [];
-  if (preamble) { baseContent.set("intro", preamble); taken.add("intro"); }
+  if (preamble) baseContent.set("intro", preamble);
   for (const b of blocks) {
-    const key = matchBaseKey(b.title, taken);
-    if (key) { taken.add(key); baseContent.set(key, b.body); }
+    const key = matchBaseKey(b.title);
+    if (key) stackBlock(baseContent, key, b);
     else custom.push({ title: b.title || "Section", content_md: b.body });
   }
   return assemble(baseContent, custom);
@@ -246,17 +258,7 @@ async function classifyBlocks(
     blocks.forEach((b, i) => {
       const target = targetByIndex.get(i);
       if (target && target !== "custom" && validKeys.has(target)) {
-        // Conserve le titre d'origine en sous-section (### ) pour ne rien perdre
-        // quand plusieurs blocs atterrissent dans la même base — sauf si le titre
-        // du bloc est déjà celui de la section cible (pas de doublon).
-        const sameTitle = b.title.trim() === (KEY_TO_TITLE.get(target) ?? "");
-        const piece = sameTitle
-          ? b.body
-          : b.body
-            ? `### ${b.title}\n\n${b.body}`
-            : `### ${b.title}`;
-        const prev = baseContent.get(target);
-        baseContent.set(target, prev ? `${prev}\n\n${piece}` : piece);
+        stackBlock(baseContent, target, b);
       } else {
         custom.push({ title: b.title || "Section", content_md: b.body });
       }

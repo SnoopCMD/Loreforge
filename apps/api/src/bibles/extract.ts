@@ -61,8 +61,14 @@ function extractZip(data: Uint8Array): string {
     throw new ExtractError("invalid_zip");
   }
 
+  // Tri NATUREL des chemins : un export Notion numérote ses fichiers
+  // (« 1 Origine… », « 10 Projets… ») et le tri lexicographique les mélangeait
+  // (1, 10, 2, 3…), cassant l'ordre de lecture du canon.
+  const paths = Object.keys(entries).sort((a, b) =>
+    a.localeCompare(b, "fr", { numeric: true, sensitivity: "base" }),
+  );
   const parts: string[] = [];
-  for (const path of Object.keys(entries).sort()) {
+  for (const path of paths) {
     if (path.startsWith("__MACOSX/") || /(^|\/)\./.test(path)) continue;
     if (!/\.(md|markdown|txt)$/i.test(path)) continue;
     const text = strFromU8(entries[path]).trim();
