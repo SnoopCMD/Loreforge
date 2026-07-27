@@ -1058,6 +1058,43 @@ button.armed, .bible-card .card-delete.armed {
 .ws-render li { margin: 0.25rem 0; }
 .ws-render b, .ws-render strong { color: var(--parchment); font-weight: 700; }
 .ws-render em, .ws-render i { color: var(--parchment); }
+.ws-render h4 { font-family: Cinzel, serif; font-size: 0.95rem; margin: 1rem 0 0.35rem; }
+
+/* Tableaux Markdown (bible, résumés) : rendus par mdToHtml dans .md-table. */
+.md-table { overflow-x: auto; margin: 0 0 0.9rem; }
+.md-table table {
+  border-collapse: collapse;
+  width: 100%;
+  font-size: 0.88rem;
+  line-height: 1.45;
+}
+.md-table th, .md-table td {
+  border: 1px solid rgba(103, 232, 249, 0.18);
+  padding: 0.45rem 0.65rem;
+  text-align: left;
+  vertical-align: top;
+}
+.md-table th {
+  font-family: Cinzel, serif;
+  font-size: 0.8rem;
+  letter-spacing: 0.03em;
+  color: var(--parchment);
+  background: rgba(103, 232, 249, 0.07);
+  white-space: nowrap;
+}
+.md-table tbody tr:nth-child(even) { background: rgba(255, 255, 255, 0.025); }
+
+/* Citations Markdown (notes d'auteur « > … » dans la bible). */
+.ws-render blockquote, .summary-md blockquote {
+  margin: 0 0 0.9rem;
+  padding: 0.5rem 0.9rem;
+  border-left: 3px solid rgba(103, 232, 249, 0.4);
+  background: rgba(103, 232, 249, 0.05);
+  border-radius: 0 6px 6px 0;
+  font-style: italic;
+  opacity: 0.9;
+}
+.ws-render blockquote p, .summary-md blockquote p { margin: 0; }
 
 .rune.flash { border-left-color: var(--spirit); background: rgba(103, 232, 249, 0.1); }
 

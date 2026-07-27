@@ -118,11 +118,24 @@ export const mdInline = (s) =>
         `<button type="button" class="lore" data-term="${attr(term)}" data-kind="${attr(kind)}">${label}</button>`,
     );
 
+// Séparateur d'en-tête de tableau GFM : | --- | :--- | ---: |
+const TABLE_SEP = /^\|?\s*:?-{2,}:?\s*(?:\|\s*:?-{2,}:?\s*)*\|?$/;
+
+/** Cellules d'une ligne de tableau (pipes de bord tolérés). */
+function tableCells(line) {
+  let l = line.trim();
+  if (l.startsWith("|")) l = l.slice(1);
+  if (l.endsWith("|")) l = l.slice(0, -1);
+  return l.split("|").map((c) => c.trim());
+}
+
 export function mdToHtml(md) {
   const inline = mdInline;
   const out = [];
   let list = null;
   let para = [];
+  let table = null; // lignes | … | consécutives
+  let quote = null; // lignes > consécutives
   const flushPara = () => {
     if (para.length) out.push("<p>" + inline(para.join(" ")) + "</p>");
     para = [];
@@ -131,25 +144,62 @@ export function mdToHtml(md) {
     if (list) out.push("<ul>" + list.join("") + "</ul>");
     list = null;
   };
+  const flushQuote = () => {
+    if (quote && quote.some((l) => l.trim() !== "")) {
+      out.push("<blockquote><p>" + quote.map(inline).join("<br>") + "</p></blockquote>");
+    }
+    quote = null;
+  };
+  const flushTable = () => {
+    if (!table) return;
+    const rows = table;
+    table = null;
+    if (rows.length >= 2 && TABLE_SEP.test(rows[1].trim())) {
+      const head = tableCells(rows[0]);
+      const cells = (r, tag) =>
+        head.map((_, i) => `<${tag}>${inline(tableCells(r)[i] ?? "")}</${tag}>`).join("");
+      const body = rows.slice(2).filter((r) => !TABLE_SEP.test(r.trim()));
+      out.push(
+        '<div class="md-table"><table><thead><tr>' + cells(rows[0], "th") +
+          "</tr></thead>" +
+          (body.length
+            ? "<tbody>" + body.map((r) => "<tr>" + cells(r, "td") + "</tr>").join("") + "</tbody>"
+            : "") +
+          "</table></div>",
+      );
+    } else {
+      // Pipes sans ligne de séparation : pas un tableau — paragraphe brut.
+      out.push("<p>" + rows.map(inline).join("<br>") + "</p>");
+    }
+  };
+  const flushAll = () => { flushPara(); flushList(); flushQuote(); flushTable(); };
+
   for (const raw of String(md).split(/\r?\n/)) {
     const line = raw.trimEnd();
-    const h = line.match(/^(#{1,3})\s+(.*)/);
+    const h = line.match(/^(#{1,4})\s+(.*)/);
+    const q = line.match(/^>\s?(.*)$/);
     const li = line.match(/^[-*]\s+(.*)/);
     if (h) {
-      flushPara(); flushList();
-      const tag = h[1].length === 1 ? "h2" : "h" + h[1].length;
+      flushAll();
+      const tag = h[1].length === 1 ? "h2" : "h" + Math.min(h[1].length, 4);
       out.push(`<${tag}>${inline(h[2])}</${tag}>`);
+    } else if (/^\s*\|/.test(line)) {
+      flushPara(); flushList(); flushQuote();
+      (table = table || []).push(line);
+    } else if (q) {
+      flushPara(); flushList(); flushTable();
+      (quote = quote || []).push(q[1]);
     } else if (li) {
-      flushPara();
+      flushPara(); flushQuote(); flushTable();
       (list = list || []).push("<li>" + inline(li[1]) + "</li>");
     } else if (line.trim() === "") {
-      flushPara(); flushList();
+      flushAll();
     } else {
-      flushList();
+      flushList(); flushQuote(); flushTable();
       para.push(line);
     }
   }
-  flushPara(); flushList();
+  flushAll();
   return out.join("");
 }
 

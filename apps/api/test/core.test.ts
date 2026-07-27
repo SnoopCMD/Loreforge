@@ -107,4 +107,47 @@ describe("mdToHtml", () => {
     expect(html).not.toContain("<script>");
     expect(html).toContain("&lt;script&gt;");
   });
+
+  it("rend un tableau GFM en <table> (cellules inline, tout échappé)", () => {
+    const md = [
+      "| Nom *(provisoire)* | Concept | Nature |",
+      "| --- | --- | --- |",
+      "| **Vital** | Vie, harmonie | Le « bon » |",
+      "| **Chaos** | Cruauté, <mort> | Le « mauvais » |",
+    ].join("\n");
+    const html = mdToHtml(md);
+    expect(html).toContain('<div class="md-table"><table><thead>');
+    expect(html).toContain("<th>Nom <i>(provisoire)</i></th>");
+    expect(html).toContain("<td><b>Vital</b></td>");
+    expect(html).toContain("<td>Cruauté, &lt;mort&gt;</td>");
+    // 2 lignes de corps, le séparateur n'en fait pas partie.
+    expect(html.match(/<tr>/g)).toHaveLength(3);
+  });
+
+  it("complète les lignes courtes d'un tableau et ignore les pipes sans séparateur", () => {
+    const table = mdToHtml("| A | B |\n| --- | --- |\n| seul |");
+    expect(table).toContain("<td>seul</td><td></td>");
+    // Une ligne à pipes isolée n'est pas un tableau : paragraphe brut.
+    const notTable = mdToHtml("| pas | un | tableau |");
+    expect(notTable).not.toContain("<table>");
+    expect(notTable).toContain("<p>");
+  });
+
+  it("rend les citations > en blockquote et les #### en h4", () => {
+    const html = mdToHtml(
+      "#### Détail\n\n> Les noms sont provisoires.\n> Ils évolueront.\n\nSuite.",
+    );
+    expect(html).toContain("<h4>Détail</h4>");
+    expect(html).toContain(
+      "<blockquote><p>Les noms sont provisoires.<br>Ils évolueront.</p></blockquote>",
+    );
+    expect(html).toContain("<p>Suite.</p>");
+  });
+
+  it("sépare tableau et paragraphe adjacents sans ligne vide", () => {
+    const html = mdToHtml("Avant.\n| A |\n| --- |\n| x |\nAprès.");
+    expect(html).toContain("<p>Avant.</p>");
+    expect(html).toContain("<td>x</td>");
+    expect(html).toContain("<p>Après.</p>");
+  });
 });
