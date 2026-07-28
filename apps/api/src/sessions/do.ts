@@ -30,14 +30,16 @@ import { resolveLore } from "./lore";
 import { retrieveCanonExcerpts } from "../rag/store";
 import {
   buildSetupMessage,
-  buildSetupQuestions,
   buildSystemPrompt,
   buildTurnContext,
   buildTurnMessage,
+  gapQuestion,
   RELANCE_MESSAGE,
+  selectSetupGaps,
   SUMMARY_MESSAGE,
   turnEndsOpen,
 } from "./prompt";
+import { canonizeGapAnswers, type GapAnswer } from "../richness/suggest";
 
 export const NARRATION_MODEL = "claude-sonnet-5";
 const MAX_NARRATION_TOKENS = 2048;
@@ -215,6 +217,21 @@ export class GameSession extends DurableObject<Env> {
       characterSheet = character.sheet_json;
     }
 
+    // Zones floues déjà traitées : une réponse d'une session passée en attente
+    // de validation (pending) ou déjà canonisée (accepted) ne redéclenche pas
+    // la même question. Une réponse rejetée, elle, rouvre la question.
+    const settledRows = await this.env.DB.prepare(
+      `SELECT source_comment FROM canon_proposals
+       WHERE bible_id = ? AND source = 'gap'
+         AND status IN ('pending', 'accepted') AND source_comment IS NOT NULL`,
+    )
+      .bind(payload.bibleId)
+      .all<{ source_comment: string }>();
+    const settledGaps = new Set(
+      settledRows.results.map((r) => r.source_comment),
+    );
+    const openGaps = gaps.filter((g) => !settledGaps.has(g.description));
+
     const meta: SessionMeta = {
       sessionId: payload.sessionId,
       userId: payload.userId,
@@ -232,13 +249,17 @@ export class GameSession extends DurableObject<Env> {
       status: "setup",
     };
     const state = initialGameState();
-    const questions = buildSetupQuestions(scores, gaps);
+    // Les lacunes retenues sont conservées telles quelles : chaque réponse du
+    // joueur pourra être reliée à sa zone floue d'origine au /finish.
+    const setupGaps = selectSetupGaps(scores, openGaps);
+    const questions = setupGaps.map(gapQuestion);
 
     this.canonCache = bible.canon_md;
     await this.ctx.storage.put({
       meta,
       state,
       setup_questions: questions,
+      setup_gaps: setupGaps,
       inventions: [] as Invention[],
       turn_count_stored: 0,
     });
@@ -274,6 +295,24 @@ export class GameSession extends DurableObject<Env> {
       const answer = (answers[i] as string | undefined)?.trim();
       if (answer) state.facts.push(`${q} → ${answer}`);
     });
+
+    // Chaque réponse est aussi reliée à sa zone floue d'origine : au /finish,
+    // elle deviendra une proposition de canon (source 'gap') à valider —
+    // acceptée, la lacune sort de gaps_json et la question ne revient plus.
+    const setupGaps =
+      (await this.ctx.storage.get<RichnessGap[]>("setup_gaps")) ?? [];
+    const gapAnswers: GapAnswer[] = [];
+    setupGaps.forEach((gap, i) => {
+      const answer = (answers[i] as string | undefined)?.trim();
+      if (answer) {
+        gapAnswers.push({
+          axis: gap.axis,
+          description: gap.description,
+          answer,
+        });
+      }
+    });
+    await this.ctx.storage.put("gap_answers", gapAnswers);
 
     // Le passage en 'playing' n'est commité qu'à la fin de la génération : une
     // scène 1 interrompue laisse la session en 'setup', donc rejouable via
@@ -471,17 +510,56 @@ export class GameSession extends DurableObject<Env> {
         content_md: inv.content,
         axis: inv.axis,
         status: "pending",
+        source: "auto",
+        source_comment: null as string | null,
         created_at: now,
       }));
+
+    // Réponses aux zones floues de la mise en place : reformulées façon bible
+    // (un seul appel, repli sur la réponse brute), puis proposées à validation
+    // comme les inventions. source_comment garde la description de la lacune —
+    // c'est la clé qui, à l'acceptation, la retire de gaps_json.
+    const gapAnswers =
+      (await this.ctx.storage.get<GapAnswer[]>("gap_answers")) ?? [];
+    if (gapAnswers.length > 0) {
+      const drafts = await canonizeGapAnswers(
+        this.env.ANTHROPIC_API_KEY!,
+        await this.ensureCanon(meta.bibleId),
+        gapAnswers,
+      );
+      drafts.forEach((draft, i) => {
+        proposals.push({
+          id: crypto.randomUUID(),
+          session_id: meta.sessionId,
+          bible_id: meta.bibleId,
+          content_md: draft.content_md,
+          axis: draft.axis,
+          status: "pending",
+          source: "gap",
+          source_comment: gapAnswers[i].description,
+          created_at: now,
+        });
+      });
+    }
+
     if (proposals.length > 0) {
       const stmt = this.env.DB.prepare(
         `INSERT INTO canon_proposals
-           (id, session_id, bible_id, content_md, axis, status, created_at)
-         VALUES (?, ?, ?, ?, ?, 'pending', ?)`,
+           (id, session_id, bible_id, content_md, axis, status, source, source_comment, created_at)
+         VALUES (?, ?, ?, ?, ?, 'pending', ?, ?, ?)`,
       );
       await this.env.DB.batch(
         proposals.map((p) =>
-          stmt.bind(p.id, p.session_id, p.bible_id, p.content_md, p.axis, p.created_at),
+          stmt.bind(
+            p.id,
+            p.session_id,
+            p.bible_id,
+            p.content_md,
+            p.axis,
+            p.source,
+            p.source_comment,
+            p.created_at,
+          ),
         ),
       );
     }

@@ -18,28 +18,41 @@ import {
 export const MAX_SETUP_QUESTIONS = 3;
 
 /**
- * Questions de mise en place : axes de score ≤ 4, priorisés par score
- * croissant, une question par lacune détectée, 3 questions max (SPEC §4).
+ * Lacunes retenues pour la mise en place : axes de score ≤ 4, priorisés par
+ * score croissant, une lacune par question, 3 max (SPEC §4). Renvoyer les
+ * lacunes (et pas les questions) permet de relier chaque réponse du joueur à
+ * sa zone floue d'origine — la boucle de canonisation en dépend.
  */
-export function buildSetupQuestions(
+export function selectSetupGaps(
   scores: RichnessScores | null,
   gaps: RichnessGap[],
-): string[] {
+): RichnessGap[] {
   if (!scores) return [];
   const weakAxes = AXES.filter((axis) => scores[axis] <= 4).sort(
     (a, b) => scores[a] - scores[b],
   );
-  const questions: string[] = [];
+  const selected: RichnessGap[] = [];
   for (const axis of weakAxes) {
     for (const gap of gaps) {
       if (gap.axis !== axis) continue;
-      questions.push(
-        `Zone floue de ta bible (${axis}) : ${gap.description} Que veux-tu établir pour cette session ?`,
-      );
-      if (questions.length >= MAX_SETUP_QUESTIONS) return questions;
+      selected.push(gap);
+      if (selected.length >= MAX_SETUP_QUESTIONS) return selected;
     }
   }
-  return questions;
+  return selected;
+}
+
+/** Question posée au joueur pour une zone floue donnée. */
+export function gapQuestion(gap: RichnessGap): string {
+  return `Zone floue de ta bible (${gap.axis}) : ${gap.description} Que veux-tu établir pour cette session ?`;
+}
+
+/** Questions de mise en place (SPEC §4) — même ordre que selectSetupGaps. */
+export function buildSetupQuestions(
+  scores: RichnessScores | null,
+  gaps: RichnessGap[],
+): string[] {
+  return selectSetupGaps(scores, gaps).map(gapQuestion);
 }
 
 export interface SystemPromptInput {

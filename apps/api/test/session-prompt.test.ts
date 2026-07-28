@@ -6,7 +6,9 @@ import {
   buildSystemPrompt,
   buildTurnContext,
   buildTurnMessage,
+  gapQuestion,
   MAX_SETUP_QUESTIONS,
+  selectSetupGaps,
   turnEndsOpen,
 } from "../src/sessions/prompt";
 import { initialGameState } from "../src/sessions/rules";
@@ -41,6 +43,24 @@ describe("buildSetupQuestions (SPEC §4)", () => {
     expect(buildSetupQuestions(null, gaps)).toEqual([]);
     const strong = { ...scores, tone: 8, geography: 9 };
     expect(buildSetupQuestions(strong, gaps)).toEqual([]);
+  });
+
+  it("selectSetupGaps garde l'alignement lacune ↔ question (boucle canon)", () => {
+    const selected = selectSetupGaps(scores, gaps);
+    expect(selected.map(gapQuestion)).toEqual(buildSetupQuestions(scores, gaps));
+    // Chaque lacune retenue conserve sa description d'origine : c'est la clé
+    // (source_comment) qui la retirera de gaps_json à l'acceptation.
+    expect(selected[0]).toEqual(gaps[0]);
+  });
+
+  it("une lacune filtrée (déjà répondue) ne génère plus de question", () => {
+    const open = gaps.filter(
+      (g) => g.description !== "Aucune carte des Mondes.",
+    );
+    const questions = buildSetupQuestions(scores, open);
+    expect(questions).toHaveLength(2);
+    expect(questions[0]).toContain("La capitale n'est pas décrite.");
+    expect(questions.join(" ")).not.toContain("Aucune carte des Mondes.");
   });
 });
 

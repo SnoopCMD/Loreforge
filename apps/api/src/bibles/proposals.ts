@@ -291,6 +291,38 @@ proposals.post("/:id/proposals/:pid", async (c) => {
   )
     .bind(row.id)
     .run();
+
+  // Réponse à une zone floue canonisée : la lacune est résolue — retirée de
+  // gaps_json, elle ne génère plus ni question de mise en place ni consigne
+  // d'invention dans le prompt du MJ. (Un reject la laisse : la question
+  // reviendra à la prochaine session.)
+  if (row.source === "gap" && row.source_comment) {
+    const rs = await c.env.DB.prepare(
+      `SELECT gaps_json FROM richness_scores WHERE bible_id = ?`,
+    )
+      .bind(bible.id)
+      .first<{ gaps_json: string }>();
+    if (rs) {
+      try {
+        const gaps = JSON.parse(rs.gaps_json) as Array<{
+          axis: string;
+          description: string;
+        }>;
+        // Clé de résolution : la description seule — l'axe de la proposition
+        // a pu être réajusté à la reformulation.
+        const kept = gaps.filter((g) => g.description !== row.source_comment);
+        if (kept.length !== gaps.length) {
+          await c.env.DB.prepare(
+            `UPDATE richness_scores SET gaps_json = ? WHERE bible_id = ?`,
+          )
+            .bind(JSON.stringify(kept), bible.id)
+            .run();
+        }
+      } catch {
+        // gaps_json illisible : on n'y touche pas, la canonisation reste faite.
+      }
+    }
+  }
   // Réindex Vectorize (M6) en tâche de fond — no-op sous le seuil RAG.
   c.executionCtx.waitUntil(reindexBible(c.env, bible.id, merged));
   return c.json({ proposal: { ...row, status: "accepted" }, canon_md: merged });
