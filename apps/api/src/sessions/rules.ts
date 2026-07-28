@@ -138,6 +138,41 @@ export function applySkillUpdate(
   return changed;
 }
 
+/**
+ * Valide une liste de compétences venue de l'extérieur (skills_json D1, corps
+ * d'un PUT client) : entrées bien formées uniquement, paliers normalisés,
+ * doublons fusionnés, bornée à MAX_SKILLS. Toujours une liste sûre.
+ */
+export function sanitizeSkills(raw: unknown): SkillEntry[] {
+  if (!Array.isArray(raw)) return [];
+  const skills: SkillEntry[] = [];
+  for (const entry of raw) {
+    if (entry === null || typeof entry !== "object") continue;
+    const { name, tier, note } = entry as Record<string, unknown>;
+    if (typeof name !== "string" || typeof tier !== "string") continue;
+    applySkillUpdate(
+      skills,
+      name,
+      tier,
+      typeof note === "string" ? note : undefined,
+    );
+  }
+  return skills;
+}
+
+/**
+ * Fusionne les acquis d'une session dans la liste persistée du personnage :
+ * upsert par compétence, jamais de régression de palier. Ne mute pas `saved`.
+ */
+export function mergeSkills(
+  saved: SkillEntry[],
+  session: SkillEntry[],
+): SkillEntry[] {
+  const merged = saved.map((s) => ({ ...s }));
+  for (const s of session) applySkillUpdate(merged, s.name, s.tier, s.note);
+  return merged;
+}
+
 /** Ajoute un fait établi (dédupliqué, borné FIFO). Renvoie true si ajouté. */
 export function addFact(facts: string[], text: string): boolean {
   const clean = text.trim();

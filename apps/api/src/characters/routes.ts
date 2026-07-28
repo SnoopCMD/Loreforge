@@ -8,6 +8,7 @@ import type { AppEnv } from "../env";
 import { requireAuth } from "../auth/middleware";
 import { findOwnedBible, type BibleRow } from "../bibles/db";
 import { latestSheetSchema } from "./db";
+import { sanitizeSkills } from "../sessions/rules";
 import {
   generateQuickCharacter,
   generateQuiz,
@@ -28,10 +29,20 @@ interface CharacterRow {
   bible_id: string;
   name: string;
   sheet_json: string;
+  skills_json: string | null;
   portrait_r2_key: string | null;
   origin: string;
   is_canon: number;
   created_at: number;
+}
+
+function parseSkillsJson(raw: string | null) {
+  if (!raw) return [];
+  try {
+    return sanitizeSkills(JSON.parse(raw));
+  } catch {
+    return [];
+  }
 }
 
 function toPublic(row: CharacterRow) {
@@ -40,6 +51,7 @@ function toPublic(row: CharacterRow) {
     bible_id: row.bible_id,
     name: row.name,
     sheet: JSON.parse(row.sheet_json) as unknown,
+    skills: parseSkillsJson(row.skills_json),
     origin: row.origin,
     is_canon: row.is_canon === 1,
     created_at: row.created_at,
@@ -117,6 +129,7 @@ async function insertCharacter(
       bible_id: bible.id,
       name,
       sheet,
+      skills: [],
       origin,
       is_canon: false,
       created_at: now,
@@ -139,6 +152,58 @@ characters.post("/", async (c) => {
   if (sheet === null) return c.json({ error: "invalid_sheet_json" }, 400);
 
   return insertCharacter(c, bible, name, sheet, "full");
+});
+
+// PUT /api/characters/:id — { name?, sheet_json?, skills? } : édition de la
+// fiche (et de l'arbre de compétences) d'un personnage possédé. Les sessions
+// déjà lancées gardent leur instantané de fiche ; les suivantes liront celle-ci.
+characters.put("/:id", async (c) => {
+  let body: Record<string, unknown>;
+  try {
+    body = await c.req.json();
+  } catch {
+    return c.json({ error: "invalid_json" }, 400);
+  }
+
+  const row = await c.env.DB.prepare(
+    `SELECT * FROM characters WHERE id = ? AND user_id = ?`,
+  )
+    .bind(c.req.param("id"), c.get("user").id)
+    .first<CharacterRow>();
+  if (!row) return c.json({ error: "not_found" }, 404);
+
+  if (body.name !== undefined) {
+    const name = typeof body.name === "string" ? body.name.trim() : "";
+    if (name === "" || name.length > MAX_NAME_CHARS) {
+      return c.json({ error: "invalid_name" }, 400);
+    }
+    row.name = name;
+  }
+  if (body.sheet_json !== undefined) {
+    const sheet = cleanSheet(body.sheet_json);
+    if (sheet === null) return c.json({ error: "invalid_sheet_json" }, 400);
+    const sheetJson = JSON.stringify(sheet);
+    if (sheetJson.length > MAX_SHEET_BYTES) {
+      return c.json({ error: "sheet_too_large" }, 413);
+    }
+    row.sheet_json = sheetJson;
+  }
+  if (body.skills !== undefined) {
+    if (!Array.isArray(body.skills)) {
+      return c.json({ error: "invalid_skills" }, 400);
+    }
+    // sanitizeSkills normalise paliers/doublons et borne la liste : la
+    // version nettoyée fait foi (l'édition peut baisser un palier ou retirer
+    // une compétence — seule la fusion de fin de session est sans régression).
+    row.skills_json = JSON.stringify(sanitizeSkills(body.skills));
+  }
+
+  await c.env.DB.prepare(
+    `UPDATE characters SET name = ?, sheet_json = ?, skills_json = ? WHERE id = ?`,
+  )
+    .bind(row.name, row.sheet_json, row.skills_json ?? "[]", row.id)
+    .run();
+  return c.json(toPublic(row));
 });
 
 // GET /api/characters?bible_id= — persos canon + persos créés par le joueur.

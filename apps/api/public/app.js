@@ -156,7 +156,7 @@ function miniRadar(scores) {
 
 // ── Fiche personnage façon Morokh ────────────────────────────────────────
 
-function ficheHtml(name, sheet, { compact = false, sub = "" } = {}) {
+function ficheHtml(name, sheet, { compact = false, sub = "", skills = null } = {}) {
   const initial = (name || "?").trim().charAt(0).toUpperCase();
   const entries = Object.entries(sheet && typeof sheet === "object" ? sheet : {})
     .filter(([, v]) => v !== null && v !== "" && v !== undefined)
@@ -165,6 +165,15 @@ function ficheHtml(name, sheet, { compact = false, sub = "" } = {}) {
         `<dt>${esc(labelFor(k))}</dt><dd>${esc(typeof v === "string" ? v : JSON.stringify(v))}</dd>`,
     )
     .join("");
+  // Arbre de compétences persistant (paliers) — masqué s'il est vide.
+  const skillsBlock = Array.isArray(skills) && skills.length
+    ? `<div class="fiche-skills"><h3>Compétences</h3><ul>${skills
+        .map(
+          (s) =>
+            `<li><span class="skill-tier">${esc(s.tier)}</span> ${esc(s.name)}${s.note ? ` <span class="skill-note">— ${esc(s.note)}</span>` : ""}</li>`,
+        )
+        .join("")}</ul></div>`
+    : "";
   return `<div class="fiche${compact ? " compact" : ""}">
     <svg class="sigil" viewBox="0 0 100 100" aria-hidden="true">
       <circle cx="50" cy="50" r="46" fill="#12081F" stroke="#7C3AED" stroke-width="3" />
@@ -175,6 +184,7 @@ function ficheHtml(name, sheet, { compact = false, sub = "" } = {}) {
     <div class="fiche-name">${esc(name)}</div>
     ${sub ? `<div class="fiche-sub">${esc(sub)}</div>` : ""}
     <dl>${entries}</dl>
+    ${skillsBlock}
   </div>`;
 }
 
@@ -1629,14 +1639,165 @@ async function loadCharacters(bibleId) {
     card.innerHTML = '<span class="name"></span><span class="msg"></span>';
     card.querySelector(".name").textContent = ch.name;
     card.querySelector(".msg").textContent = ch.is_canon ? "canon · voir la fiche" : "voir la fiche";
-    card.addEventListener("click", () => {
-      $("character-fiche").innerHTML = ficheHtml(ch.name, ch.sheet, {
-        sub: currentBible ? currentBible.title : "",
-      });
-      $("character-fiche").scrollIntoView({ block: "nearest" });
-    });
+    card.addEventListener("click", () => showCharacterFiche(ch));
     list.appendChild(card);
   }
+}
+
+// Fiche affichée sur l'écran bible : lecture + bouton d'édition (nom, champs,
+// arbre de compétences). Les sessions déjà lancées gardent leur instantané.
+function showCharacterFiche(ch) {
+  const host = $("character-fiche");
+  host.innerHTML = ficheHtml(ch.name, ch.sheet, {
+    sub: currentBible ? currentBible.title : "",
+    skills: ch.skills,
+  });
+  const edit = document.createElement("button");
+  edit.className = "ghost";
+  edit.textContent = "Éditer la fiche";
+  edit.addEventListener("click", () => renderCharacterEditor(ch));
+  host.appendChild(edit);
+  host.scrollIntoView({ block: "nearest" });
+}
+
+const SKILL_TIER_OPTIONS = ["découverte", "apprentissage", "maîtrise", "inné"];
+
+function renderCharacterEditor(ch) {
+  const host = $("character-fiche");
+  host.innerHTML = "";
+  const form = document.createElement("div");
+  form.className = "fiche edit";
+
+  const addField = (labelText, input) => {
+    const label = document.createElement("label");
+    label.className = "forge-field";
+    const p = document.createElement("p");
+    p.textContent = labelText;
+    label.appendChild(p);
+    label.appendChild(input);
+    form.appendChild(label);
+    return input;
+  };
+
+  const nameInput = document.createElement("input");
+  nameInput.type = "text";
+  nameInput.maxLength = 80;
+  nameInput.value = ch.name;
+  nameInput.className = "forge-input";
+  addField("Nom", nameInput);
+
+  // Champs de la fiche : ceux déjà renseignés (l'ordre du schéma est déjà
+  // celui de la fiche générée). Un champ vidé disparaît de la fiche.
+  const sheetInputs = [];
+  const sheet = ch.sheet && typeof ch.sheet === "object" ? ch.sheet : {};
+  for (const [key, value] of Object.entries(sheet)) {
+    const input = document.createElement("input");
+    input.type = "text";
+    input.maxLength = 300;
+    input.value = typeof value === "string" ? value : JSON.stringify(value);
+    input.className = "forge-input";
+    input.dataset.key = key;
+    addField(labelFor(key), input);
+    sheetInputs.push(input);
+  }
+
+  // ── Arbre de compétences : lignes éditables + ajout ─────────────────────
+  const skillsTitle = document.createElement("h3");
+  skillsTitle.textContent = "Compétences";
+  form.appendChild(skillsTitle);
+  const skillList = document.createElement("div");
+  skillList.className = "skill-editor";
+  form.appendChild(skillList);
+
+  const addSkillRow = (skill) => {
+    const row = document.createElement("div");
+    row.className = "skill-row";
+    const name = document.createElement("input");
+    name.type = "text";
+    name.placeholder = "Compétence";
+    name.maxLength = 120;
+    name.value = skill ? skill.name : "";
+    const tier = document.createElement("select");
+    for (const t of SKILL_TIER_OPTIONS) {
+      const o = document.createElement("option");
+      o.value = t;
+      o.textContent = t;
+      tier.appendChild(o);
+    }
+    tier.value = skill ? skill.tier : "découverte";
+    const note = document.createElement("input");
+    note.type = "text";
+    note.placeholder = "Note (portée, limite…)";
+    note.maxLength = 200;
+    note.value = skill && skill.note ? skill.note : "";
+    const del = document.createElement("button");
+    del.type = "button";
+    del.className = "ghost";
+    del.textContent = "✕";
+    del.title = "Retirer cette compétence";
+    del.addEventListener("click", () => row.remove());
+    row.append(name, tier, note, del);
+    skillList.appendChild(row);
+  };
+  for (const s of Array.isArray(ch.skills) ? ch.skills : []) addSkillRow(s);
+
+  const addSkill = document.createElement("button");
+  addSkill.type = "button";
+  addSkill.className = "ghost";
+  addSkill.textContent = "+ Ajouter une compétence";
+  addSkill.addEventListener("click", () => addSkillRow(null));
+  form.appendChild(addSkill);
+
+  // ── Actions ─────────────────────────────────────────────────────────────
+  const actions = document.createElement("div");
+  actions.className = "row";
+  actions.style.marginTop = "1rem";
+  const save = document.createElement("button");
+  save.textContent = "Enregistrer";
+  const cancel = document.createElement("button");
+  cancel.className = "ghost";
+  cancel.textContent = "Annuler";
+  const msg = document.createElement("span");
+  msg.className = "msg";
+  actions.append(save, cancel, msg);
+  form.appendChild(actions);
+
+  cancel.addEventListener("click", () => showCharacterFiche(ch));
+  save.addEventListener("click", async () => {
+    const name = nameInput.value.trim();
+    if (!name) { msg.textContent = "Le nom est requis."; msg.className = "msg error"; return; }
+    const newSheet = {};
+    for (const input of sheetInputs) {
+      const v = input.value.trim();
+      if (v !== "") newSheet[input.dataset.key] = v;
+    }
+    const skills = [];
+    for (const row of skillList.querySelectorAll(".skill-row")) {
+      const [n, t, no] = row.querySelectorAll("input, select");
+      if (n.value.trim() === "") continue;
+      const entry = { name: n.value.trim(), tier: t.value };
+      if (no.value.trim()) entry.note = no.value.trim();
+      skills.push(entry);
+    }
+    save.disabled = cancel.disabled = true;
+    msg.innerHTML = spin("Enregistrement…");
+    const res = await api(
+      "/characters/" + ch.id,
+      Object.assign(jsonPost({ name, sheet_json: newSheet, skills }), { method: "PUT" }),
+    );
+    if (!res.ok) {
+      msg.textContent = "Échec de l’enregistrement — réessayez.";
+      msg.className = "msg error";
+      save.disabled = cancel.disabled = false;
+      return;
+    }
+    const updated = await res.json();
+    showCharacterFiche(updated);
+    if (currentBible) loadCharacters(currentBible.id);
+  });
+
+  host.appendChild(form);
+  host.scrollIntoView({ block: "nearest" });
 }
 
 $("forge-character-btn").addEventListener("click", () => {
@@ -1714,6 +1875,7 @@ async function showEmbark(bibleId) {
     card.innerHTML = ficheHtml(ch.name, ch.sheet, {
       compact: true,
       sub: ch.is_canon ? "Personnage du canon" : "Votre légende",
+      skills: ch.skills,
     });
     card.addEventListener("click", () => {
       card.disabled = true;

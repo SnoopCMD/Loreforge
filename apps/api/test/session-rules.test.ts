@@ -6,7 +6,9 @@ import {
   describeOutcome,
   initialGameState,
   MAX_FACTS,
+  mergeSkills,
   normalizeTier,
+  sanitizeSkills,
   outcomeForRoll,
   rollD6,
   SOUFFLE_MAX,
@@ -104,6 +106,43 @@ describe("applySkillUpdate (mémoire des compétences)", () => {
     expect(applySkillUpdate(skills, "Feu", "cosmique")).toBe(false);
     expect(applySkillUpdate(skills, "  ", "maîtrise")).toBe(false);
     expect(skills).toEqual([]);
+  });
+});
+
+describe("sanitizeSkills (skills_json / PUT client)", () => {
+  it("nettoie entrées cassées, normalise paliers, fusionne doublons", () => {
+    expect(
+      sanitizeSkills([
+        { name: "Feu", tier: "maitrise", note: "flamme nue" },
+        { name: "Feu", tier: "découverte" }, // doublon plus faible : ignoré
+        { name: "Vol", tier: "cosmique" }, // palier inconnu : écarté
+        "pas un objet",
+        { name: 42, tier: "inné" },
+        null,
+      ]),
+    ).toEqual([{ name: "Feu", tier: "maîtrise", note: "flamme nue" }]);
+    expect(sanitizeSkills("oops")).toEqual([]);
+    expect(sanitizeSkills(undefined)).toEqual([]);
+  });
+});
+
+describe("mergeSkills (fin de session → personnage)", () => {
+  it("upsert sans régression, sans muter la liste persistée", () => {
+    const saved: SkillEntry[] = [
+      { name: "Marche-faille", tier: "maîtrise", note: "3 m" },
+      { name: "Chant", tier: "découverte" },
+    ];
+    const merged = mergeSkills(saved, [
+      { name: "marche-faille", tier: "découverte" }, // régression : ignorée
+      { name: "Chant", tier: "apprentissage", note: "voix claire" },
+      { name: "Forge", tier: "découverte" },
+    ]);
+    expect(merged).toEqual([
+      { name: "Marche-faille", tier: "maîtrise", note: "3 m" },
+      { name: "Chant", tier: "apprentissage", note: "voix claire" },
+      { name: "Forge", tier: "découverte" },
+    ]);
+    expect(saved[1]).toEqual({ name: "Chant", tier: "découverte" });
   });
 });
 

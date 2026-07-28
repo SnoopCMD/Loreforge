@@ -19,11 +19,14 @@ import {
   applySkillUpdate,
   applySouffleDelta,
   initialGameState,
+  mergeSkills,
   outcomeForRoll,
   rollD6,
+  sanitizeSkills,
   SOUFFLE_MAX,
   type GameState,
   type RollResult,
+  type SkillEntry,
 } from "./rules";
 import { GmStreamParser, stripGmTags, type GmTagEvent } from "./tags";
 import { resolveLore } from "./lore";
@@ -206,15 +209,25 @@ export class GameSession extends DurableObject<Env> {
 
     let characterName: string | null = null;
     let characterSheet: string | null = null;
+    let characterSkills: SkillEntry[] = [];
     if (payload.characterId) {
       const character = await this.env.DB.prepare(
-        `SELECT name, sheet_json FROM characters WHERE id = ?`,
+        `SELECT name, sheet_json, skills_json FROM characters WHERE id = ?`,
       )
         .bind(payload.characterId)
-        .first<{ name: string; sheet_json: string }>();
+        .first<{ name: string; sheet_json: string; skills_json: string | null }>();
       if (!character) return json({ error: "character_not_found" }, 400);
       characterName = character.name;
       characterSheet = character.sheet_json;
+      // Arbre de compétences persistant : les acquis des sessions passées
+      // repartent avec le personnage (le MJ ne les « redécouvre » jamais).
+      try {
+        characterSkills = sanitizeSkills(
+          JSON.parse(character.skills_json ?? "[]"),
+        );
+      } catch {
+        characterSkills = [];
+      }
     }
 
     // Zones floues déjà traitées : une réponse d'une session passée en attente
@@ -249,6 +262,7 @@ export class GameSession extends DurableObject<Env> {
       status: "setup",
     };
     const state = initialGameState();
+    state.skills = characterSkills;
     // Les lacunes retenues sont conservées telles quelles : chaque réponse du
     // joueur pourra être reliée à sa zone floue d'origine au /finish.
     const setupGaps = selectSetupGaps(scores, openGaps);
@@ -495,6 +509,32 @@ export class GameSession extends DurableObject<Env> {
       .run();
     // Purge du cache chaud (SPEC §5).
     await this.env.CACHE.delete(sessionKvKey(meta.sessionId));
+
+    // Arbre de compétences : les acquis de la session rejoignent le
+    // personnage (fusion sans régression) — la prochaine session repart avec.
+    if (meta.characterId && (state.skills ?? []).length > 0) {
+      const row = await this.env.DB.prepare(
+        `SELECT skills_json FROM characters WHERE id = ?`,
+      )
+        .bind(meta.characterId)
+        .first<{ skills_json: string | null }>();
+      if (row) {
+        let saved: SkillEntry[] = [];
+        try {
+          saved = sanitizeSkills(JSON.parse(row.skills_json ?? "[]"));
+        } catch {
+          saved = [];
+        }
+        await this.env.DB.prepare(
+          `UPDATE characters SET skills_json = ? WHERE id = ?`,
+        )
+          .bind(
+            JSON.stringify(mergeSkills(saved, state.skills ?? [])),
+            meta.characterId,
+          )
+          .run();
+      }
+    }
 
     // Boucle canon (M5) : chaque invention devient une proposition en attente,
     // tranchée ensuite via POST /api/bibles/:id/proposals/:pid.
