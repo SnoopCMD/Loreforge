@@ -296,7 +296,6 @@
         <option value="mini">Mini-campagne</option>
         <option value="campaign">Campagne</option>
       </select>
-      <input type="text" id="new-trame" placeholder="Trame (optionnel, sinon libre)" />
       <button id="new-session-btn">Lancer une session</button>
     </div>
     <p id="session-msg" class="msg"></p>
@@ -379,8 +378,19 @@
 <section id="screen-setup" class="hidden">
   <h2>Mise en place</h2>
   <div class="panel">
-    <p class="msg" id="setup-intro">Le MJ a repéré des zones floues de votre bible. Établissez-les pour cette session — ou laissez vide pour le laisser improviser.</p>
-    <form id="setup-form"></form>
+    <form id="setup-trame-form">
+      <label>
+        <p>Fil rouge de la session <span class="msg">— votre volonté pour cette partie, ou rien du tout.</span></p>
+        <textarea id="setup-trame" rows="2" maxlength="500"
+          placeholder="Ex. : retrouver la trace de la Garde Blanche et découvrir ce qu’elle cache."></textarea>
+      </label>
+      <button type="submit">Continuer</button>
+    </form>
+    <div id="setup-questions" class="hidden">
+      <p class="msg" id="setup-trame-recap"></p>
+      <p class="msg" id="setup-intro">Le MJ a repéré des zones floues de votre bible. Établissez-les pour cette session — ou laissez vide pour le laisser improviser.</p>
+      <form id="setup-form"></form>
+    </div>
     <p id="setup-msg" class="msg"></p>
   </div>
 </section>

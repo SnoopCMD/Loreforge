@@ -1807,7 +1807,7 @@ $("forge-character-btn").addEventListener("click", () => {
 // ── Lancement de session : préférences puis écran « deux portes » ────────
 
 function embarkPref(bibleId) {
-  return store.get("lf:embark:" + bibleId) || { format: "oneshot", trame: null };
+  return store.get("lf:embark:" + bibleId) || { format: "oneshot" };
 }
 
 /** Recharge la bible si on arrive par refresh direct sur un sous-écran. */
@@ -1824,8 +1824,8 @@ async function launchSession(bibleId, characterId, mode, msgEl) {
     bible_id: bibleId,
     character_id: characterId || null,
     format: pref.format || "oneshot",
-    trame: pref.trame || null,
   };
+  // Le fil rouge se pose à l'écran de mise en place, personnage déjà choisi.
   if (mode) payload.character_mode = mode;
   if (msgEl) { msgEl.innerHTML = spin("La session se prépare…"); msgEl.className = "msg"; }
   const res = await api("/sessions", jsonPost(payload));
@@ -2329,37 +2329,91 @@ async function loadSessions(bibleId) {
     item.innerHTML =
       '<span><span class="who"></span> <span class="when">' + esc(when) + "</span></span>" +
       '<span class="row">' + statusChip(s.status) +
-      '<a href="#/session/' + esc(s.id) + esc(target) + '">' + label + "</a></span>";
+      '<a href="#/session/' + esc(s.id) + esc(target) + '">' + label + "</a>" +
+      '<button class="ghost card-delete" title="Supprimer cette session">✕</button></span>';
     item.querySelector(".who").textContent =
       (s.character_name || "Sans personnage") + " · " + (FORMAT_LABELS[s.format] || s.format);
+    // Suppression en deux temps, comme les bibles : premier clic arme.
+    const del = item.querySelector(".card-delete");
+    del.addEventListener("click", async () => {
+      if (!del.classList.contains("armed")) {
+        del.classList.add("armed");
+        del.textContent = "Supprimer ?";
+        setTimeout(() => {
+          del.classList.remove("armed");
+          del.textContent = "✕";
+        }, 4000);
+        return;
+      }
+      del.disabled = true;
+      const res = await api("/sessions/" + s.id, { method: "DELETE" });
+      if (!res.ok) { del.disabled = false; return; }
+      item.remove();
+      // Les propositions de la session disparaissent avec elle.
+      loadProposals(bibleId);
+      if (!list.querySelector(".session-item")) {
+        list.innerHTML = '<p class="msg">Aucune session jouée sur cette bible.</p>';
+      }
+    });
     list.appendChild(item);
   }
 }
 
 $("new-session-btn").addEventListener("click", () => {
-  // Format et trame mémorisés, puis écran « deux portes » (§6bis).
-  store.set("lf:embark:" + currentBible.id, {
-    format: $("new-format").value,
-    trame: $("new-trame").value.trim() || null,
-  });
+  // Format mémorisé, puis écran « deux portes » (§6bis).
+  store.set("lf:embark:" + currentBible.id, { format: $("new-format").value });
   location.hash = "#/bible/" + currentBible.id + "/embark";
 });
 
 // ── Setup de session ─────────────────────────────────────────────────────
 
+// La mise en place se joue en deux temps : d'abord le fil rouge, ensuite les
+// zones floues — le serveur ne pose que celles qui touchent à cette intention.
 function showSetup(sessionId) {
   showScreen("screen-setup");
-  const questions = store.get("lf:questions:" + sessionId) || [];
+  $("setup-msg").textContent = "";
+  $("setup-msg").className = "msg";
+  $("setup-trame").value = "";
+  $("setup-trame-form").dataset.sessionId = sessionId;
+  $("setup-trame-form").classList.remove("hidden");
+  $("setup-questions").classList.add("hidden");
+}
+
+$("setup-trame-form").addEventListener("submit", async (e) => {
+  e.preventDefault();
+  const sessionId = e.target.dataset.sessionId;
+  const trame = $("setup-trame").value.trim();
+  const btn = e.target.querySelector("button");
+  btn.disabled = true;
+  $("setup-msg").innerHTML = spin("Le MJ relit votre bible…");
+  const res = await api("/sessions/" + sessionId + "/trame", jsonPost({ trame }));
+  btn.disabled = false;
+  if (!res.ok) {
+    $("setup-msg").textContent = "Le fil rouge n’a pas pu être posé — réessayez.";
+    $("setup-msg").className = "msg error";
+    return;
+  }
+  const body = await res.json();
+  $("setup-msg").textContent = "";
+  store.set("lf:questions:" + sessionId, body.setup_questions);
+  $("setup-trame-form").classList.add("hidden");
+  $("setup-trame-recap").textContent = body.trame
+    ? "Fil rouge : " + body.trame
+    : "Sans fil rouge — la partie trouvera sa direction en jouant.";
+  showSetupQuestions(sessionId, body.setup_questions || []);
+});
+
+function showSetupQuestions(sessionId, questions) {
   const form = $("setup-form");
   form.dataset.sessionId = sessionId;
   form.innerHTML = "";
-  $("setup-msg").textContent = "";
+  $("setup-questions").classList.remove("hidden");
   if (questions.length === 0) {
     $("setup-intro").textContent =
-      "Le MJ n’a pas de question — votre bible couvre l’essentiel. Ouvrez la scène 1.";
+      "Le MJ n’a pas de question — rien de flou ne bloque cette partie. Ouvrez la scène 1.";
   } else {
     $("setup-intro").textContent =
-      "Le MJ a repéré des zones floues de votre bible. Établissez-les pour cette session — ou laissez vide pour le laisser improviser.";
+      "Zones floues de votre bible que cette partie va traverser. Établissez-les — ou laissez vide pour laisser le MJ improviser.";
   }
   for (const q of questions) {
     const label = document.createElement("label");

@@ -32,17 +32,29 @@ describe("buildSetupQuestions (SPEC §4)", () => {
   it("priorise les axes faibles par score croissant, max 3 questions", () => {
     const questions = buildSetupQuestions(scores, gaps);
     expect(questions).toHaveLength(MAX_SETUP_QUESTIONS);
-    // geography (3) avant tone (4) ; cosmology (9) jamais.
+    // geography (3) avant tone (4) ; cosmology (9) en dernier, donc écarté.
     expect(questions[0]).toContain("Aucune carte des Mondes.");
     expect(questions[1]).toContain("La capitale n'est pas décrite.");
     expect(questions[2]).toContain("Niveau de violence non explicité.");
     for (const q of questions) expect(q).not.toContain("magie");
   });
 
-  it("aucune question sans scores ni pour des axes ≥ 5", () => {
+  it("aucune question sans scores ni sans lacune ouverte", () => {
     expect(buildSetupQuestions(null, gaps)).toEqual([]);
-    const strong = { ...scores, tone: 8, geography: 9 };
-    expect(buildSetupQuestions(strong, gaps)).toEqual([]);
+    expect(buildSetupQuestions(scores, [])).toEqual([]);
+  });
+
+  it("pose les lacunes même sur une bible bien notée (pas de seuil)", () => {
+    // Régression : le seuil « axe ≤ 4 » tarissait les questions dès que les
+    // axes remontaient, alors que des zones floues restaient ouvertes.
+    const strong = {
+      cosmology: 9, characters: 9, plots: 9, tone: 8, geography: 7,
+    };
+    const questions = buildSetupQuestions(strong, gaps);
+    expect(questions).toHaveLength(MAX_SETUP_QUESTIONS);
+    // geography (7) d'abord, puis tone (8) — l'ordre suit toujours les scores.
+    expect(questions[0]).toContain("Aucune carte des Mondes.");
+    expect(questions[2]).toContain("Niveau de violence non explicité.");
   });
 
   it("selectSetupGaps garde l'alignement lacune ↔ question (boucle canon)", () => {
@@ -58,9 +70,67 @@ describe("buildSetupQuestions (SPEC §4)", () => {
       (g) => g.description !== "Aucune carte des Mondes.",
     );
     const questions = buildSetupQuestions(scores, open);
-    expect(questions).toHaveLength(2);
+    expect(questions).toHaveLength(3);
     expect(questions[0]).toContain("La capitale n'est pas décrite.");
     expect(questions.join(" ")).not.toContain("Aucune carte des Mondes.");
+    // La place libérée revient à la lacune suivante (ici cosmology, 9) : une
+    // zone floue traitée laisse la parole à une autre, jamais au silence.
+    expect(questions[2]).toContain("Origine de la magie floue.");
+  });
+});
+
+describe("questions de mise en place recentrées sur le contexte", () => {
+  const trames: RichnessGap[] = [
+    { axis: "plots", description: "La trame du Passeur n'a pas de dénouement." },
+    { axis: "geography", description: "Le Gué des Cendres n'est pas décrit." },
+    { axis: "plots", description: "Le siège de Valmyre n'a pas de camp désigné." },
+    { axis: "characters", description: "Les motivations de Dame Orlanne sont floues." },
+  ];
+  const richScores: RichnessScores = {
+    cosmology: 7, characters: 3, plots: 5, tone: 6, geography: 4,
+  };
+
+  it("un fil rouge ne fait poser que les flous qu'il traverse", () => {
+    const questions = buildSetupQuestions(richScores, trames, {
+      trame: "Escorter un convoi au Gué des Cendres pour le compte du Passeur.",
+    });
+    // Passeur et Gué des Cendres sont dans le fil rouge ; Valmyre et Orlanne
+    // n'ont rien à voir avec cette partie — leur tour viendra.
+    expect(questions.join(" ")).toContain("La trame du Passeur");
+    expect(questions.join(" ")).toContain("Le Gué des Cendres");
+    expect(questions.join(" ")).not.toContain("Valmyre");
+    expect(questions.join(" ")).not.toContain("Orlanne");
+  });
+
+  it("le personnage compte aussi, mais moins que le fil rouge", () => {
+    const questions = buildSetupQuestions(richScores, trames, {
+      trame: "Lever le siège de Valmyre.",
+      characterName: "Dame Orlanne",
+    });
+    // Le siège (fil rouge, poids 2) passe devant Orlanne (personnage, poids 1).
+    expect(questions[0]).toContain("Valmyre");
+    expect(questions[1]).toContain("Orlanne");
+    expect(questions.join(" ")).not.toContain("Passeur");
+  });
+
+  it("hors sujet complet : on retombe sur le tri par axe faible", () => {
+    const questions = buildSetupQuestions(richScores, trames, {
+      trame: "Ouvrir une taverne et n'ennuyer personne.",
+    });
+    expect(questions).toHaveLength(MAX_SETUP_QUESTIONS);
+    // characters (3) → geography (4) → plots (5).
+    expect(questions[0]).toContain("Orlanne");
+    expect(questions[1]).toContain("Gué des Cendres");
+  });
+
+  it("ignore les mots vides et l'accentuation", () => {
+    // « dans / pour / sans » ne doivent rien faire matcher ; « Gue » sans
+    // accent doit retrouver « Gué ».
+    const questions = buildSetupQuestions(richScores, trames, {
+      trame: "Sans plus attendre, aller dans le Gue des Cendres.",
+    });
+    expect(questions).toHaveLength(1);
+    expect(questions[0]).toContain("Le Gué des Cendres");
   });
 });
 
@@ -89,7 +159,17 @@ describe("buildSystemPrompt (SPEC §7)", () => {
     expect(prompt).toContain("Kael");
     expect(prompt).toContain('<roll reason="..."/>');
     expect(prompt).toContain('<invention axis="...">');
-    expect(prompt).toContain("trame libre");
+    expect(prompt).toContain("Trame libre");
+  });
+
+  it("porte le fil rouge de la session comme intention directrice", () => {
+    const guided = buildSystemPrompt({
+      ...input,
+      trame: "Retrouver la trace de la Garde Blanche.",
+    });
+    expect(guided).toContain("Retrouver la trace de la Garde Blanche.");
+    expect(guided).toContain("intention directrice");
+    expect(guided).not.toContain("Trame libre");
   });
 
   it("annonce le système de compétences et la mémoire des faits", () => {

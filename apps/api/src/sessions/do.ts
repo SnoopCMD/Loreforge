@@ -4,11 +4,13 @@
 //
 // API interne (appelée uniquement par les routes worker, déjà authentifiées) :
 //   POST /init    {sessionId, userId, bibleId, characterId, format, trame}
+//   POST /trame   {trame}          → JSON {trame, setup_questions[]} (recentrées)
 //   POST /setup   {answers[]}      → SSE (scène 1)
 //   POST /turn    {player_input}   → SSE
 //   POST /roll    {reason?}        → JSON {value, outcome, reason}
 //   GET  /state                    → JSON état public
 //   POST /finish                   → JSON {summary_md, inventions}
+//   POST /destroy                  → JSON {ok} (purge totale, session supprimée)
 
 import { DurableObject } from "cloudflare:workers";
 import Anthropic from "@anthropic-ai/sdk";
@@ -41,6 +43,7 @@ import {
   selectSetupGaps,
   SUMMARY_MESSAGE,
   turnEndsOpen,
+  type SetupContext,
 } from "./prompt";
 import { canonizeGapAnswers, type GapAnswer } from "../richness/suggest";
 
@@ -48,6 +51,8 @@ export const NARRATION_MODEL = "claude-sonnet-5";
 const MAX_NARRATION_TOKENS = 2048;
 const MAX_PLAYER_INPUT_CHARS = 4000;
 const MAX_ANSWERS = 10;
+/** Fil rouge de session : une intention, pas un synopsis. */
+export const MAX_TRAME_CHARS = 500;
 // Fenêtre de contexte : derniers tours envoyés au modèle.
 const CONTEXT_TURNS = 40;
 // Prompt caching (coût) : le préfixe stable (system + historique) est mis en
@@ -64,8 +69,12 @@ export function sessionKvKey(sessionId: string): string {
   return `session:${sessionId}:state`;
 }
 
+export function loreKvPrefix(sessionId: string): string {
+  return `lore:${sessionId}:`;
+}
+
 export function loreKvKey(sessionId: string, term: string): string {
-  return `lore:${sessionId}:${term.toLowerCase()}`;
+  return loreKvPrefix(sessionId) + term.toLowerCase();
 }
 
 interface SessionMeta {
@@ -117,6 +126,26 @@ function turnKey(index: number): string {
   return `turn:${String(index).padStart(6, "0")}`;
 }
 
+/** Contexte de tri des zones floues : ce que la session a déjà de concret. */
+function setupContext(meta: SessionMeta): SetupContext {
+  return {
+    trame: meta.trame,
+    characterName: meta.characterName,
+    characterSheet: meta.characterSheet,
+  };
+}
+
+/**
+ * Normalise un fil rouge reçu du client : null s'il est absent ou vide,
+ * `undefined` si le type est invalide (l'appelant répond alors 400).
+ */
+export function normalizeTrame(value: unknown): string | null | undefined {
+  if (value === undefined || value === null) return null;
+  if (typeof value !== "string") return undefined;
+  const trimmed = value.trim();
+  return trimmed === "" ? null : trimmed.slice(0, MAX_TRAME_CHARS);
+}
+
 export class GameSession extends DurableObject<Env> {
   /** Cache mémoire du canon (relu depuis D1 à chaque réveil du DO). */
   private canonCache: string | null = null;
@@ -130,12 +159,22 @@ export class GameSession extends DurableObject<Env> {
       if (request.method === "GET" && path === "/state") {
         return await this.stateResponse();
       }
+      if (request.method === "POST" && path === "/destroy") {
+        // Suppression de session : le DO se vide entièrement (un DO sans
+        // storage n'occupe plus rien ; son id ne sera jamais réémis).
+        await this.ctx.storage.deleteAll();
+        this.canonCache = null;
+        return json({ ok: true });
+      }
 
       const meta = await this.ctx.storage.get<SessionMeta>("meta");
       if (!meta) return json({ error: "session_not_initialized" }, 409);
 
       if (request.method === "GET" && path === "/lore") {
         return await this.lore(meta, new URL(request.url));
+      }
+      if (request.method === "POST" && path === "/trame") {
+        return await this.setTrame(meta, await request.json());
       }
       if (request.method === "POST" && path === "/setup") {
         return await this.setup(meta, await request.json());
@@ -265,7 +304,7 @@ export class GameSession extends DurableObject<Env> {
     state.skills = characterSkills;
     // Les lacunes retenues sont conservées telles quelles : chaque réponse du
     // joueur pourra être reliée à sa zone floue d'origine au /finish.
-    const setupGaps = selectSetupGaps(scores, openGaps);
+    const setupGaps = selectSetupGaps(scores, openGaps, setupContext(meta));
     const questions = setupGaps.map(gapQuestion);
 
     this.canonCache = bible.canon_md;
@@ -274,12 +313,56 @@ export class GameSession extends DurableObject<Env> {
       state,
       setup_questions: questions,
       setup_gaps: setupGaps,
+      // Réserve de lacunes ouvertes : le fil rouge posé à la mise en place
+      // rejoue la sélection dessus, sans repasser par D1.
+      open_gaps: openGaps,
       inventions: [] as Invention[],
       turn_count_stored: 0,
     });
     await this.syncKV(meta, state);
 
     return json({ setup_questions: questions });
+  }
+
+  // ── Fil rouge → questions recentrées ──────────────────────────────────
+
+  /**
+   * Le joueur pose (ou retire) son fil rouge avant la scène 1 : la mise en
+   * place rejoue sa sélection de zones floues à la lumière de cette intention,
+   * pour ne poser que des questions qui concernent la partie qui commence.
+   */
+  private async setTrame(meta: SessionMeta, body: unknown): Promise<Response> {
+    if (meta.status !== "setup") {
+      return json({ error: "invalid_status", status: meta.status }, 409);
+    }
+    const trame = normalizeTrame((body as { trame?: unknown }).trame);
+    if (trame === undefined) return json({ error: "invalid_trame" }, 400);
+
+    meta.trame = trame;
+    const openGaps =
+      (await this.ctx.storage.get<RichnessGap[]>("open_gaps")) ??
+      (await this.ctx.storage.get<RichnessGap[]>("setup_gaps")) ??
+      [];
+    const setupGaps = selectSetupGaps(
+      meta.scores,
+      openGaps,
+      setupContext(meta),
+    );
+    const questions = setupGaps.map(gapQuestion);
+
+    await this.ctx.storage.put({
+      meta,
+      setup_gaps: setupGaps,
+      setup_questions: questions,
+    });
+    await this.env.DB.prepare(`UPDATE game_sessions SET trame = ? WHERE id = ?`)
+      .bind(trame, meta.sessionId)
+      .run();
+    // Le cache chaud porte la trame : sans ce resync, /state la servirait
+    // encore vide après un refresh.
+    await this.syncKV(meta, (await this.ctx.storage.get<GameState>("state"))!);
+
+    return json({ trame, setup_questions: questions });
   }
 
   // ── Mise en place → scène 1 ───────────────────────────────────────────
@@ -299,6 +382,8 @@ export class GameSession extends DurableObject<Env> {
       return json({ error: "invalid_answers" }, 400);
     }
 
+    // Le fil rouge, lui, est déjà posé : POST /trame l'a écrit et a recentré
+    // les questions ci-dessous. Ici on ne traite que les réponses.
     const questions =
       (await this.ctx.storage.get<string[]>("setup_questions")) ?? [];
     const state = (await this.ctx.storage.get<GameState>("state"))!;

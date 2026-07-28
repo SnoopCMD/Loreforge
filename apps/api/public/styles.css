@@ -909,15 +909,19 @@ svg .score-label { fill: var(--spirit); font-family: "JetBrains Mono", monospace
 /* ── Gestion des bibles : renommer, supprimer, sections ───────────────── */
 
 .bible-card .card-right { gap: 0.5rem; align-items: center; }
-.bible-card .card-delete { padding: 0.15rem 0.55rem; font-size: 0.8rem; }
-button.armed, .bible-card .card-delete.armed {
+.bible-card .card-delete,
+.session-item .card-delete { padding: 0.15rem 0.55rem; font-size: 0.8rem; }
+button.armed, .card-delete.armed {
   background: transparent; border: 1px solid var(--ember); color: var(--ember);
 }
 .bible-actions { gap: 0.5rem; align-items: center; flex-wrap: wrap; }
 
 /* Largeurs bornées par max-width (jamais fixes) : compressibles en petit. */
 #rename-input { width: 100%; max-width: 18rem; }
-#new-trame { width: 100%; max-width: 14rem; flex: 1 1 10rem; min-width: 0; }
+/* Fil rouge de session : posé à la mise en place, personnage déjà choisi —
+   il recentre ensuite les questions sur les flous que la partie traverse. */
+#setup-trame { width: 100%; resize: vertical; margin-bottom: 0.8rem; }
+#setup-trame-recap { color: var(--parchment); font-style: italic; }
 
 /* ── Plan de travail par sections (éditeur de bible) ──────────────────── */
 

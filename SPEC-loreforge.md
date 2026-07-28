@@ -151,7 +151,8 @@ Calculé par un appel Anthropic à l'import (`/api/richness`), sortie JSON stric
 | `geography` | Lieux concrets, cartes, descriptions | Niveau de description inventée |
 
 **Comportements dérivés (à implémenter dans le prompt système du DO) :**
-- Score d'axe ≤ 4 → le MJ pose des questions de mise en place sur cet axe avant la session (max 3 questions au total, priorisées par score croissant).
+- Toute zone floue encore ouverte → le MJ pose une question de mise en place avant la session (max 3 questions). Pas de seuil de score : une bible bien notée garde des flous que l'auteur veut trancher ; c'est la boucle de canonisation qui referme les lacunes (réponse acceptée ou en attente → la question ne revient plus ; rejetée → elle revient).
+- Priorité de contexte : si le fil rouge de la session (ou le personnage) touche à certaines zones floues, seules celles-là sont posées — lancer une partie sur la trame du Passeur ne fait pas trancher le siège de Valmyre. Le fil rouge pèse le double du personnage. À contexte muet ou hors sujet, tri par score d'axe croissant (axes faibles d'abord).
 - Score d'axe ≥ 8 → le MJ cite le canon, n'invente qu'en dernier recours sur cet axe.
 - Toute invention significative est loggée par le DO → devient un `canon_proposal` en fin de session.
 
@@ -190,11 +191,15 @@ POST   /api/characters/embody-quiz/answers { bible_id, answers[] }
 POST   /api/sessions                   { bible_id, character_mode, character_id?, format, trame? }
         → character_mode: 'embody_canon' | 'embody_quiz' | 'create'
         → crée le DO, retourne { session_id, setup_questions[] }
+POST   /api/sessions/:id/trame         { trame }  → { trame, setup_questions[] }
+        → fil rouge posé une fois le personnage choisi ; recentre les questions sur lui
 POST   /api/sessions/:id/setup         { answers[] }  → le DO génère la scène 1
 POST   /api/sessions/:id/turn          { player_input }  → SSE stream
 POST   /api/sessions/:id/roll          { reason }  → jet d6 côté serveur (anti-triche)
 POST   /api/sessions/:id/finish        → résumé + canon_proposals + purge KV
 GET    /api/sessions/:id/state         → fiche perso, Souffle, log
+DELETE /api/sessions/:id               → purge le DO, les caches KV, les propositions
+                                         en attente issues d'elle, puis la ligne D1
 ```
 
 Le SSE de `/turn` émet des events typés : `narration` (texte), `roll` (dé + résultat), `state_patch` (Souffle, inventaire), `scene_break`, `done`.

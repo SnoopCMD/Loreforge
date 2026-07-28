@@ -126,6 +126,102 @@ describe("GET /api/sessions?bible_id=", () => {
   });
 });
 
+describe("DELETE /api/sessions/:id", () => {
+  it("efface la session : elle sort de la liste et son état est introuvable", async () => {
+    const cookie = await login("del-session@example.com");
+    const bibleId = await createBible(cookie);
+    const doomed = await createSession(cookie, bibleId);
+    const kept = await createSession(cookie, bibleId);
+
+    const res = await SELF.fetch(`${BASE}/api/sessions/${doomed}`, {
+      method: "DELETE",
+      headers: { cookie },
+    });
+    expect(res.status).toBe(200);
+
+    const { sessions } = (await (
+      await get(cookie, `/api/sessions?bible_id=${bibleId}`)
+    ).json()) as { sessions: Array<{ id: string }> };
+    expect(sessions.map((s) => s.id)).toEqual([kept]);
+    expect((await get(cookie, `/api/sessions/${doomed}/state`)).status).toBe(404);
+  });
+
+  it("404 pour la session d'un autre — et elle survit", async () => {
+    const alice = await login("alice-del@example.com");
+    const bob = await login("bob-del@example.com");
+    const bibleId = await createBible(alice);
+    const sessionId = await createSession(alice, bibleId);
+
+    const res = await SELF.fetch(`${BASE}/api/sessions/${sessionId}`, {
+      method: "DELETE",
+      headers: { cookie: bob },
+    });
+    expect(res.status).toBe(404);
+    expect((await get(alice, `/api/sessions/${sessionId}/state`)).status).toBe(200);
+  });
+});
+
+describe("POST /api/sessions/:id/trame", () => {
+  it("enregistre le fil rouge posé à la mise en place et rend les questions", async () => {
+    const cookie = await login("trame-setup@example.com");
+    const bibleId = await createBible(cookie);
+    const sessionId = await createSession(cookie, bibleId);
+
+    const res = await post(cookie, `/api/sessions/${sessionId}/trame`, {
+      trame: "  Retrouver la trace de la Garde Blanche.  ",
+    });
+    expect(res.status).toBe(200);
+    const body = (await res.json()) as {
+      trame: string;
+      setup_questions: string[];
+    };
+    expect(body.trame).toBe("Retrouver la trace de la Garde Blanche.");
+    expect(Array.isArray(body.setup_questions)).toBe(true);
+
+    const { sessions } = (await (
+      await get(cookie, `/api/sessions?bible_id=${bibleId}`)
+    ).json()) as { sessions: Array<{ trame: string | null }> };
+    expect(sessions[0].trame).toBe("Retrouver la trace de la Garde Blanche.");
+
+    const state = (await (
+      await get(cookie, `/api/sessions/${sessionId}/state`)
+    ).json()) as Record<string, unknown>;
+    expect(state.trame).toBe("Retrouver la trace de la Garde Blanche.");
+  });
+
+  it("un fil rouge vide efface celui de la session", async () => {
+    const cookie = await login("trame-vide@example.com");
+    const bibleId = await createBible(cookie);
+    const sessionId = await createSession(cookie, bibleId);
+
+    await post(cookie, `/api/sessions/${sessionId}/trame`, { trame: "La route du sel" });
+    const res = await post(cookie, `/api/sessions/${sessionId}/trame`, { trame: "   " });
+    expect(res.status).toBe(200);
+    expect(((await res.json()) as { trame: string | null }).trame).toBeNull();
+
+    const state = (await (
+      await get(cookie, `/api/sessions/${sessionId}/state`)
+    ).json()) as Record<string, unknown>;
+    expect(state.trame).toBeNull();
+  });
+
+  it("refuse une trame mal typée, et refuse d'en poser une en cours de partie", async () => {
+    const cookie = await login("trame-bad@example.com");
+    const bibleId = await createBible(cookie);
+    const sessionId = await createSession(cookie, bibleId);
+
+    const bad = await post(cookie, `/api/sessions/${sessionId}/trame`, { trame: 42 });
+    expect(bad.status).toBe(400);
+    expect(((await bad.json()) as { error: string }).error).toBe("invalid_trame");
+
+    mockAnthropicStream(["Scène 1. Que fais-tu ?"]);
+    await (await post(cookie, `/api/sessions/${sessionId}/setup`, { answers: [] })).text();
+
+    const late = await post(cookie, `/api/sessions/${sessionId}/trame`, { trame: "Trop tard" });
+    expect(late.status).toBe(409);
+  });
+});
+
 describe("GET /api/sessions/:id/state après finish", () => {
   it("fusionne summary_md depuis D1 pour une session finie", async () => {
     const cookie = await login("finished@example.com");

@@ -17,29 +17,103 @@ import {
 
 export const MAX_SETUP_QUESTIONS = 3;
 
+/** Ce que la session qui commence a déjà de concret : sert à trier les flous. */
+export interface SetupContext {
+  /** Fil rouge posé par l'auteur avant d'ouvrir la scène 1. */
+  trame?: string | null;
+  characterName?: string | null;
+  characterSheet?: string | null;
+}
+
+// Mots trop courants pour porter du sens : ils feraient matcher n'importe quoi.
+const STOPWORDS = new Set([
+  "aucun", "aucune", "alor", "auss", "autre", "avec", "avoir", "bien", "cela",
+  "cette", "chez", "comme", "dan", "depui", "doit", "donc", "elle", "encore",
+  "entre", "etre", "fait", "faire", "flou", "leur", "mais", "meme", "moin",
+  "niveau", "pas", "peu", "peut", "plu", "pour", "quand", "quel", "quelle",
+  "sans", "sont", "sous", "sur", "toujour", "tout", "toute", "tres", "vers",
+]);
+
 /**
- * Lacunes retenues pour la mise en place : axes de score ≤ 4, priorisés par
- * score croissant, une lacune par question, 3 max (SPEC §4). Renvoyer les
- * lacunes (et pas les questions) permet de relier chaque réponse du joueur à
- * sa zone floue d'origine — la boucle de canonisation en dépend.
+ * Mots porteurs de sens d'un texte : sans accents, sans pluriel, ≥ 4 lettres.
+ * Le dé-pluralisation est volontairement naïve — on compare des noms propres
+ * et des termes d'univers, pas de la prose.
+ */
+function keywords(text: string | null | undefined): Set<string> {
+  if (!text) return new Set();
+  const words = text
+    .toLowerCase()
+    .normalize("NFD")
+    .replace(/[̀-ͯ]/g, "")
+    .split(/[^a-z0-9]+/)
+    .map((w) => w.replace(/s$/, ""))
+    .filter((w) => w.length >= 4 && !STOPWORDS.has(w));
+  return new Set(words);
+}
+
+function countShared(target: Set<string>, source: Set<string>): number {
+  let n = 0;
+  for (const word of source) if (target.has(word)) n++;
+  return n;
+}
+
+/**
+ * Pertinence d'une zone floue pour la session qui commence (0 = hors sujet).
+ * Le fil rouge pèse le double du personnage : c'est lui qui dit de quoi la
+ * partie va parler.
+ */
+function gapRelevance(gap: RichnessGap, context: SetupContext): number {
+  const target = keywords(gap.description);
+  if (target.size === 0) return 0;
+  return (
+    2 * countShared(target, keywords(context.trame)) +
+    countShared(
+      target,
+      keywords([context.characterName, context.characterSheet].join(" ")),
+    )
+  );
+}
+
+/**
+ * Lacunes retenues pour la mise en place : les plus proches du contexte de la
+ * session d'abord, puis par score d'axe croissant ; une lacune par question,
+ * 3 max (SPEC §4).
+ *
+ * - Contexte : si le fil rouge (ou le personnage) touche à des zones floues,
+ *   la mise en place ne parle que de celles-là — inutile de faire trancher la
+ *   trame du Passeur quand la partie s'ouvre ailleurs. Les autres attendent
+ *   leur tour ; à contexte muet, on retombe sur le tri par axe faible.
+ * - Pas de seuil de score : tant qu'il reste une zone floue ouverte, la mise en
+ *   place la pose — une bible bien notée garde des flous que l'auteur veut
+ *   trancher, et la boucle de canonisation retire d'elle-même les lacunes
+ *   déjà traitées.
+ *
+ * Renvoyer les lacunes (et pas les questions) permet de relier chaque réponse
+ * du joueur à sa zone floue d'origine — la boucle de canonisation en dépend.
  */
 export function selectSetupGaps(
   scores: RichnessScores | null,
   gaps: RichnessGap[],
+  context: SetupContext = {},
 ): RichnessGap[] {
   if (!scores) return [];
-  const weakAxes = AXES.filter((axis) => scores[axis] <= 4).sort(
-    (a, b) => scores[a] - scores[b],
+  const ranked = gaps
+    .filter((gap) => (AXES as readonly string[]).includes(gap.axis))
+    .map((gap, index) => ({
+      gap,
+      index,
+      relevance: gapRelevance(gap, context),
+    }));
+
+  const onTopic = ranked.filter((r) => r.relevance > 0);
+  const pool = onTopic.length > 0 ? onTopic : ranked;
+  pool.sort(
+    (a, b) =>
+      b.relevance - a.relevance ||
+      scores[a.gap.axis] - scores[b.gap.axis] ||
+      a.index - b.index,
   );
-  const selected: RichnessGap[] = [];
-  for (const axis of weakAxes) {
-    for (const gap of gaps) {
-      if (gap.axis !== axis) continue;
-      selected.push(gap);
-      if (selected.length >= MAX_SETUP_QUESTIONS) return selected;
-    }
-  }
-  return selected;
+  return pool.slice(0, MAX_SETUP_QUESTIONS).map((r) => r.gap);
 }
 
 /** Question posée au joueur pour une zone floue donnée. */
@@ -51,8 +125,9 @@ export function gapQuestion(gap: RichnessGap): string {
 export function buildSetupQuestions(
   scores: RichnessScores | null,
   gaps: RichnessGap[],
+  context: SetupContext = {},
 ): string[] {
-  return selectSetupGaps(scores, gaps).map(gapQuestion);
+  return selectSetupGaps(scores, gaps, context).map(gapQuestion);
 }
 
 export interface SystemPromptInput {
@@ -102,6 +177,16 @@ export function buildSystemPrompt(input: SystemPromptInput): string {
   const character = input.characterName
     ? `Personnage joueur : ${input.characterName}\nFiche : ${input.characterSheet ?? "{}"}`
     : "Pas de fiche de personnage : improvise une fiche minimale avec le joueur dès la première scène.";
+
+  // Fil rouge : l'intention que l'auteur pose avant d'ouvrir la scène 1. Il
+  // oriente la partie sans devenir un script — le joueur reste libre.
+  const trameBlock = input.trame
+    ? `Fil rouge voulu par l'auteur pour cette session : ${input.trame}
+Traite-le comme l'intention directrice de la partie : oriente les scènes, les
+enjeux et les PNJ vers lui dès la première scène. Ce n'est pas un script — ne
+l'impose jamais de force, ne contredis jamais le canon, et laisse le joueur
+libre de s'en écarter (la partie suit alors le joueur, pas le fil rouge).`
+    : "Trame libre : laisse la partie trouver sa direction avec le joueur.";
 
   const feedbackBlock = input.authorFeedback?.length
     ? `
@@ -159,7 +244,8 @@ Quand la fiction consomme ou rend du Souffle, émets <souffle delta="-1"/>
 (ou "+1") — le serveur tient le compte, ne l'annonce pas toi-même en chiffres.
 Aux ruptures de scène, émets <scene_break/>.
 
-Partie : format ${input.format}, trame ${input.trame ?? "libre"}.
+Partie : format ${input.format}.
+${trameBlock}
 ${character}
 
 == COMPÉTENCES DU PERSONNAGE (mémoire longue) ==

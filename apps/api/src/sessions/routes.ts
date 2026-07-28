@@ -6,7 +6,7 @@ import type { Context } from "hono";
 import type { AppEnv } from "../env";
 import { requireAuth } from "../auth/middleware";
 import { findOwnedBible } from "../bibles/db";
-import { sessionKvKey } from "./do";
+import { loreKvPrefix, normalizeTrame, sessionKvKey } from "./do";
 
 const FORMATS = ["oneshot", "mini", "campaign"] as const;
 const CHARACTER_MODES = ["embody_canon", "embody_quiz", "create"] as const;
@@ -53,12 +53,10 @@ sessions.post("/", async (c) => {
   ) {
     return c.json({ error: "invalid_format" }, 400);
   }
-  const trame =
-    body.trame === undefined || body.trame === null
-      ? null
-      : typeof body.trame === "string" && body.trame.trim() !== ""
-        ? body.trame.trim().slice(0, 200)
-        : null;
+  // Fil rouge : facultatif ici — le joueur peut aussi le poser à la mise en
+  // place, une fois son personnage choisi (POST /:id/setup).
+  const trame = normalizeTrame(body.trame);
+  if (trame === undefined) return c.json({ error: "invalid_trame" }, 400);
   const characterId =
     body.character_id === undefined || body.character_id === null
       ? null
@@ -187,10 +185,67 @@ function proxy(path: string) {
   };
 }
 
+sessions.post("/:id/trame", proxy("/trame"));
 sessions.post("/:id/setup", proxy("/setup"));
 sessions.post("/:id/turn", proxy("/turn"));
 sessions.post("/:id/roll", proxy("/roll"));
 sessions.post("/:id/finish", proxy("/finish"));
+
+// DELETE /api/sessions/:id — efface une session et tout ce qu'elle a laissé :
+// storage du DO (historique, faits, inventions), caches KV, propositions de
+// canon issues d'elle, puis la ligne D1. Le canon déjà accepté, lui, reste —
+// il appartient à la bible. Les compétences déjà versées au personnage aussi.
+sessions.delete("/:id", async (c) => {
+  const row = await loadOwnedSession(
+    c.env.DB,
+    c.req.param("id"),
+    c.get("user").id,
+  );
+  if (!row) return c.json({ error: "not_found" }, 404);
+
+  const stub = c.env.GAME_SESSIONS.get(
+    c.env.GAME_SESSIONS.idFromString(row.id),
+  );
+  // Best-effort : un DO injoignable ne doit pas bloquer la suppression D1,
+  // sinon la session resterait affichée sans moyen de s'en débarrasser.
+  try {
+    await stub.fetch("https://do/destroy", { method: "POST" });
+  } catch (err) {
+    console.error(`[sessions] purge du DO ${row.id} :`, err);
+  }
+
+  // Une lacune répondue par cette session redevient ouverte : sa proposition
+  // en attente disparaît, la question reviendra à la prochaine mise en place.
+  await c.env.DB.batch([
+    c.env.DB.prepare(`DELETE FROM canon_proposals WHERE session_id = ?`).bind(
+      row.id,
+    ),
+    c.env.DB.prepare(`DELETE FROM game_sessions WHERE id = ?`).bind(row.id),
+  ]);
+
+  c.executionCtx.waitUntil(purgeSessionCache(c.env.CACHE, row.id));
+  return c.json({ ok: true });
+});
+
+/** Caches KV d'une session : état public + fiches lore résolues. */
+async function purgeSessionCache(
+  cache: KVNamespace,
+  sessionId: string,
+): Promise<void> {
+  try {
+    await cache.delete(sessionKvKey(sessionId));
+    const prefix = loreKvPrefix(sessionId);
+    let cursor: string | undefined;
+    do {
+      const page = await cache.list({ prefix, cursor });
+      await Promise.all(page.keys.map((k) => cache.delete(k.name)));
+      cursor = page.list_complete ? undefined : page.cursor;
+    } while (cursor);
+  } catch (err) {
+    // Les fiches lore expirent d'elles-mêmes (TTL) : pas de quoi échouer.
+    console.error(`[sessions] purge du cache ${sessionId} :`, err);
+  }
+}
 
 // GET /api/sessions/:id/lore?term=&kind= — fiche d'un terme d'univers (§7).
 // Handler dédié : le proxy générique perdrait la query string.
