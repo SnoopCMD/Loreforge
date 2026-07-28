@@ -47,6 +47,35 @@ describe("normalizeSheetFields", () => {
     expect(factions[0].type).toBe("text");
     expect(fields.some((f) => f.key === "")).toBe(false);
   });
+
+  it("fiche adaptative : conditions gardées, références cassées écartées", () => {
+    const { fields } = normalizeSheetFields([
+      {
+        key: "classe", label: "Classe", type: "select",
+        options: ["Mortel", "Dieu"], suggestions: [], hint: "",
+      },
+      {
+        key: "dieu_patron", label: "Dieu patron", type: "select",
+        options: ["Vhal", "Orin"], suggestions: [], hint: "",
+        hide_if: [{ field: "Classe", values: ["Dieu"] }],
+      },
+      {
+        key: "ecole", label: "École", type: "select",
+        options: ["Brume", "Sel"], suggestions: [], hint: "",
+        show_if: [
+          { field: "voie_inexistante", values: ["Passeur"] }, // réf. cassée
+          { field: "ecole", values: ["Brume"] }, // auto-référence
+          { field: "classe", values: ["Mortel"] },
+        ],
+      },
+    ]);
+    const god = fields.find((f) => f.key === "dieu_patron")!;
+    expect(god.hide_if).toEqual([{ field: "classe", values: ["Dieu"] }]);
+    const school = fields.find((f) => f.key === "ecole")!;
+    expect(school.show_if).toEqual([{ field: "classe", values: ["Mortel"] }]);
+    // Les champs de base restent inconditionnels.
+    expect(fields.find((f) => f.key === "name")!.hide_if).toEqual([]);
+  });
 });
 
 describe("pairsToSheet", () => {

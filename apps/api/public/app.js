@@ -2108,12 +2108,45 @@ async function showForge(bibleId) {
   buildForgeForm(bibleId, fields);
 }
 
+// Fiche adaptative : un champ peut porter show_if (affiché seulement si une
+// condition est vraie) et/ou hide_if (masqué si une condition est vraie).
+// Comparaison insensible à la casse ; hide_if l'emporte. Un champ masqué est
+// ignoré par collectSheet — la fiche reste cohérente (ex. classe « Dieu » →
+// pas de « Dieu patron »).
+function conditionMet(conds, values) {
+  return (conds || []).some((c) => {
+    const v = (values[c.field] || "").trim().toLowerCase();
+    return v !== "" && (c.values || []).some((x) => x.trim().toLowerCase() === v);
+  });
+}
+
+function refreshForgeVisibility() {
+  const form = $("forge-form");
+  const values = {};
+  for (const input of form.querySelectorAll(".forge-input")) {
+    values[input.dataset.key] = input.value;
+  }
+  for (const wrap of form.querySelectorAll(".forge-field")) {
+    const f = wrap._field;
+    if (!f) continue;
+    const showIf = f.show_if || [];
+    const visible =
+      (showIf.length === 0 || conditionMet(showIf, values)) &&
+      !conditionMet(f.hide_if, values);
+    wrap.classList.toggle("hidden", !visible);
+  }
+}
+
 function buildForgeForm(bibleId, fields) {
   const form = $("forge-form");
   form.innerHTML = "";
+  const adaptive = fields.some(
+    (f) => (f.show_if || []).length || (f.hide_if || []).length,
+  );
   for (const f of fields) {
     const label = document.createElement("label");
     label.className = "forge-field";
+    label._field = f;
     const head = document.createElement("div");
     head.className = "row spread";
     const title = document.createElement("p");
@@ -2142,6 +2175,10 @@ function buildForgeForm(bibleId, fields) {
     input.dataset.key = f.key;
     input.className = "forge-input";
     if (f.required) input.required = true;
+    if (adaptive) {
+      input.addEventListener("input", refreshForgeVisibility);
+      input.addEventListener("change", refreshForgeVisibility);
+    }
 
     // Bouton ✨ : l'IA remplit ce champ en cohérence avec le reste.
     const spark = document.createElement("button");
@@ -2167,6 +2204,7 @@ function buildForgeForm(bibleId, fields) {
       } else {
         input.value = value;
       }
+      refreshForgeVisibility();
     });
     head.appendChild(spark);
     label.append(head, input);
@@ -2179,7 +2217,10 @@ function buildForgeForm(bibleId, fields) {
         chip.type = "button";
         chip.className = "chip";
         chip.textContent = s;
-        chip.addEventListener("click", () => { input.value = s; });
+        chip.addEventListener("click", () => {
+          input.value = s;
+          refreshForgeVisibility();
+        });
         chips.appendChild(chip);
       }
       label.appendChild(chips);
@@ -2190,11 +2231,15 @@ function buildForgeForm(bibleId, fields) {
   submit.type = "submit";
   submit.textContent = "Forger";
   form.appendChild(submit);
+  if (adaptive) refreshForgeVisibility();
 }
 
 function collectSheet() {
   const sheet = {};
   for (const input of $("forge-form").querySelectorAll(".forge-input")) {
+    // Champ masqué par la fiche adaptative : sa valeur (éventuellement saisie
+    // avant le masquage) ne rejoint pas la fiche.
+    if (input.closest(".forge-field").classList.contains("hidden")) continue;
     const value = input.value.trim();
     if (value !== "") sheet[input.dataset.key] = value;
   }

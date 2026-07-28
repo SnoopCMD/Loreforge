@@ -135,6 +135,18 @@ select avec les dieux du canon + « Inconnu » ; un monde de factions → champ
 "Allégeance"). "type": "select" seulement si le canon fournit une liste fermée.
 Clés en snake_case, libellés et contenus en français.
 
+Rends la fiche ADAPTATIVE quand la logique du canon l'exige, via "show_if" et
+"hide_if" (sinon laisse-les vides). Chaque condition = { "field": clé d'un
+champ select de la fiche, "values": valeurs qui la déclenchent } ; plusieurs
+conditions = OU logique :
+- "hide_if" masque un champ rendu absurde par une réponse (ex. si le champ
+  "classe" vaut « Dieu », masquer "dieu_patron" — un dieu n'a pas de patron).
+- "show_if" réserve un champ aux réponses qui le justifient (ex. un champ
+  "ecole" listant les écoles n'apparaît que si "voie" vaut « Passeur »).
+N'utilise ces conditions que quand le canon les impose clairement — champs
+peu nombreux et pertinents plutôt qu'exhaustifs. Jamais de condition sur les
+champs de base (name, concept, temperament, ability, weakness, hook).
+
 "playable_characters" : les personnages du canon qu'un joueur pourrait
 incarner (0 à 6 : protagonistes, membres de factions accessibles — pas les
 antagonistes majeurs ni les dieux). Pré-remplis leur fiche depuis le canon en

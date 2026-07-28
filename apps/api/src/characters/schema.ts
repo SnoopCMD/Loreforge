@@ -2,6 +2,13 @@
 // unitairement. Le schéma de fiche est généré par bible à l'analyse ;
 // ici on normalise et valide ce que le modèle produit.
 
+/** Condition de visibilité : vraie si le champ observé vaut l'une des valeurs
+ * (comparaison insensible à la casse, côté client). */
+export interface FieldCondition {
+  field: string;
+  values: string[];
+}
+
 export interface SheetField {
   key: string;
   label: string;
@@ -12,6 +19,10 @@ export interface SheetField {
   /** Suggestions issues du canon (chips, saisie libre possible). */
   suggestions: string[];
   hint: string | null;
+  /** Fiche adaptative : champ affiché SEULEMENT si une condition est vraie. */
+  show_if: FieldCondition[];
+  /** Fiche adaptative : champ masqué si une condition est vraie. */
+  hide_if: FieldCondition[];
 }
 
 export interface SheetSchema {
@@ -28,23 +39,41 @@ export interface PlayableCharacter {
  * suggestions ou en ajouter d'autres, jamais les retirer.
  */
 export const BASE_FIELDS: SheetField[] = [
-  { key: "name", label: "Nom", type: "text", required: true, options: [], suggestions: [], hint: null },
-  { key: "concept", label: "Concept en une phrase", type: "text", required: true, options: [], suggestions: [], hint: null },
-  { key: "temperament", label: "Tempérament", type: "text", required: false, options: [], suggestions: [], hint: null },
-  { key: "ability", label: "Capacité principale", type: "text", required: false, options: [], suggestions: [], hint: null },
-  { key: "weakness", label: "Faiblesse ou coût", type: "text", required: false, options: [], suggestions: [], hint: null },
-  { key: "hook", label: "Accroche narrative", type: "text", required: false, options: [], suggestions: [], hint: "Ce que le personnage veut, fuit ou cache." },
+  { key: "name", label: "Nom", type: "text", required: true, options: [], suggestions: [], hint: null, show_if: [], hide_if: [] },
+  { key: "concept", label: "Concept en une phrase", type: "text", required: true, options: [], suggestions: [], hint: null, show_if: [], hide_if: [] },
+  { key: "temperament", label: "Tempérament", type: "text", required: false, options: [], suggestions: [], hint: null, show_if: [], hide_if: [] },
+  { key: "ability", label: "Capacité principale", type: "text", required: false, options: [], suggestions: [], hint: null, show_if: [], hide_if: [] },
+  { key: "weakness", label: "Faiblesse ou coût", type: "text", required: false, options: [], suggestions: [], hint: null, show_if: [], hide_if: [] },
+  { key: "hook", label: "Accroche narrative", type: "text", required: false, options: [], suggestions: [], hint: "Ce que le personnage veut, fuit ou cache.", show_if: [], hide_if: [] },
 ];
 
 export const MAX_FIELDS = 12;
 const MAX_LIST = 10;
 const MAX_TEXT = 200;
 
+/** Fragment structured-outputs pour une condition de visibilité. */
+const FIELD_CONDITION_OUTPUT_SCHEMA = {
+  type: "object",
+  additionalProperties: false,
+  required: ["field", "values"],
+  properties: {
+    field: {
+      type: "string",
+      description: "Clé (snake_case) du champ select observé",
+    },
+    values: {
+      type: "array",
+      items: { type: "string" },
+      description: "Valeurs de ce champ qui déclenchent la condition",
+    },
+  },
+} as const;
+
 /** Fragment de schéma structured-outputs pour un champ de fiche. */
 export const SHEET_FIELD_OUTPUT_SCHEMA = {
   type: "object",
   additionalProperties: false,
-  required: ["key", "label", "type", "options", "suggestions", "hint"],
+  required: ["key", "label", "type", "options", "suggestions", "hint", "show_if", "hide_if"],
   properties: {
     key: { type: "string", description: "Identifiant snake_case du champ" },
     label: { type: "string", description: "Libellé en français" },
@@ -60,6 +89,18 @@ export const SHEET_FIELD_OUTPUT_SCHEMA = {
       description: "Suggestions tirées du canon (saisie libre possible)",
     },
     hint: { type: "string", description: "Aide courte, ou chaîne vide" },
+    show_if: {
+      type: "array",
+      items: FIELD_CONDITION_OUTPUT_SCHEMA,
+      description:
+        "Fiche adaptative : n'afficher ce champ QUE si une condition est vraie (sinon vide)",
+    },
+    hide_if: {
+      type: "array",
+      items: FIELD_CONDITION_OUTPUT_SCHEMA,
+      description:
+        "Fiche adaptative : masquer ce champ si une condition est vraie (sinon vide)",
+    },
   },
 } as const;
 
@@ -85,6 +126,28 @@ const cleanList = (v: unknown): string[] =>
     ? v.map(cleanText).filter((s) => s !== "").slice(0, MAX_LIST)
     : [];
 
+const cleanKey = (v: unknown): string =>
+  cleanText(v)
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, "_")
+    .replace(/^_+|_+$/g, "");
+
+const MAX_CONDITIONS = 4;
+
+function cleanConditions(raw: unknown): FieldCondition[] {
+  if (!Array.isArray(raw)) return [];
+  const out: FieldCondition[] = [];
+  for (const entry of raw) {
+    if (entry === null || typeof entry !== "object") continue;
+    const obj = entry as Record<string, unknown>;
+    const field = cleanKey(obj.field);
+    const values = cleanList(obj.values);
+    if (field !== "" && values.length > 0) out.push({ field, values });
+    if (out.length >= MAX_CONDITIONS) break;
+  }
+  return out;
+}
+
 /**
  * Normalise les champs proposés par le modèle : clés en snake_case dédupliquées,
  * champs de base toujours présents (fusionnés s'ils sont proposés, pour garder
@@ -96,10 +159,7 @@ export function normalizeSheetFields(raw: unknown): SheetSchema {
     for (const entry of raw) {
       if (entry === null || typeof entry !== "object") continue;
       const obj = entry as Record<string, unknown>;
-      const key = cleanText(obj.key)
-        .toLowerCase()
-        .replace(/[^a-z0-9]+/g, "_")
-        .replace(/^_+|_+$/g, "");
+      const key = cleanKey(obj.key);
       const label = cleanText(obj.label);
       if (key === "" || label === "") continue;
       const options = cleanList(obj.options);
@@ -111,6 +171,8 @@ export function normalizeSheetFields(raw: unknown): SheetSchema {
         options,
         suggestions: cleanList(obj.suggestions),
         hint: cleanText(obj.hint) || null,
+        show_if: cleanConditions(obj.show_if),
+        hide_if: cleanConditions(obj.hide_if),
       });
     }
   }
@@ -132,6 +194,18 @@ export function normalizeSheetFields(raw: unknown): SheetSchema {
     if (seen.has(field.key) || fields.length >= MAX_FIELDS) continue;
     seen.add(field.key);
     fields.push(field);
+  }
+
+  // Les conditions ne peuvent viser qu'un champ existant, différent du champ
+  // conditionné (les référence cassées ou auto-références sont écartées ;
+  // les champs de base restent inconditionnels par construction).
+  for (const field of fields) {
+    field.show_if = field.show_if.filter(
+      (cond) => cond.field !== field.key && seen.has(cond.field),
+    );
+    field.hide_if = field.hide_if.filter(
+      (cond) => cond.field !== field.key && seen.has(cond.field),
+    );
   }
   return { fields };
 }
