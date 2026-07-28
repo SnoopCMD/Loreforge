@@ -617,14 +617,64 @@ const AXIS_ICON = {
 };
 
 const WS = {
-  sections: [],      // sections chargées
+  sections: [],      // sections chargées (liste plate ; l'arbre suit parent_id)
   active: OVERVIEW,  // id de section ou OVERVIEW
   scores: null,      // derniers scores de richesse (badges d'axe)
   global: null,
   saveTimer: null,
   dirtyId: null,     // section en attente d'autosave
   editing: false,    // mode édition (markdown brut) vs lecture (rendu)
+  collapsed: new Set(), // dossiers repliés dans la nav
 };
+
+// ── Aides d'arbre (dossiers / sous-dossiers) ─────────────────────────────
+
+function wsById(id) { return WS.sections.find((s) => s.id === id); }
+
+function wsChildren(parentId) {
+  return WS.sections.filter((s) => (s.parent_id || null) === (parentId || null));
+}
+
+function wsDepth(id) {
+  let d = 0;
+  let cur = wsById(id);
+  while (cur && cur.parent_id && d <= WS.sections.length) {
+    cur = wsById(cur.parent_id);
+    if (cur) d++;
+  }
+  return d;
+}
+
+function wsHeight(id) {
+  const kids = wsChildren(id);
+  return kids.length ? 1 + Math.max(...kids.map((k) => wsHeight(k.id))) : 0;
+}
+
+function wsIsDescendant(ancestorId, id) {
+  let cur = wsById(id);
+  let guard = 0;
+  while (cur && cur.parent_id && guard++ <= WS.sections.length) {
+    if (cur.parent_id === ancestorId) return true;
+    cur = wsById(cur.parent_id);
+  }
+  return false;
+}
+
+/**
+ * Dossier cible pour une création depuis la sélection courante : dossier actif,
+ * sinon dossier de la section active, remonté tant que la profondeur max
+ * (dossier > sous-dossier > section) serait dépassée.
+ */
+function wsFolderForNew(kind) {
+  const active = wsById(WS.active);
+  let base = !active ? null : active.kind === "folder" ? active.id : active.parent_id || null;
+  const maxParentDepth = kind === "folder" ? 0 : 1;
+  while (base && wsDepth(base) > maxParentDepth) {
+    const row = wsById(base);
+    base = row ? row.parent_id || null : null;
+  }
+  return base;
+}
 
 async function loadWorkspace() {
   clearTimeout(WS.saveTimer);
@@ -647,6 +697,7 @@ async function loadWorkspace() {
 }
 
 function sectionIcon(s) {
+  if (s.kind === "folder") return WS.collapsed.has(s.id) ? "▸" : "▾";
   return s.axis ? AXIS_ICON[s.axis] || "✦" : s.is_base ? "✦" : "✎";
 }
 
@@ -671,34 +722,42 @@ function renderWsNav() {
   nav.appendChild(wsNavItem(OVERVIEW, "◎", "Vue d'ensemble", null, true));
   chips.appendChild(wsChip(OVERVIEW, "◎ Vue d'ensemble", null));
 
-  const groups = [
-    ["Sections de base", WS.sections.filter((s) => s.is_base)],
-    ["Personnalisées", WS.sections.filter((s) => !s.is_base)],
-  ];
-  for (const [label, list] of groups) {
-    if (!list.length) continue;
-    const h = document.createElement("div");
-    h.className = "ws-group";
-    h.textContent = label;
-    nav.appendChild(h);
-    for (const s of list) {
-      nav.appendChild(wsNavItem(s.id, sectionIcon(s), s.title, s.axis, false));
-      chips.appendChild(wsChip(s.id, s.title, s.axis));
+  // Arbre : racine puis descendance de chaque dossier (repliable).
+  const emit = (parentId, depth) => {
+    for (const s of wsChildren(parentId)) {
+      const item = wsNavItem(s.id, sectionIcon(s), s.title, s.axis, false);
+      item.style.paddingLeft = 10 + depth * 16 + "px";
+      if (s.kind === "folder") item.classList.add("folder");
+      nav.appendChild(item);
+      if (s.kind !== "folder") chips.appendChild(wsChip(s.id, s.title, s.axis));
+      if (s.kind === "folder" && !WS.collapsed.has(s.id)) emit(s.id, depth + 1);
     }
-  }
+  };
+  emit(null, 0);
 
+  const addRow = document.createElement("div");
+  addRow.className = "ws-add-row";
   const add = document.createElement("button");
   add.type = "button";
   add.className = "ws-add";
-  add.textContent = "+ Ajouter une section";
-  add.addEventListener("click", addWsSection);
-  nav.appendChild(add);
+  add.textContent = "+ Section";
+  add.title = "Ajouter une section";
+  add.addEventListener("click", () => addWsSection("section"));
+  const addFolder = document.createElement("button");
+  addFolder.type = "button";
+  addFolder.className = "ws-add";
+  addFolder.textContent = "+ Dossier";
+  addFolder.title = "Ajouter un dossier";
+  addFolder.addEventListener("click", () => addWsSection("folder"));
+  addRow.appendChild(add);
+  addRow.appendChild(addFolder);
+  nav.appendChild(addRow);
 
   const addChip = document.createElement("button");
   addChip.type = "button";
   addChip.className = "ws-chip add";
   addChip.textContent = "+ Ajouter";
-  addChip.addEventListener("click", addWsSection);
+  addChip.addEventListener("click", () => addWsSection("section"));
   chips.appendChild(addChip);
 
   highlightActive();
@@ -733,6 +792,14 @@ function wsNavItem(id, icon, label, axis, isOverview) {
 
   el.addEventListener("click", (e) => {
     if (e.target.closest(".ws-reorder")) return;
+    // Cliquer le chevron d'un dossier replie/déplie sans changer la sélection.
+    const row = wsById(id);
+    if (row && row.kind === "folder" && e.target.closest(".ws-ico")) {
+      if (WS.collapsed.has(id)) WS.collapsed.delete(id);
+      else WS.collapsed.add(id);
+      renderWsNav();
+      return;
+    }
     selectSection(id);
   });
   el.addEventListener("keydown", (e) => {
@@ -790,13 +857,88 @@ function selectSection(id) {
 
 function renderEditor(section) {
   resetWsDelete();
+  const isFolder = section.kind === "folder";
   $("ws-sec-title").value = section.title;
   $("ws-sec-body").value = section.content_md;
   $("ws-sec-body").scrollTop = 0;
   setSaveState("");
+  renderParentSelect(section);
+  // Un dossier n'a pas de contenu : titre + emplacement + liste des enfants.
+  $("ws-mode-toggle").classList.toggle("hidden", isFolder);
+  $("ws-wordcount").classList.toggle("hidden", isFolder);
+  $("ws-folder-info").classList.toggle("hidden", !isFolder);
+  if (isFolder) {
+    const n = wsChildren(section.id).length;
+    $("ws-folder-info").textContent =
+      "Dossier — " + (n === 0 ? "vide" : n === 1 ? "1 élément" : n + " éléments") +
+      ". Les sections rangées dedans apparaissent en dessous dans la nav.";
+    $("ws-render").classList.add("hidden");
+    $("ws-edit-pane").classList.add("hidden");
+    renderAxisBadge(section);
+    return;
+  }
   updateWordCount();
   renderAxisBadge(section);
   setEditMode(false); // ouvre toujours en lecture (rendu formaté)
+}
+
+/**
+ * Sélecteur d'emplacement : racine + dossiers éligibles (pas soi-même, pas sa
+ * descendance, profondeur max respectée). Déplace via PUT parent_id.
+ */
+function renderParentSelect(section) {
+  const sel = $("ws-sec-parent");
+  sel.innerHTML = "";
+  const root = document.createElement("option");
+  root.value = "";
+  root.textContent = "Racine";
+  sel.appendChild(root);
+
+  const height = wsHeight(section.id);
+  const reserve = section.kind === "folder" ? Math.max(height, 1) : height;
+  const emit = (parentId, depth) => {
+    for (const f of wsChildren(parentId).filter((s) => s.kind === "folder")) {
+      const ok =
+        f.id !== section.id &&
+        !wsIsDescendant(section.id, f.id) &&
+        depth + 1 + reserve <= 2;
+      const opt = document.createElement("option");
+      opt.value = f.id;
+      opt.textContent = " ".repeat(depth * 3) + "📁 " + (f.title || "Sans titre");
+      opt.disabled = !ok;
+      sel.appendChild(opt);
+      emit(f.id, depth + 1);
+    }
+  };
+  emit(null, 0);
+  sel.value = section.parent_id || "";
+  sel.dataset.id = section.id;
+}
+
+async function onParentChange() {
+  const sel = $("ws-sec-parent");
+  const section = wsById(sel.dataset.id);
+  if (!section) return;
+  const parentId = sel.value || null;
+  if ((section.parent_id || null) === parentId) return;
+  flushWsSave();
+  setSaveState("saving");
+  const res = await api("/bibles/" + currentBible.id + "/sections/" + section.id, {
+    method: "PUT",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({ parent_id: parentId }),
+  });
+  if (!res.ok) {
+    setSaveState("error");
+    sel.value = section.parent_id || "";
+    return;
+  }
+  const updated = await res.json();
+  section.parent_id = updated.parent_id;
+  section.updated_at = updated.updated_at;
+  if (parentId) WS.collapsed.delete(parentId); // montre la section déplacée
+  setSaveState("saved");
+  renderWsNav();
 }
 
 /** Rend le markdown de la section active en HTML lisible (mode lecture). */
@@ -888,7 +1030,12 @@ async function saveWsSection(id) {
   const res = await api("/bibles/" + currentBible.id + "/sections/" + id, {
     method: "PUT",
     headers: { "content-type": "application/json" },
-    body: JSON.stringify({ title: section.title, content_md: section.content_md }),
+    // Un dossier n'a pas de contenu (le serveur refuserait content_md).
+    body: JSON.stringify(
+      section.kind === "folder"
+        ? { title: section.title }
+        : { title: section.title, content_md: section.content_md },
+    ),
   });
   if (!res.ok) { setSaveState("error"); return; }
   const updated = await res.json();
@@ -903,16 +1050,19 @@ async function saveWsSection(id) {
   if (WS.active === id) setSaveState("saved");
 }
 
-async function addWsSection() {
+// Crée une section ou un dossier, dans le dossier de la sélection courante.
+async function addWsSection(kind) {
   flushWsSave();
+  const parentId = wsFolderForNew(kind);
   const res = await api("/bibles/" + currentBible.id + "/sections", {
     method: "POST",
     headers: { "content-type": "application/json" },
-    body: JSON.stringify({}),
+    body: JSON.stringify({ kind: kind || "section", parent_id: parentId }),
   });
   if (!res.ok) { setSaveState("error"); return; }
   const section = await res.json();
   WS.sections.push(section);
+  if (parentId) WS.collapsed.delete(parentId);
   renderWsNav();
   selectSection(section.id);
   const title = $("ws-sec-title");
@@ -946,12 +1096,12 @@ $("ws-sec-del").addEventListener("click", async () => {
   selectSection(OVERVIEW);
 });
 
-// Réordonnancement DANS le même groupe (base / personnalisées) : le serveur
-// reçoit l'ordre complet aplati.
+// Réordonnancement entre FRÈRES (même dossier parent) : le serveur reçoit
+// l'ordre complet aplati, l'arbre se reconstruit dessus.
 function moveWsSection(id, delta) {
   const s = WS.sections.find((x) => x.id === id);
   if (!s) return;
-  const group = WS.sections.filter((x) => x.is_base === s.is_base);
+  const group = wsChildren(s.parent_id || null);
   const gi = group.findIndex((x) => x.id === id);
   const target = group[gi + delta];
   if (!target) return;
@@ -979,6 +1129,7 @@ async function persistWsOrder() {
 
 // Écouteurs d'édition (les éléments sont statiques dans index.html).
 $("ws-sec-title").addEventListener("input", onEditorInput);
+$("ws-sec-parent").addEventListener("change", onParentChange);
 $("ws-sec-body").addEventListener("input", () => { updateWordCount(); onEditorInput(); });
 // Bascule lecture ⇄ édition ; cliquer le rendu ouvre l'édition.
 $("ws-mode-toggle").addEventListener("click", () => setEditMode(!WS.editing));

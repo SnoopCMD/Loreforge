@@ -256,7 +256,12 @@
           <div class="ws-ed-meta">
             <span id="ws-axis-badge" class="axis-badge hidden"></span>
             <span id="ws-wordcount" class="mono msg"></span>
+            <label class="ws-parent-label" for="ws-sec-parent">Emplacement
+              <select id="ws-sec-parent" aria-label="Dossier de la section"></select>
+            </label>
           </div>
+          <!-- Vue dossier : pas de contenu, juste l'info. -->
+          <p id="ws-folder-info" class="msg ws-folder-info hidden"></p>
           <!-- Mode lecture : rendu formaté, cliquer pour éditer. -->
           <div id="ws-render" class="ws-render" role="button" tabindex="0" aria-label="Contenu de la section — cliquez pour éditer"></div>
           <!-- Mode édition : markdown brut. -->

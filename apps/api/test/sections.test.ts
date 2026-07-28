@@ -242,3 +242,118 @@ describe("édition par sections", () => {
     expect((await req(bob, `/api/bibles/${bibleId}/sections`)).status).toBe(404);
   });
 });
+
+// ── Dossiers / sous-dossiers ────────────────────────────────────────────────
+
+interface TreeSection extends Section {
+  parent_id: string | null;
+  kind: "section" | "folder";
+}
+
+describe("renderCanon (arbre)", () => {
+  it("profondeur → niveau de titre ; dossier sans corps", () => {
+    const canon = renderCanon("Monde", [
+      { id: "f", parent_id: null, kind: "folder", title: "Peuples", content_md: "" },
+      { id: "a", parent_id: "f", kind: "section", title: "Elfes", content_md: "Vieux." },
+      { id: "g", parent_id: "f", kind: "folder", title: "Nains", content_md: "" },
+      { id: "b", parent_id: "g", kind: "section", title: "Clans", content_md: "Douze." },
+      { id: "c", parent_id: null, kind: "section", title: "Racine", content_md: "Plate." },
+    ]);
+    expect(canon).toBe(
+      "# Monde\n\n## Peuples\n\n### Elfes\n\nVieux.\n\n### Nains\n\n#### Clans\n\nDouze.\n\n## Racine\n\nPlate.\n",
+    );
+  });
+
+  it("parent inconnu → rattaché à la racine (rien n'est perdu)", () => {
+    const canon = renderCanon("Monde", [
+      { id: "a", parent_id: "fantome", kind: "section", title: "Orphelin", content_md: "Là." },
+    ]);
+    expect(canon).toContain("## Orphelin");
+  });
+});
+
+describe("dossiers de sections", () => {
+  it("crée, imbrique, limite la profondeur, refuse les cycles, supprime sans perdre", async () => {
+    const cookie = await login("folders@example.com");
+    const bibleId = await createBible(cookie);
+    await req(cookie, `/api/bibles/${bibleId}/sections`); // init
+
+    // Dossier racine puis sous-dossier.
+    const folder = (await (
+      await req(cookie, `/api/bibles/${bibleId}/sections`, "POST", { kind: "folder", title: "Peuples" })
+    ).json()) as TreeSection;
+    expect(folder.kind).toBe("folder");
+    expect(folder.parent_id).toBeNull();
+
+    const sub = (await (
+      await req(cookie, `/api/bibles/${bibleId}/sections`, "POST", {
+        kind: "folder", title: "Nains", parent_id: folder.id,
+      })
+    ).json()) as TreeSection;
+    expect(sub.parent_id).toBe(folder.id);
+
+    // Un dossier dans un sous-dossier dépasserait la profondeur max.
+    const tooDeep = await req(cookie, `/api/bibles/${bibleId}/sections`, "POST", {
+      kind: "folder", title: "Trop profond", parent_id: sub.id,
+    });
+    expect(tooDeep.status).toBe(400);
+    expect(((await tooDeep.json()) as { error: string }).error).toBe("too_deep");
+
+    // Une section, elle, entre dans le sous-dossier.
+    const leaf = (await (
+      await req(cookie, `/api/bibles/${bibleId}/sections`, "POST", {
+        title: "Clans", parent_id: sub.id,
+      })
+    ).json()) as TreeSection;
+    expect(leaf.parent_id).toBe(sub.id);
+
+    // Le parent doit être un dossier, pas une section.
+    const notFolder = await req(cookie, `/api/bibles/${bibleId}/sections`, "POST", {
+      title: "X", parent_id: leaf.id,
+    });
+    expect(notFolder.status).toBe(400);
+
+    // Déplacement : une section de base rejoint le dossier racine.
+    const { sections } = (await (
+      await req(cookie, `/api/bibles/${bibleId}/sections`)
+    ).json()) as { sections: TreeSection[] };
+    const chars = sections.find((s) => s.axis === "characters")!;
+    const moved = await req(cookie, `/api/bibles/${bibleId}/sections/${chars.id}`, "PUT", {
+      parent_id: folder.id,
+    });
+    expect(moved.status).toBe(200);
+    expect(((await moved.json()) as TreeSection).parent_id).toBe(folder.id);
+
+    // Cycle refusé : le dossier ne peut pas entrer dans sa descendance.
+    const cycle = await req(cookie, `/api/bibles/${bibleId}/sections/${folder.id}`, "PUT", {
+      parent_id: sub.id,
+    });
+    expect(cycle.status).toBe(400);
+
+    // Pas de contenu sur un dossier.
+    const content = await req(cookie, `/api/bibles/${bibleId}/sections/${folder.id}`, "PUT", {
+      content_md: "interdit",
+    });
+    expect(content.status).toBe(400);
+
+    // Le canon dérivé reflète la hiérarchie (### sous le dossier).
+    await req(cookie, `/api/bibles/${bibleId}/sections/${leaf.id}`, "PUT", {
+      content_md: "Douze clans sous la montagne.",
+    });
+    const bible = (await (await req(cookie, `/api/bibles/${bibleId}`)).json()) as {
+      canon_md: string;
+    };
+    expect(bible.canon_md).toContain("## Peuples");
+    expect(bible.canon_md).toContain("### Nains");
+    expect(bible.canon_md).toContain("#### Clans");
+
+    // Suppression du sous-dossier : ses enfants remontent d'un cran.
+    const del = await req(cookie, `/api/bibles/${bibleId}/sections/${sub.id}`, "DELETE");
+    expect(del.status).toBe(200);
+    const after = (await (
+      await req(cookie, `/api/bibles/${bibleId}/sections`)
+    ).json()) as { sections: TreeSection[] };
+    expect(after.sections.find((s) => s.id === sub.id)).toBeUndefined();
+    expect(after.sections.find((s) => s.id === leaf.id)?.parent_id).toBe(folder.id);
+  });
+});

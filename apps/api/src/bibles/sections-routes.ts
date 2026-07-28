@@ -13,9 +13,13 @@ import { reindexBible } from "../rag/store";
 import { classifySections, ensureSections } from "./classify";
 import {
   insertSections,
+  isDescendantOf,
   listSections,
+  MAX_SECTION_DEPTH,
   regenerateCanon,
   renderCanon,
+  sectionDepth,
+  subtreeHeight,
   toPublicSection,
   type SectionRow,
 } from "./sections";
@@ -83,23 +87,61 @@ bibleSections.post("/:id/sections/redistribute", async (c) => {
   return c.json({ sections: rows.map(toPublicSection) });
 });
 
-// POST /:id/sections — ajoute une section personnalisée en fin de liste.
+/**
+ * Valide un rattachement à `parentId` : le parent doit être un dossier de la
+ * bible et la profondeur résultante rester dans la limite (un dossier doit
+ * garder de la place pour sa descendance, actuelle ou future). Renvoie un code
+ * d'erreur ou null si le rattachement est valide.
+ */
+function checkParent(
+  rows: SectionRow[],
+  parentId: string,
+  kind: string,
+  height: number,
+): "invalid_parent" | "too_deep" | null {
+  const parent = rows.find((r) => r.id === parentId);
+  if (!parent || parent.kind !== "folder") return "invalid_parent";
+  const depth = sectionDepth(rows, parentId) + 1;
+  const reserve = kind === "folder" ? Math.max(height, 1) : height;
+  if (depth + reserve > MAX_SECTION_DEPTH) return "too_deep";
+  return null;
+}
+
+// POST /:id/sections — ajoute une section (ou un dossier : kind "folder") en
+// fin de liste, à la racine ou dans le dossier `parent_id`.
 bibleSections.post("/:id/sections", async (c) => {
   const bible = await owned(c);
   if (!bible) return c.json({ error: "not_found" }, 404);
 
-  let body: { title?: unknown };
+  let body: { title?: unknown; kind?: unknown; parent_id?: unknown };
   try {
     body = await c.req.json();
   } catch {
     body = {};
   }
+  const kind = body.kind === undefined ? "section" : body.kind;
+  if (kind !== "section" && kind !== "folder") {
+    return c.json({ error: "invalid_kind" }, 400);
+  }
   const title =
     typeof body.title === "string" && body.title.trim() !== ""
       ? body.title.trim().slice(0, MAX_SECTION_TITLE)
-      : "Nouvelle section";
+      : kind === "folder"
+        ? "Nouveau dossier"
+        : "Nouvelle section";
 
   const existing = await listSections(c.env.DB, bible.id);
+
+  let parentId: string | null = null;
+  if (body.parent_id !== undefined && body.parent_id !== null) {
+    if (typeof body.parent_id !== "string") {
+      return c.json({ error: "invalid_parent" }, 400);
+    }
+    const err = checkParent(existing, body.parent_id, kind, 0);
+    if (err) return c.json({ error: err }, 400);
+    parentId = body.parent_id;
+  }
+
   const nextOrder = existing.length
     ? Math.max(...existing.map((s) => s.sort_order)) + 1
     : 0;
@@ -107,10 +149,10 @@ bibleSections.post("/:id/sections", async (c) => {
   const now = Date.now();
   await c.env.DB.prepare(
     `INSERT INTO bible_sections
-       (id, bible_id, title, content_md, is_base, axis, sort_order, updated_at)
-     VALUES (?, ?, ?, '', 0, NULL, ?, ?)`,
+       (id, bible_id, title, content_md, is_base, axis, sort_order, updated_at, parent_id, kind)
+     VALUES (?, ?, ?, '', 0, NULL, ?, ?, ?, ?)`,
   )
-    .bind(id, bible.id, title, nextOrder, now)
+    .bind(id, bible.id, title, nextOrder, now, parentId, kind)
     .run();
   await syncCanon(c, bible.id, bible.title);
 
@@ -122,17 +164,24 @@ bibleSections.post("/:id/sections", async (c) => {
   return c.json(toPublicSection(row!), 201);
 });
 
-// PUT /:id/sections/:sid — { title?, content_md? } (autosave, updates partiels).
+// PUT /:id/sections/:sid — { title?, content_md?, parent_id? } (autosave,
+// updates partiels ; parent_id déplace la section/le dossier dans l'arbre,
+// null = retour à la racine).
 bibleSections.put("/:id/sections/:sid", async (c) => {
   const bible = await owned(c);
   if (!bible) return c.json({ error: "not_found" }, 404);
 
-  let body: { title?: unknown; content_md?: unknown };
+  let body: { title?: unknown; content_md?: unknown; parent_id?: unknown };
   try {
     body = await c.req.json();
   } catch {
     return c.json({ error: "invalid_json" }, 400);
   }
+
+  const sid = c.req.param("sid");
+  const rows = await listSections(c.env.DB, bible.id);
+  const target = rows.find((r) => r.id === sid);
+  if (!target) return c.json({ error: "section_not_found" }, 404);
 
   const sets: string[] = [];
   const values: unknown[] = [];
@@ -144,7 +193,8 @@ bibleSections.put("/:id/sections/:sid", async (c) => {
     values.push(body.title.trim().slice(0, MAX_SECTION_TITLE));
   }
   if (body.content_md !== undefined) {
-    if (typeof body.content_md !== "string") {
+    // Un dossier n'a pas de contenu propre (seul son titre structure le canon).
+    if (typeof body.content_md !== "string" || target.kind === "folder") {
       return c.json({ error: "invalid_content" }, 400);
     }
     if (body.content_md.length > MAX_IMPORT_BYTES) {
@@ -153,16 +203,36 @@ bibleSections.put("/:id/sections/:sid", async (c) => {
     sets.push("content_md = ?");
     values.push(body.content_md);
   }
+  if (body.parent_id !== undefined) {
+    if (body.parent_id === null) {
+      sets.push("parent_id = NULL");
+    } else {
+      if (typeof body.parent_id !== "string" || body.parent_id === sid) {
+        return c.json({ error: "invalid_parent" }, 400);
+      }
+      // Pas de cycle : on ne déplace pas un dossier dans sa propre descendance.
+      if (isDescendantOf(rows, sid, body.parent_id)) {
+        return c.json({ error: "invalid_parent" }, 400);
+      }
+      const err = checkParent(
+        rows,
+        body.parent_id,
+        target.kind,
+        subtreeHeight(rows, sid),
+      );
+      if (err) return c.json({ error: err }, 400);
+      sets.push("parent_id = ?");
+      values.push(body.parent_id);
+    }
+  }
   if (sets.length === 0) return c.json({ error: "empty_patch" }, 400);
 
-  const sid = c.req.param("sid");
-  const res = await c.env.DB.prepare(
+  await c.env.DB.prepare(
     `UPDATE bible_sections SET ${sets.join(", ")}, updated_at = ?
      WHERE id = ? AND bible_id = ?`,
   )
     .bind(...values, Date.now(), sid, bible.id)
     .run();
-  if (!res.meta.changes) return c.json({ error: "section_not_found" }, 404);
   await syncCanon(c, bible.id, bible.title);
 
   const row = await c.env.DB.prepare(
@@ -173,16 +243,32 @@ bibleSections.put("/:id/sections/:sid", async (c) => {
   return c.json(toPublicSection(row!));
 });
 
-// DELETE /:id/sections/:sid — retire une section (base comprise).
+// DELETE /:id/sections/:sid — retire une section ou un dossier (base
+// comprise). Les enfants d'un dossier supprimé remontent d'un cran (rattachés
+// à son parent) : la suppression d'un dossier ne perd jamais de contenu.
 bibleSections.delete("/:id/sections/:sid", async (c) => {
   const bible = await owned(c);
   if (!bible) return c.json({ error: "not_found" }, 404);
 
-  const res = await c.env.DB.prepare(
-    `DELETE FROM bible_sections WHERE id = ? AND bible_id = ?`,
+  const sid = c.req.param("sid");
+  const row = await c.env.DB.prepare(
+    `SELECT * FROM bible_sections WHERE id = ? AND bible_id = ?`,
   )
-    .bind(c.req.param("sid"), bible.id)
-    .run();
+    .bind(sid, bible.id)
+    .first<SectionRow>();
+  if (!row) return c.json({ error: "section_not_found" }, 404);
+
+  const [, res] = await c.env.DB.batch([
+    c.env.DB
+      .prepare(
+        `UPDATE bible_sections SET parent_id = ?, updated_at = ?
+         WHERE parent_id = ? AND bible_id = ?`,
+      )
+      .bind(row.parent_id, Date.now(), sid, bible.id),
+    c.env.DB
+      .prepare(`DELETE FROM bible_sections WHERE id = ? AND bible_id = ?`)
+      .bind(sid, bible.id),
+  ]);
   if (!res.meta.changes) return c.json({ error: "section_not_found" }, 404);
   await syncCanon(c, bible.id, bible.title);
   return c.json({ ok: true });

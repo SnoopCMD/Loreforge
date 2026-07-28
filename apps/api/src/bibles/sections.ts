@@ -18,6 +18,8 @@ export interface SectionRow {
   axis: string | null;
   sort_order: number;
   updated_at: number;
+  parent_id: string | null; // dossier parent (NULL = racine)
+  kind: string; // 'section' | 'folder'
 }
 
 /** Section exposée au client. */
@@ -29,7 +31,16 @@ export interface PublicSection {
   axis: Axis | null;
   sort_order: number;
   updated_at: number;
+  parent_id: string | null;
+  kind: "section" | "folder";
 }
+
+/**
+ * Profondeur maximale d'un nœud (0 = racine) : dossier (0) > sous-dossier (1)
+ * > section (2). Un dossier doit pouvoir contenir au moins un niveau, donc il
+ * ne peut vivre qu'aux profondeurs 0 et 1.
+ */
+export const MAX_SECTION_DEPTH = 2;
 
 /** Gabarit d'une section de base (dupliqué, vide, à la création de chaque bible). */
 export interface BaseSectionTemplate {
@@ -63,26 +74,88 @@ export function toPublicSection(row: SectionRow): PublicSection {
     axis: (row.axis as Axis | null) ?? null,
     sort_order: row.sort_order,
     updated_at: row.updated_at,
+    parent_id: row.parent_id ?? null,
+    kind: row.kind === "folder" ? "folder" : "section",
   };
 }
 
+/** Nœud minimal pour le rendu du canon (id/parent_id/kind optionnels : une
+ * liste plate sans hiérarchie rend comme avant, tout en H2). */
+export type CanonNode = Pick<SectionRow, "title" | "content_md"> &
+  Partial<Pick<SectionRow, "id" | "parent_id" | "kind">>;
+
 /**
  * Régénère le canon_md à partir des sections ordonnées : un H1 (titre de la
- * bible) puis un H2 par section non vide. Les sections vides ne produisent
- * qu'un en-tête léger (rien à indexer, mais la structure reste visible dans le
- * markdown). Inverse conceptuel de parseCanonSections côté client.
+ * bible) puis un titre par section, dont le niveau suit la profondeur dans
+ * l'arbre (racine → H2, enfant de dossier → H3, etc., plafonné à H6). Les
+ * dossiers ne produisent qu'un titre ; les sections vides un en-tête léger
+ * (rien à indexer, mais la structure reste visible dans le markdown).
+ * L'ordre relatif des sections (sort_order global) est préservé au sein de
+ * chaque niveau. Inverse conceptuel de parseCanonSections côté client.
  */
-export function renderCanon(
-  bibleTitle: string,
-  sections: Array<Pick<SectionRow, "title" | "content_md">>,
-): string {
-  const parts = [`# ${bibleTitle.trim() || "Bible sans titre"}`];
+export function renderCanon(bibleTitle: string, sections: CanonNode[]): string {
+  const ids = new Set(
+    sections.map((s) => s.id).filter((id): id is string => !!id),
+  );
+  const byParent = new Map<string | null, CanonNode[]>();
   for (const s of sections) {
-    const title = s.title.trim() || "Sans titre";
-    const body = s.content_md.trim();
-    parts.push(body === "" ? `## ${title}` : `## ${title}\n\n${body}`);
+    // Parent inconnu (orphelin) → rattaché à la racine, rien n'est perdu.
+    const parent = s.parent_id && ids.has(s.parent_id) ? s.parent_id : null;
+    const list = byParent.get(parent);
+    if (list) list.push(s);
+    else byParent.set(parent, [s]);
   }
+
+  const parts = [`# ${bibleTitle.trim() || "Bible sans titre"}`];
+  const emit = (nodes: CanonNode[], depth: number): void => {
+    for (const s of nodes) {
+      const hashes = "#".repeat(Math.min(2 + depth, 6));
+      const title = s.title.trim() || "Sans titre";
+      const body = s.kind === "folder" ? "" : s.content_md.trim();
+      parts.push(body === "" ? `${hashes} ${title}` : `${hashes} ${title}\n\n${body}`);
+      const kids = s.id ? byParent.get(s.id) : undefined;
+      if (kids) emit(kids, depth + 1);
+    }
+  };
+  emit(byParent.get(null) ?? [], 0);
   return parts.join("\n\n") + "\n";
+}
+
+// ── Aides d'arbre (validations des routes) ─────────────────────────────────
+
+/** Profondeur d'un nœud (0 = racine). Robuste aux chaînes cassées/cycles. */
+export function sectionDepth(rows: SectionRow[], id: string): number {
+  const byId = new Map(rows.map((r) => [r.id, r]));
+  let depth = 0;
+  let cur = byId.get(id);
+  while (cur?.parent_id && depth <= rows.length) {
+    cur = byId.get(cur.parent_id);
+    if (cur) depth++;
+  }
+  return depth;
+}
+
+/** Hauteur du sous-arbre sous un nœud (0 = aucune descendance). */
+export function subtreeHeight(rows: SectionRow[], id: string): number {
+  const kids = rows.filter((r) => r.parent_id === id);
+  if (kids.length === 0) return 0;
+  return 1 + Math.max(...kids.map((k) => subtreeHeight(rows, k.id)));
+}
+
+/** Vrai si `id` descend de `ancestorId` (déplacement → détection de cycle). */
+export function isDescendantOf(
+  rows: SectionRow[],
+  ancestorId: string,
+  id: string,
+): boolean {
+  const byId = new Map(rows.map((r) => [r.id, r]));
+  let cur = byId.get(id);
+  let guard = 0;
+  while (cur?.parent_id && guard++ <= rows.length) {
+    if (cur.parent_id === ancestorId) return true;
+    cur = byId.get(cur.parent_id);
+  }
+  return false;
 }
 
 // ── Accès D1 ───────────────────────────────────────────────────────────────
