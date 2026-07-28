@@ -732,7 +732,7 @@ function renderWsNav() {
       item.style.paddingLeft = 10 + depth * 16 + "px";
       if (s.kind === "folder") item.classList.add("folder");
       nav.appendChild(item);
-      if (s.kind !== "folder") chips.appendChild(wsChip(s.id, s.title, s.axis));
+      chips.appendChild(wsChip(s.id, s.title, s.axis));
       if (!WS.collapsed.has(s.id)) emit(s.id, depth + 1);
     }
   };
@@ -866,19 +866,14 @@ function renderEditor(section) {
   $("ws-sec-body").scrollTop = 0;
   setSaveState("");
   renderParentSelect(section);
-  // Un dossier n'a pas de contenu : titre + emplacement + liste des enfants.
-  $("ws-mode-toggle").classList.toggle("hidden", isFolder);
-  $("ws-wordcount").classList.toggle("hidden", isFolder);
+  // Un dossier s'édite comme une section (il a son propre texte) ; seule une
+  // ligne d'info rappelle ce qu'il contient.
   $("ws-folder-info").classList.toggle("hidden", !isFolder);
   if (isFolder) {
     const n = wsChildren(section.id).length;
     $("ws-folder-info").textContent =
-      "Dossier — " + (n === 0 ? "vide" : n === 1 ? "1 élément" : n + " éléments") +
-      ". Les sections rangées dedans apparaissent en dessous dans la nav.";
-    $("ws-render").classList.add("hidden");
-    $("ws-edit-pane").classList.add("hidden");
-    renderAxisBadge(section);
-    return;
+      "Dossier — " + (n === 0 ? "vide" : n === 1 ? "1 élément rangé dedans" : n + " éléments rangés dedans") +
+      " (visibles en dessous dans la nav).";
   }
   updateWordCount();
   renderAxisBadge(section);
@@ -1037,12 +1032,7 @@ async function saveWsSection(id) {
   const res = await api("/bibles/" + currentBible.id + "/sections/" + id, {
     method: "PUT",
     headers: { "content-type": "application/json" },
-    // Un dossier n'a pas de contenu (le serveur refuserait content_md).
-    body: JSON.stringify(
-      section.kind === "folder"
-        ? { title: section.title }
-        : { title: section.title, content_md: section.content_md },
-    ),
+    body: JSON.stringify({ title: section.title, content_md: section.content_md }),
   });
   if (!res.ok) { setSaveState("error"); return; }
   const updated = await res.json();
@@ -1190,6 +1180,14 @@ function resetRedist() {
 }
 $("redistribute-btn").addEventListener("click", async () => {
   if (redistBusy) return;
+  // Une bible organisée en dossiers ne doit pas être aplatie : la répartition
+  // remplace tout le découpage (le serveur refuse aussi, code has_folders).
+  if (WS.sections.some((s) => s.kind === "folder" || s.parent_id)) {
+    $("redistribute-msg").textContent =
+      "Bible organisée en dossiers — répartition IA désactivée (elle aplatirait toute la structure).";
+    $("redistribute-msg").className = "msg error";
+    return;
+  }
   const btn = $("redistribute-btn");
   if (!redistArmed) {
     redistArmed = true;

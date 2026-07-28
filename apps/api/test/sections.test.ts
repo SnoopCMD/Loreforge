@@ -251,16 +251,16 @@ interface TreeSection extends Section {
 }
 
 describe("renderCanon (arbre)", () => {
-  it("profondeur → niveau de titre ; dossier sans corps", () => {
+  it("profondeur → niveau de titre ; les dossiers ont un corps propre", () => {
     const canon = renderCanon("Monde", [
-      { id: "f", parent_id: null, kind: "folder", title: "Peuples", content_md: "" },
+      { id: "f", parent_id: null, kind: "folder", title: "Peuples", content_md: "Deux peuples." },
       { id: "a", parent_id: "f", kind: "section", title: "Elfes", content_md: "Vieux." },
       { id: "g", parent_id: "f", kind: "folder", title: "Nains", content_md: "" },
       { id: "b", parent_id: "g", kind: "section", title: "Clans", content_md: "Douze." },
       { id: "c", parent_id: null, kind: "section", title: "Racine", content_md: "Plate." },
     ]);
     expect(canon).toBe(
-      "# Monde\n\n## Peuples\n\n### Elfes\n\nVieux.\n\n### Nains\n\n#### Clans\n\nDouze.\n\n## Racine\n\nPlate.\n",
+      "# Monde\n\n## Peuples\n\nDeux peuples.\n\n### Elfes\n\nVieux.\n\n### Nains\n\n#### Clans\n\nDouze.\n\n## Racine\n\nPlate.\n",
     );
   });
 
@@ -346,11 +346,16 @@ describe("dossiers de sections", () => {
     });
     expect(cycle.status).toBe(400);
 
-    // Pas de contenu sur un dossier.
+    // Un dossier a son propre texte, rendu dans le canon sous son titre.
     const content = await req(cookie, `/api/bibles/${bibleId}/sections/${folder.id}`, "PUT", {
-      content_md: "interdit",
+      content_md: "Les peuples se partagent le continent.",
     });
-    expect(content.status).toBe(400);
+    expect(content.status).toBe(200);
+
+    // La répartition IA est refusée : elle aplatirait les dossiers.
+    const redist = await req(cookie, `/api/bibles/${bibleId}/sections/redistribute`, "POST");
+    expect(redist.status).toBe(409);
+    expect(((await redist.json()) as { error: string }).error).toBe("has_folders");
 
     // Le canon dérivé reflète la hiérarchie (### sous le dossier).
     await req(cookie, `/api/bibles/${bibleId}/sections/${leaf.id}`, "PUT", {
@@ -360,6 +365,7 @@ describe("dossiers de sections", () => {
       canon_md: string;
     };
     expect(bible.canon_md).toContain("## Peuples");
+    expect(bible.canon_md).toContain("Les peuples se partagent le continent.");
     expect(bible.canon_md).toContain("### Nains");
     expect(bible.canon_md).toContain("#### Clans");
 

@@ -77,6 +77,12 @@ bibleSections.post("/:id/sections/redistribute", async (c) => {
   if (!bible) return c.json({ error: "not_found" }, 404);
 
   const current = await listSections(c.env.DB, bible.id);
+  // Garde-fou : la répartition remplace tout le découpage par une liste plate
+  // de sections de base. Une bible organisée en dossiers/sous-niveaux perdrait
+  // silencieusement toute sa structure — on refuse.
+  if (current.some((s) => s.kind === "folder" || s.parent_id !== null)) {
+    return c.json({ error: "has_folders" }, 409);
+  }
   const classified = await classifySections(c.env.ANTHROPIC_API_KEY, current);
   await c.env.DB.prepare(`DELETE FROM bible_sections WHERE bible_id = ?`)
     .bind(bible.id)
@@ -194,8 +200,7 @@ bibleSections.put("/:id/sections/:sid", async (c) => {
     values.push(body.title.trim().slice(0, MAX_SECTION_TITLE));
   }
   if (body.content_md !== undefined) {
-    // Un dossier n'a pas de contenu propre (seul son titre structure le canon).
-    if (typeof body.content_md !== "string" || target.kind === "folder") {
+    if (typeof body.content_md !== "string") {
       return c.json({ error: "invalid_content" }, 400);
     }
     if (body.content_md.length > MAX_IMPORT_BYTES) {

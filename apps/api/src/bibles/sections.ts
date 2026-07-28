@@ -87,10 +87,10 @@ export type CanonNode = Pick<SectionRow, "title" | "content_md"> &
 
 /**
  * Régénère le canon_md à partir des sections ordonnées : un H1 (titre de la
- * bible) puis un titre par section, dont le niveau suit la profondeur dans
- * l'arbre (racine → H2, enfant de dossier → H3, etc., plafonné à H6). Les
- * dossiers ne produisent qu'un titre ; les sections vides un en-tête léger
- * (rien à indexer, mais la structure reste visible dans le markdown).
+ * bible) puis un titre par nœud, dont le niveau suit la profondeur dans
+ * l'arbre (racine → H2, enfant → H3, etc., plafonné à H6). Les dossiers ont un
+ * corps propre comme les sections ; les nœuds vides ne produisent qu'un
+ * en-tête léger (rien à indexer, mais la structure reste visible).
  * L'ordre relatif des sections (sort_order global) est préservé au sein de
  * chaque niveau. Inverse conceptuel de parseCanonSections côté client.
  */
@@ -112,7 +112,7 @@ export function renderCanon(bibleTitle: string, sections: CanonNode[]): string {
     for (const s of nodes) {
       const hashes = "#".repeat(Math.min(2 + depth, 6));
       const title = s.title.trim() || "Sans titre";
-      const body = s.kind === "folder" ? "" : s.content_md.trim();
+      const body = s.content_md.trim();
       parts.push(body === "" ? `${hashes} ${title}` : `${hashes} ${title}\n\n${body}`);
       const kids = s.id ? byParent.get(s.id) : undefined;
       if (kids) emit(kids, depth + 1);
