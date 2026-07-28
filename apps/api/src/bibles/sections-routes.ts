@@ -88,10 +88,11 @@ bibleSections.post("/:id/sections/redistribute", async (c) => {
 });
 
 /**
- * Valide un rattachement à `parentId` : le parent doit être un dossier de la
- * bible et la profondeur résultante rester dans la limite (un dossier doit
- * garder de la place pour sa descendance, actuelle ou future). Renvoie un code
- * d'erreur ou null si le rattachement est valide.
+ * Valide un rattachement à `parentId` : le parent peut être un dossier OU une
+ * section de la bible (ex. sous-dossiers de trames dans « Trames & conflits »),
+ * et la profondeur résultante doit rester dans la limite (un dossier garde de
+ * la place pour sa descendance, actuelle ou future). Renvoie un code d'erreur
+ * ou null si le rattachement est valide.
  */
 function checkParent(
   rows: SectionRow[],
@@ -100,7 +101,7 @@ function checkParent(
   height: number,
 ): "invalid_parent" | "too_deep" | null {
   const parent = rows.find((r) => r.id === parentId);
-  if (!parent || parent.kind !== "folder") return "invalid_parent";
+  if (!parent) return "invalid_parent";
   const depth = sectionDepth(rows, parentId) + 1;
   const reserve = kind === "folder" ? Math.max(height, 1) : height;
   if (depth + reserve > MAX_SECTION_DEPTH) return "too_deep";

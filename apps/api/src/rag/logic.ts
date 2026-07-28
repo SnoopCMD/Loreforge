@@ -14,7 +14,11 @@ export const QUERY_K = 12;
 
 export interface CanonChunk {
   index: number;
-  /** Dernier titre Markdown rencontré (fil d'Ariane court). */
+  /**
+   * Fil d'Ariane hiérarchique du dernier titre rencontré (« Narration ›
+   * Trames & conflits › Trame 1 ») : les niveaux de titres du canon encodent
+   * les dossiers/sous-dossiers de la bible, le chemin complet situe l'extrait.
+   */
   section: string;
   text: string;
 }
@@ -35,6 +39,9 @@ export function chunkCanon(canonMd: string): CanonChunk[] {
   const chunks: CanonChunk[] = [];
   let section = "";
   let currentSection = "";
+  // Pile des titres ouverts (niveau → titre) pour le fil d'Ariane. Le H1
+  // (titre de la bible) n'entre pas dans le chemin, déjà connu du prompt.
+  const trail: Array<{ level: number; title: string }> = [];
   let buf: string[] = [];
   let size = 0;
 
@@ -56,9 +63,14 @@ export function chunkCanon(canonMd: string): CanonChunk[] {
   };
 
   for (const line of lines) {
-    const heading = line.match(/^#{1,3}\s+(.*)/);
+    const heading = line.match(/^(#{1,6})\s+(.*)/);
     if (heading) {
-      section = heading[1].trim();
+      const level = heading[1].length;
+      const title = heading[2].trim();
+      while (trail.length && trail[trail.length - 1].level >= level) trail.pop();
+      trail.push({ level, title });
+      const path = trail.filter((h) => h.level >= 2).map((h) => h.title);
+      section = path.length ? path.join(" › ") : title;
       if (buf.length === 0) currentSection = section;
     }
     if (size + line.length > CHUNK_CHARS && buf.some((l) => l.trim() !== "")) {

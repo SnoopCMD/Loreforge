@@ -102,6 +102,11 @@ ${input.authorFeedback.map((f) => `- ${f}`).join("\n")}`
   return `Tu es le Maître de Jeu de l'univers « ${input.bibleTitle} ».
 
 == CANON (source de vérité absolue) ==
+La bible est organisée en dossiers et sous-dossiers : la hiérarchie des titres
+(##, ###, ####…) reflète cette imbrication. Un sous-titre appartient à la
+section qui le précède au niveau supérieur — par exemple, chaque trame et ses
+détails sont regroupés sous « Trames & conflits actifs ». Lis chaque passage
+dans le contexte de ses titres parents.
 ${canon}
 
 == PROFIL DE RICHESSE ==

@@ -36,11 +36,12 @@ export interface PublicSection {
 }
 
 /**
- * Profondeur maximale d'un nœud (0 = racine) : dossier (0) > sous-dossier (1)
- * > section (2). Un dossier doit pouvoir contenir au moins un niveau, donc il
- * ne peut vivre qu'aux profondeurs 0 et 1.
+ * Profondeur maximale d'un nœud (0 = racine). Tout nœud — dossier OU section —
+ * peut contenir des enfants (ex. un sous-dossier par trame DANS la section
+ * « Trames & conflits actifs »). Un dossier doit pouvoir contenir au moins un
+ * niveau, donc il ne peut pas vivre à la profondeur max.
  */
-export const MAX_SECTION_DEPTH = 2;
+export const MAX_SECTION_DEPTH = 4;
 
 /** Gabarit d'une section de base (dupliqué, vide, à la création de chaque bible). */
 export interface BaseSectionTemplate {

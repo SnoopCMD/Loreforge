@@ -661,14 +661,14 @@ function wsIsDescendant(ancestorId, id) {
 }
 
 /**
- * Dossier cible pour une création depuis la sélection courante : dossier actif,
- * sinon dossier de la section active, remonté tant que la profondeur max
- * (dossier > sous-dossier > section) serait dépassée.
+ * Parent cible pour une création depuis la sélection courante : le dossier
+ * actif, sinon le parent de la section active (création en frère), remonté
+ * tant que la profondeur max serait dépassée.
  */
 function wsFolderForNew(kind) {
   const active = wsById(WS.active);
   let base = !active ? null : active.kind === "folder" ? active.id : active.parent_id || null;
-  const maxParentDepth = kind === "folder" ? 0 : 1;
+  const maxParentDepth = kind === "folder" ? 2 : 3;
   while (base && wsDepth(base) > maxParentDepth) {
     const row = wsById(base);
     base = row ? row.parent_id || null : null;
@@ -697,7 +697,10 @@ async function loadWorkspace() {
 }
 
 function sectionIcon(s) {
-  if (s.kind === "folder") return WS.collapsed.has(s.id) ? "▸" : "▾";
+  // Tout nœud avec enfants (dossier ou section-conteneur) a un chevron.
+  if (s.kind === "folder" || wsChildren(s.id).length) {
+    return WS.collapsed.has(s.id) ? "▸" : "▾";
+  }
   return s.axis ? AXIS_ICON[s.axis] || "✦" : s.is_base ? "✦" : "✎";
 }
 
@@ -730,7 +733,7 @@ function renderWsNav() {
       if (s.kind === "folder") item.classList.add("folder");
       nav.appendChild(item);
       if (s.kind !== "folder") chips.appendChild(wsChip(s.id, s.title, s.axis));
-      if (s.kind === "folder" && !WS.collapsed.has(s.id)) emit(s.id, depth + 1);
+      if (!WS.collapsed.has(s.id)) emit(s.id, depth + 1);
     }
   };
   emit(null, 0);
@@ -792,9 +795,9 @@ function wsNavItem(id, icon, label, axis, isOverview) {
 
   el.addEventListener("click", (e) => {
     if (e.target.closest(".ws-reorder")) return;
-    // Cliquer le chevron d'un dossier replie/déplie sans changer la sélection.
+    // Cliquer le chevron d'un nœud à enfants replie/déplie sans le sélectionner.
     const row = wsById(id);
-    if (row && row.kind === "folder" && e.target.closest(".ws-ico")) {
+    if (row && wsChildren(id).length && e.target.closest(".ws-ico")) {
       if (WS.collapsed.has(id)) WS.collapsed.delete(id);
       else WS.collapsed.add(id);
       renderWsNav();
@@ -883,8 +886,9 @@ function renderEditor(section) {
 }
 
 /**
- * Sélecteur d'emplacement : racine + dossiers éligibles (pas soi-même, pas sa
- * descendance, profondeur max respectée). Déplace via PUT parent_id.
+ * Sélecteur d'emplacement : racine + tout nœud éligible — dossier ou section
+ * conteneuse (pas soi-même, pas sa descendance, profondeur max respectée).
+ * Déplace via PUT parent_id.
  */
 function renderParentSelect(section) {
   const sel = $("ws-sec-parent");
@@ -897,14 +901,17 @@ function renderParentSelect(section) {
   const height = wsHeight(section.id);
   const reserve = section.kind === "folder" ? Math.max(height, 1) : height;
   const emit = (parentId, depth) => {
-    for (const f of wsChildren(parentId).filter((s) => s.kind === "folder")) {
+    for (const f of wsChildren(parentId)) {
       const ok =
         f.id !== section.id &&
         !wsIsDescendant(section.id, f.id) &&
-        depth + 1 + reserve <= 2;
+        depth + 1 + reserve <= 4;
       const opt = document.createElement("option");
       opt.value = f.id;
-      opt.textContent = " ".repeat(depth * 3) + "📁 " + (f.title || "Sans titre");
+      opt.textContent =
+        " ".repeat(depth * 3) +
+        (f.kind === "folder" ? "📁 " : "§ ") +
+        (f.title || "Sans titre");
       opt.disabled = !ok;
       sel.appendChild(opt);
       emit(f.id, depth + 1);

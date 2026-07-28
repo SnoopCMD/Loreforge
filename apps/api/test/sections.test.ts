@@ -292,9 +292,22 @@ describe("dossiers de sections", () => {
     ).json()) as TreeSection;
     expect(sub.parent_id).toBe(folder.id);
 
-    // Un dossier dans un sous-dossier dépasserait la profondeur max.
+    // La profondeur max (4) laisse la place à des sous-sous-dossiers…
+    const sub2 = (await (
+      await req(cookie, `/api/bibles/${bibleId}/sections`, "POST", {
+        kind: "folder", title: "Clans du Nord", parent_id: sub.id,
+      })
+    ).json()) as TreeSection;
+    const sub3 = (await (
+      await req(cookie, `/api/bibles/${bibleId}/sections`, "POST", {
+        kind: "folder", title: "Maisons", parent_id: sub2.id,
+      })
+    ).json()) as TreeSection;
+    expect(sub3.parent_id).toBe(sub2.id);
+
+    // … mais un dossier au niveau max n'aurait plus de place pour ses enfants.
     const tooDeep = await req(cookie, `/api/bibles/${bibleId}/sections`, "POST", {
-      kind: "folder", title: "Trop profond", parent_id: sub.id,
+      kind: "folder", title: "Trop profond", parent_id: sub3.id,
     });
     expect(tooDeep.status).toBe(400);
     expect(((await tooDeep.json()) as { error: string }).error).toBe("too_deep");
@@ -307,11 +320,14 @@ describe("dossiers de sections", () => {
     ).json()) as TreeSection;
     expect(leaf.parent_id).toBe(sub.id);
 
-    // Le parent doit être un dossier, pas une section.
-    const notFolder = await req(cookie, `/api/bibles/${bibleId}/sections`, "POST", {
-      title: "X", parent_id: leaf.id,
-    });
-    expect(notFolder.status).toBe(400);
+    // Une SECTION peut aussi contenir un sous-dossier (ex. un dossier par
+    // trame dans « Trames & conflits actifs »).
+    const inSection = (await (
+      await req(cookie, `/api/bibles/${bibleId}/sections`, "POST", {
+        kind: "folder", title: "Trame 1", parent_id: leaf.id,
+      })
+    ).json()) as TreeSection;
+    expect(inSection.parent_id).toBe(leaf.id);
 
     // Déplacement : une section de base rejoint le dossier racine.
     const { sections } = (await (
