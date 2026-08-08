@@ -9,13 +9,16 @@
 //       de contrôle (DC1/DC2/DC3) OPEN·term·SEP·visible·CLOSE que le front
 //       transforme en <button class="lore"> ; la définition est résolue à la
 //       demande, une fois par session (KV), au clic.
-//   <roll reason="..."/>                   demande de jet d6 serveur
+//   <roll reason="..." difficulty="..." stance="..." dice="..." skills="..."/>
+//       demande de jet serveur, avec ses conditions (§6)
 //   <souffle delta="-1"/>                  dépense/regain de Souffle
 //   <scene_break/>                         rupture de scène (event SSE)
 //   <skill name="..." tier="..." note="..."/>  acquis/progression d'une
 //       compétence du personnage (note optionnelle), invisible pour le joueur
 //   <fait texte="..."/>                    fait établi à mémoriser (invisible)
 // Tout autre usage de '<' (dialogue, comparaison...) est restitué tel quel.
+
+import { normalizeRollRequest, type RollRequest } from "./rules";
 
 // Marqueurs lore (mêmes codes que public/core.js : LORE_OPEN/SEP/CLOSE).
 export const LORE_OPEN = String.fromCharCode(17); // DC1
@@ -38,7 +41,7 @@ export function wrapLore(term: string, kind: string, visible: string): string {
 
 export type GmTagEvent =
   | { type: "invention"; axis: string; content: string }
-  | { type: "roll_request"; reason: string }
+  | { type: "roll_request"; request: RollRequest }
   | { type: "souffle_delta"; delta: number }
   | { type: "scene_break" }
   | { type: "skill_update"; name: string; tier: string; note?: string }
@@ -58,7 +61,10 @@ const OPEN_INVENTION = /^<invention\s+axis="([^"]*)"\s*>/;
 // term obligatoire ; kind optionnel, dans n'importe quel ordre.
 const OPEN_LORE =
   /^<lore(?=\s)(?=[^>]*\bterm="([^"]*)")(?:[^>]*\bkind="([^"]*)")?[^>]*>/;
-const ROLL = /^<roll\s+reason="([^"]*)"\s*\/>/;
+// Attributs libres, dans n'importe quel ordre : reason (obligatoire de fait),
+// difficulty, stance, dice, skills. Tout attribut inconnu est ignoré.
+const ROLL = /^<roll(?=\s)([^>]*?)\/>/;
+const ATTR = /(\w+)="([^"]*)"/g;
 const SOUFFLE = /^<souffle\s+delta="([+-]?\d+)"\s*\/>/;
 const SCENE_BREAK = /^<scene_break\s*\/>/;
 // name et tier obligatoires ; note optionnelle, attributs dans n'importe quel ordre.
@@ -106,9 +112,20 @@ function matchTag(buf: string): TagMatch | "incomplete" | null {
     return { length: m[0].length, openLore: { term: m[1], kind: m[2] ?? "" } };
   }
   if ((m = buf.match(ROLL))) {
+    const attrs: Record<string, string> = {};
+    for (const a of m[1].matchAll(ATTR)) attrs[a[1]] = a[2];
     return {
       length: m[0].length,
-      event: { type: "roll_request", reason: m[1] },
+      event: {
+        type: "roll_request",
+        request: normalizeRollRequest({
+          reason: attrs.reason,
+          difficulty: attrs.difficulty,
+          stance: attrs.stance,
+          bonus_dice: attrs.dice,
+          skills: (attrs.skills ?? "").split(/\s*[,;]\s*/),
+        }),
+      },
     };
   }
   if ((m = buf.match(SOUFFLE))) {

@@ -461,15 +461,18 @@ svg .score-label { fill: var(--spirit); font-family: "JetBrains Mono", monospace
 }
 .scene-sep::after { background: linear-gradient(90deg, var(--spirit), transparent); }
 
-/* Dé : roule en --spirit puis se fige (résultat en mono). */
+/* Poignée de dés : toute la poignée roule en --spirit, chaque dé se pose à
+   son tour ; le dé retenu s'allume, les dés annulés par un 5/6 s'effacent. */
 .roll-block {
-  display: flex; align-items: center; gap: 1rem;
+  display: flex; align-items: center; gap: 1rem; flex-wrap: wrap;
   margin: 1.4rem 0;
   padding: 0.8rem 1rem;
   border: 1px solid rgba(103, 232, 249, 0.35);
   border-radius: 10px;
   background: rgba(103, 232, 249, 0.05);
 }
+.dice-tray { display: flex; gap: 0.5rem; flex-wrap: wrap; }
+.roll-info { flex: 1 1 14rem; min-width: 0; }
 .die {
   flex: none;
   width: 2.6rem; height: 2.6rem;
@@ -479,14 +482,47 @@ svg .score-label { fill: var(--spirit); font-family: "JetBrains Mono", monospace
   font-family: "JetBrains Mono", monospace;
   font-size: 1.4rem; font-weight: 500;
   color: var(--spirit);
+  transition: opacity 0.25s ease, transform 0.25s ease, box-shadow 0.25s ease;
 }
-.die.rolling { animation: die-roll 0.5s ease-in-out; }
+/* Dé posé : réussi (--spirit, plein) ou raté (terne). */
+.die.hit { background: rgba(103, 232, 249, 0.14); }
+.die.miss {
+  border-color: var(--line);
+  color: var(--parchment-dim);
+  background: transparent;
+}
+/* Dé annulé par un 5/6 : il ne compte plus. */
+.die.cancelled {
+  opacity: 0.35;
+  text-decoration: line-through;
+  transform: scale(0.86);
+}
+/* Dé retenu : celui qui décide de l'issue. */
+.die.kept {
+  border-color: var(--ember);
+  color: var(--ember);
+  box-shadow: 0 0 16px rgba(249, 115, 22, 0.45);
+  transform: scale(1.12);
+}
+.die.kept.hit {
+  border-color: var(--spirit);
+  color: var(--spirit);
+  box-shadow: 0 0 18px rgba(103, 232, 249, 0.6);
+}
+.die.rolling { animation: die-roll 0.42s ease-in-out infinite; }
 @keyframes die-roll {
   0% { transform: rotate(0) scale(1); box-shadow: 0 0 0 rgba(103, 232, 249, 0); }
-  50% { transform: rotate(200deg) scale(1.15); box-shadow: 0 0 24px rgba(103, 232, 249, 0.7); }
+  50% { transform: rotate(200deg) scale(1.12); box-shadow: 0 0 20px rgba(103, 232, 249, 0.6); }
   100% { transform: rotate(360deg) scale(1); box-shadow: 0 0 0 rgba(103, 232, 249, 0); }
 }
-.roll-block .outcome { font-weight: 600; }
+.roll-block .outcome {
+  font-weight: 600;
+  opacity: 0; transition: opacity 0.3s ease;
+}
+.roll-block.revealed .outcome { opacity: 1; }
+.roll-block.roll-critical_success .outcome { color: var(--spirit); }
+.roll-block.roll-critical_failure .outcome { color: var(--ember); }
+.roll-block .conditions { color: var(--parchment-dim); font-size: 0.8rem; }
 .roll-block .reason { color: var(--parchment-dim); font-size: 0.88rem; }
 
 .roll-needed {
@@ -496,7 +532,15 @@ svg .score-label { fill: var(--spirit); font-family: "JetBrains Mono", monospace
   border-radius: 10px;
   background: rgba(249, 115, 22, 0.07);
 }
-.roll-needed .reason { color: var(--parchment-dim); margin-bottom: 0.7rem; }
+.roll-needed .reason { color: var(--parchment-dim); margin-bottom: 0.3rem; }
+.roll-needed .conditions {
+  color: var(--parchment-dim); font-size: 0.8rem; margin-bottom: 0.7rem;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .die, .die.rolling { animation: none; transition: none; }
+  .roll-block .outcome { opacity: 1; }
+}
 
 /* Terme d'univers cliquable (§7) : soulignage pointillé --spirit, aucun saut
    de layout (bouton inline, hérite de la typo du texte). */

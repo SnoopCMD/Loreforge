@@ -4,43 +4,205 @@ import {
   applySkillUpdate,
   applySouffleDelta,
   describeOutcome,
+  DIFFICULTY_THRESHOLD,
   initialGameState,
+  isSuccess,
+  MAX_BONUS_DICE,
   MAX_FACTS,
+  MAX_POOL,
   mergeSkills,
+  normalizeRollRequest,
   normalizeTier,
+  outcomeForValue,
+  performRoll,
+  poolSize,
+  resolveRoll,
   sanitizeSkills,
-  outcomeForRoll,
   rollD6,
   SOUFFLE_MAX,
   type SkillEntry,
 } from "../src/sessions/rules";
 
-describe("outcomeForRoll (SPEC §6)", () => {
-  it("1-2 échec avec complication, 3-4 réussite avec coût, 5-6 franche", () => {
-    expect(outcomeForRoll(1)).toBe("failure_complication");
-    expect(outcomeForRoll(2)).toBe("failure_complication");
-    expect(outcomeForRoll(3)).toBe("success_cost");
-    expect(outcomeForRoll(4)).toBe("success_cost");
-    expect(outcomeForRoll(5)).toBe("clean_success");
-    expect(outcomeForRoll(6)).toBe("clean_success");
+const req = (over: Record<string, unknown> = {}) =>
+  normalizeRollRequest({ reason: "test", ...over });
+
+describe("outcomeForValue (difficulté)", () => {
+  it("facile : 1-2 échec, 3-6 réussite", () => {
+    expect(DIFFICULTY_THRESHOLD.easy).toBe(3);
+    expect(outcomeForValue(1, "easy")).toBe("critical_failure");
+    expect(outcomeForValue(2, "easy")).toBe("failure");
+    expect(outcomeForValue(3, "easy")).toBe("success");
+    expect(outcomeForValue(5, "easy")).toBe("success");
+    expect(outcomeForValue(6, "easy")).toBe("critical_success");
+  });
+
+  it("normal : 1-3 échec, 4-6 réussite", () => {
+    expect(outcomeForValue(1, "normal")).toBe("critical_failure");
+    expect(outcomeForValue(3, "normal")).toBe("failure");
+    expect(outcomeForValue(4, "normal")).toBe("success");
+    expect(outcomeForValue(6, "normal")).toBe("critical_success");
+  });
+
+  it("difficile : 1-4 échec, 5-6 réussite", () => {
+    expect(outcomeForValue(4, "hard")).toBe("failure");
+    expect(outcomeForValue(5, "hard")).toBe("success");
+    expect(outcomeForValue(6, "hard")).toBe("critical_success");
+    expect(outcomeForValue(1, "hard")).toBe("critical_failure");
+  });
+
+  it("issue binaire, critiques inclus", () => {
+    expect(isSuccess("success")).toBe(true);
+    expect(isSuccess("critical_success")).toBe(true);
+    expect(isSuccess("failure")).toBe(false);
+    expect(isSuccess("critical_failure")).toBe(false);
   });
 
   it("libellés français pour l'injection prompt", () => {
-    expect(describeOutcome("failure_complication")).toBe(
-      "échec avec complication",
-    );
-    expect(describeOutcome("success_cost")).toBe("réussite avec coût");
-    expect(describeOutcome("clean_success")).toBe("réussite franche");
+    expect(describeOutcome("critical_failure")).toBe("échec critique");
+    expect(describeOutcome("failure")).toBe("échec");
+    expect(describeOutcome("success")).toBe("réussite");
+    expect(describeOutcome("critical_success")).toBe("réussite critique");
   });
 });
 
-describe("rollD6", () => {
+describe("poolSize (dice pool + posture)", () => {
+  it("1 dé de base, +1 par compétence, +1 pour avantage/désavantage", () => {
+    expect(poolSize(req())).toBe(1);
+    expect(poolSize(req({ bonus_dice: 2 }))).toBe(3);
+    expect(poolSize(req({ stance: "advantage" }))).toBe(2);
+    expect(poolSize(req({ stance: "disadvantage" }))).toBe(2);
+    expect(poolSize(req({ bonus_dice: 2, stance: "advantage" }))).toBe(4);
+  });
+
+  it("borné à MAX_POOL", () => {
+    expect(
+      poolSize(req({ bonus_dice: 99, stance: "advantage" })),
+    ).toBe(MAX_POOL);
+  });
+});
+
+describe("resolveRoll", () => {
+  it("un seul dé : l'issue vient de lui", () => {
+    const r = resolveRoll(req({ difficulty: "hard" }), [4]);
+    expect(r.value).toBe(4);
+    expect(r.outcome).toBe("failure");
+    expect(r.dice).toEqual([
+      { value: 4, success: false, cancelled: false, kept: true },
+    ]);
+  });
+
+  it("avantage : garde le meilleur dé", () => {
+    const r = resolveRoll(req({ stance: "advantage" }), [2, 4]);
+    expect(r.value).toBe(4);
+    expect(r.outcome).toBe("success");
+    expect(r.dice.find((d) => d.kept)?.value).toBe(4);
+  });
+
+  it("désavantage : garde le moins bon dé", () => {
+    const r = resolveRoll(req({ stance: "disadvantage" }), [2, 4]);
+    expect(r.value).toBe(2);
+    expect(r.outcome).toBe("failure");
+  });
+
+  it("un 5 ou un 6 annule un dé raté (même en désavantage)", () => {
+    const r = resolveRoll(req({ stance: "disadvantage" }), [1, 5]);
+    expect(r.cancelled).toBe(1);
+    expect(r.dice[0].cancelled).toBe(true);
+    // Le 1 annulé sort du pool : le pire dé restant est le 5.
+    expect(r.value).toBe(5);
+    expect(r.outcome).toBe("success");
+  });
+
+  it("les annulations vont aux pires ratés d'abord, une par 5/6", () => {
+    const r = resolveRoll(req({ stance: "disadvantage" }), [1, 3, 2, 6]);
+    expect(r.cancelled).toBe(1);
+    expect(r.dice.map((d) => d.cancelled)).toEqual([true, false, false, false]);
+    expect(r.value).toBe(2);
+    expect(r.outcome).toBe("failure");
+  });
+
+  it("deux 5/6 annulent deux ratés", () => {
+    const r = resolveRoll(req({ stance: "disadvantage" }), [1, 2, 5, 6]);
+    expect(r.cancelled).toBe(2);
+    expect(r.value).toBe(5);
+    expect(r.outcome).toBe("success");
+  });
+
+  it("dice pool sans posture : le meilleur dé restant décide", () => {
+    const r = resolveRoll(req({ bonus_dice: 2 }), [1, 3, 6]);
+    expect(r.value).toBe(6);
+    expect(r.outcome).toBe("critical_success");
+    expect(r.threshold).toBe(4);
+  });
+
+  it("critique sur 1 quel que soit le seuil", () => {
+    expect(resolveRoll(req({ difficulty: "easy" }), [1]).outcome).toBe(
+      "critical_failure",
+    );
+  });
+
+  it("conserve les conditions du jet dans le résultat", () => {
+    const r = resolveRoll(
+      req({ difficulty: "hard", stance: "advantage", bonus_dice: 1, skills: ["Escalade"] }),
+      [3, 5, 2],
+    );
+    expect(r.reason).toBe("test");
+    expect(r.difficulty).toBe("hard");
+    expect(r.stance).toBe("advantage");
+    expect(r.bonus_dice).toBe(1);
+    expect(r.skills).toEqual(["Escalade"]);
+  });
+});
+
+describe("normalizeRollRequest", () => {
+  it("valeurs par défaut sûres", () => {
+    expect(normalizeRollRequest(null)).toEqual({
+      reason: "action risquée",
+      difficulty: "normal",
+      stance: "neutral",
+      bonus_dice: 0,
+      skills: [],
+    });
+  });
+
+  it("accepte l'ancien format (raison seule) et les valeurs invalides", () => {
+    expect(normalizeRollRequest("saut périlleux").reason).toBe(
+      "saut périlleux",
+    );
+    const r = normalizeRollRequest({
+      reason: "  x  ",
+      difficulty: "impossible",
+      stance: "godmode",
+      bonus_dice: "12",
+      skills: "pas un tableau",
+    });
+    expect(r).toEqual({
+      reason: "x",
+      difficulty: "normal",
+      stance: "neutral",
+      bonus_dice: MAX_BONUS_DICE,
+      skills: [],
+    });
+  });
+});
+
+describe("rollD6 / performRoll", () => {
   it("reste dans [1, 6]", () => {
     for (let i = 0; i < 500; i++) {
       const value = rollD6();
       expect(value).toBeGreaterThanOrEqual(1);
       expect(value).toBeLessThanOrEqual(6);
       expect(Number.isInteger(value)).toBe(true);
+    }
+  });
+
+  it("lance autant de dés que la poignée et retient exactement un dé", () => {
+    for (let i = 0; i < 100; i++) {
+      const request = req({ bonus_dice: 2, stance: "advantage" });
+      const r = performRoll(request);
+      expect(r.dice).toHaveLength(4);
+      expect(r.dice.filter((d) => d.kept)).toHaveLength(1);
+      expect(r.value).toBe(r.dice.find((d) => d.kept)!.value);
     }
   });
 });

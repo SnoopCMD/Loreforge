@@ -15,11 +15,66 @@ export const AXIS_LABELS = {
 
 export const AXES = Object.keys(AXIS_LABELS);
 
+// Issue binaire + critiques (§6). Les trois premières clés sont l'ancien
+// système : d'anciennes sessions peuvent encore les porter dans leur état.
 export const OUTCOME_LABELS = {
+  critical_failure: "Échec critique",
+  failure: "Échec",
+  success: "Réussite",
+  critical_success: "Réussite critique",
   failure_complication: "Échec, et une complication",
   success_cost: "Réussite, mais à un coût",
   clean_success: "Réussite franche",
 };
+
+export const DIFFICULTY_LABELS = {
+  easy: "Facile",
+  normal: "Normale",
+  hard: "Difficile",
+};
+
+/** Seuil de réussite d'un dé, par difficulté (miroir de src/sessions/rules). */
+export const DIFFICULTY_THRESHOLD = { easy: 3, normal: 4, hard: 5 };
+
+export const STANCE_LABELS = {
+  advantage: "Avantage",
+  neutral: "Neutre",
+  disadvantage: "Désavantage",
+};
+
+/**
+ * Normalise un jet (demande ou résultat) venant du serveur, y compris les
+ * états d'anciennes sessions où `pending_roll` n'était qu'une chaîne.
+ */
+export function normalizeRoll(roll) {
+  if (!roll) return null;
+  if (typeof roll === "string") {
+    return { reason: roll, difficulty: "normal", stance: "neutral", bonus_dice: 0, skills: [] };
+  }
+  const difficulty = DIFFICULTY_LABELS[roll.difficulty] ? roll.difficulty : "normal";
+  return {
+    ...roll,
+    reason: roll.reason || "action risquée",
+    difficulty,
+    stance: STANCE_LABELS[roll.stance] ? roll.stance : "neutral",
+    bonus_dice: Number(roll.bonus_dice) || 0,
+    skills: Array.isArray(roll.skills) ? roll.skills : [],
+    threshold: roll.threshold || DIFFICULTY_THRESHOLD[difficulty],
+    // Ancien résultat mono-dé : on lui fabrique sa poignée d'un dé.
+    dice:
+      Array.isArray(roll.dice) && roll.dice.length
+        ? roll.dice
+        : roll.value
+          ? [{ value: roll.value, success: false, cancelled: false, kept: true }]
+          : [],
+  };
+}
+
+/** Taille de la poignée annoncée avant le jet (miroir de poolSize). */
+export function rollPoolSize(request) {
+  const extra = request.stance === "neutral" ? 0 : 1;
+  return Math.min(6, 1 + (Number(request.bonus_dice) || 0) + extra);
+}
 
 export const FORMAT_LABELS = {
   oneshot: "One-shot",

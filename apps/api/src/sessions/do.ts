@@ -7,7 +7,7 @@
 //   POST /trame   {trame}          → JSON {trame, setup_questions[]} (recentrées)
 //   POST /setup   {answers[]}      → SSE (scène 1)
 //   POST /turn    {player_input}   → SSE
-//   POST /roll    {reason?}        → JSON {value, outcome, reason}
+//   POST /roll    {reason?}        → JSON RollResult (dés, dé retenu, issue)
 //   GET  /state                    → JSON état public
 //   POST /finish                   → JSON {summary_md, inventions}
 //   POST /destroy                  → JSON {ok} (purge totale, session supprimée)
@@ -22,11 +22,12 @@ import {
   applySouffleDelta,
   initialGameState,
   mergeSkills,
-  outcomeForRoll,
-  rollD6,
+  normalizeRollRequest,
+  performRoll,
   sanitizeSkills,
   SOUFFLE_MAX,
   type GameState,
+  type RollRequest,
   type RollResult,
   type SkillEntry,
 } from "./rules";
@@ -439,7 +440,11 @@ export class GameSession extends DurableObject<Env> {
 
     const state = (await this.ctx.storage.get<GameState>("state"))!;
     if (state.pending_roll) {
-      return json({ error: "roll_required", reason: state.pending_roll }, 409);
+      const request = normalizeRollRequest(state.pending_roll);
+      return json(
+        { error: "roll_required", request, reason: request.reason },
+        409,
+      );
     }
 
     // Le résultat du dernier jet est consommé par ce tour. Une saisie vide
@@ -472,14 +477,17 @@ export class GameSession extends DurableObject<Env> {
       return json({ error: "roll_already_pending" }, 409);
     }
 
+    // Les conditions du jet viennent du MJ (état serveur) : le client ne peut
+    // pas se choisir une difficulté ni un avantage. Sa `reason` ne sert que
+    // pour un jet libre, hors demande du MJ.
     const bodyReason = (body as { reason?: unknown }).reason;
-    const reason =
-      (typeof bodyReason === "string" && bodyReason.trim().slice(0, 200)) ||
-      state.pending_roll ||
-      "action risquée";
+    const request: RollRequest = state.pending_roll
+      ? normalizeRollRequest(state.pending_roll)
+      : normalizeRollRequest(
+          typeof bodyReason === "string" ? bodyReason : null,
+        );
 
-    const value = rollD6();
-    const result: RollResult = { value, outcome: outcomeForRoll(value), reason };
+    const result = performRoll(request);
     state.last_roll = result;
     state.pending_roll = null;
 
@@ -521,7 +529,9 @@ export class GameSession extends DurableObject<Env> {
       souffle_max: SOUFFLE_MAX,
       facts: state.facts,
       skills: state.skills ?? [],
-      pending_roll: state.pending_roll,
+      pending_roll: state.pending_roll
+        ? normalizeRollRequest(state.pending_roll)
+        : null,
       last_roll: state.last_roll,
       turn_count: state.turn_count,
       log: turns.map((t) => ({
@@ -532,7 +542,7 @@ export class GameSession extends DurableObject<Env> {
         text:
           t.role === "assistant"
             ? stripGmTags(t.text).trim()
-            : t.text.replace(/^\[Jet d6 [^\]]*\]\s*/, ""),
+            : t.text.replace(/^\[Jet [^\]]*\]\s*/, ""),
       })),
     };
   }
@@ -774,8 +784,8 @@ export class GameSession extends DurableObject<Env> {
         for (const event of chunk.events) {
           switch (event.type) {
             case "roll_request":
-              state.pending_roll = event.reason;
-              await send("state_patch", { pending_roll: event.reason });
+              state.pending_roll = event.request;
+              await send("state_patch", { pending_roll: event.request });
               break;
             case "souffle_delta":
               state.souffle = applySouffleDelta(state.souffle, event.delta);

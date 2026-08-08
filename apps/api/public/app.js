@@ -3,10 +3,10 @@
 // La logique sans DOM vit dans core.js (= @app/core, SPEC §8.3).
 
 import {
-  AXES, AXIS_LABELS, FORMAT_LABELS, GENERIC_FIELDS, OUTCOME_LABELS,
-  STATUS_LABELS, createSseParser,
+  AXES, AXIS_LABELS, DIFFICULTY_LABELS, FORMAT_LABELS, GENERIC_FIELDS,
+  OUTCOME_LABELS, STANCE_LABELS, STATUS_LABELS, createSseParser,
   createSpeechSegmenter, esc, extractActionChips, labelFor, mdInline,
-  mdToHtml, stripLore,
+  mdToHtml, normalizeRoll, rollPoolSize, stripLore,
 } from "/core.js";
 
 const $ = (id) => document.getElementById(id);
@@ -2559,46 +2559,100 @@ function newGmWriter() {
   };
 }
 
+// — Jets : conditions, poignée de dés, animation —
+
+const d6 = () => 1 + Math.floor(Math.random() * 6);
+const plural = (n, word) => n + " " + word + (n > 1 ? "s" : "");
+const reducedMotion = () => matchMedia("(prefers-reduced-motion: reduce)").matches;
+// Cadence de l'animation : les dés roulent ensemble puis se posent en cascade.
+const DIE_SPIN_MS = 70;
+const DIE_FIRST_MS = 520;
+const DIE_STEP_MS = 220;
+
+/** « Difficulté difficile (réussite à 5+) · Avantage · 3 dés · Acrobatie ». */
+function rollConditionsText(r) {
+  const bits = [
+    "Difficulté " +
+      (DIFFICULTY_LABELS[r.difficulty] || r.difficulty).toLowerCase() +
+      " (réussite à " + r.threshold + "+)",
+  ];
+  if (r.stance !== "neutral") bits.push(STANCE_LABELS[r.stance]);
+  bits.push(plural(r.dice.length || rollPoolSize(r), "dé"));
+  if (r.skills.length) bits.push(r.skills.join(", "));
+  return bits.join(" · ");
+}
+
+/** Affiche la poignée du jet. Rend la durée de l'animation (ms). */
 function addRollBlock(roll, { animate = false } = {}) {
+  const r = normalizeRoll(roll);
   const div = document.createElement("div");
-  div.className = "roll-block chunk";
+  div.className = "roll-block chunk roll-" + r.outcome;
   div.innerHTML =
-    '<div class="die mono"></div>' +
-    '<div><div class="outcome"></div><div class="reason"></div></div>';
-  const die = div.querySelector(".die");
-  const outcome = div.querySelector(".outcome");
-  div.querySelector(".reason").textContent = roll.reason;
+    '<div class="dice-tray"></div>' +
+    '<div class="roll-info"><div class="outcome"></div>' +
+    '<div class="conditions"></div><div class="reason"></div></div>';
+  const tray = div.querySelector(".dice-tray");
+  const outcomeEl = div.querySelector(".outcome");
+  div.querySelector(".conditions").textContent = rollConditionsText(r);
+  div.querySelector(".reason").textContent = r.reason;
+  const dieEls = r.dice.map(() => {
+    const el = document.createElement("div");
+    el.className = "die mono";
+    tray.appendChild(el);
+    return el;
+  });
   $("feed").appendChild(div);
-  const settle = () => {
-    die.textContent = roll.value;
-    outcome.textContent = OUTCOME_LABELS[roll.outcome] || roll.outcome;
+
+  const settle = (i) => {
+    const d = r.dice[i];
+    const el = dieEls[i];
+    el.textContent = d.value;
+    el.classList.remove("rolling");
+    el.classList.add(d.success ? "hit" : "miss");
+    if (d.cancelled) { el.classList.add("cancelled"); el.title = "Échec annulé par un 5/6"; }
+    if (d.kept) { el.classList.add("kept"); el.title = "Dé retenu"; }
   };
-  if (animate && !matchMedia("(prefers-reduced-motion: reduce)").matches) {
-    die.classList.add("rolling");
-    let ticks = 0;
-    const spin = setInterval(() => {
-      die.textContent = 1 + Math.floor(Math.random() * 6);
-      if (++ticks >= 6) {
-        clearInterval(spin);
-        die.classList.remove("rolling");
-        settle();
-      }
-    }, 80);
-  } else {
-    settle();
+  const reveal = () => {
+    const cancelled = r.cancelled
+      ? " · " + plural(r.cancelled, "échec") + " annulé" + (r.cancelled > 1 ? "s" : "") + " par un 5/6"
+      : "";
+    outcomeEl.textContent = (OUTCOME_LABELS[r.outcome] || r.outcome) + cancelled;
+    div.classList.add("revealed");
+    scrollFeed();
+  };
+
+  if (!animate || reducedMotion() || !dieEls.length) {
+    dieEls.forEach((_, i) => settle(i));
+    reveal();
+    return 0;
   }
+  // Tous les dés tournent en même temps ; chacun se pose à son tour, de
+  // gauche à droite, pour que le joueur voie bien toute la poignée.
+  for (const el of dieEls) { el.classList.add("rolling"); el.textContent = d6(); }
+  const spin = setInterval(() => {
+    for (const el of dieEls) if (el.classList.contains("rolling")) el.textContent = d6();
+  }, DIE_SPIN_MS);
+  dieEls.forEach((_, i) => setTimeout(() => settle(i), DIE_FIRST_MS + i * DIE_STEP_MS));
+  const total = DIE_FIRST_MS + dieEls.length * DIE_STEP_MS;
+  setTimeout(() => { clearInterval(spin); reveal(); }, total);
   scrollFeed();
+  return total;
 }
 
 function addRollNeeded() {
   removeRollNeeded();
+  const r = normalizeRoll(S.pendingRoll) || normalizeRoll("action risquée");
   const div = document.createElement("div");
   div.className = "roll-needed chunk";
   div.id = "roll-needed";
   div.innerHTML =
-    '<div class="reason"></div><button id="roll-btn">Lancer le d6</button>';
-  div.querySelector(".reason").textContent = "Jet requis — " + (S.pendingRoll || "action risquée");
-  div.querySelector("#roll-btn").addEventListener("click", doRoll);
+    '<div class="reason"></div><div class="conditions"></div>' +
+    '<button id="roll-btn"></button>';
+  div.querySelector(".reason").textContent = "Jet requis — " + r.reason;
+  div.querySelector(".conditions").textContent = rollConditionsText(r);
+  const btn = div.querySelector("#roll-btn");
+  btn.textContent = "Lancer " + plural(rollPoolSize(r), "dé");
+  btn.addEventListener("click", doRoll);
   $("feed").appendChild(div);
   scrollFeed();
 }
@@ -2915,7 +2969,7 @@ function lockInput(locked) {
   const reason = S.status !== "playing"
     ? "La session est terminée."
     : S.pendingRoll
-      ? "Lancez le d6 avant d’agir."
+      ? "Lancez les dés avant d’agir."
       : "Que fais-tu ?";
   $("player-input").disabled = locked || S.status !== "playing" || Boolean(S.pendingRoll);
   $("send-btn").disabled = $("player-input").disabled;
@@ -3051,7 +3105,7 @@ function runGeneration(sessionId, path, body, retryText = null) {
       if (err.status === 409 && err.payload && err.payload.error === "roll_required") {
         // Flux de jeu normal (pas une coupure) : un jet est requis avant ce tour.
         gotDone = true;
-        S.pendingRoll = err.payload.reason || "action risquée";
+        S.pendingRoll = err.payload.request || err.payload.reason || "action risquée";
         if (retryText) $("player-input").value = retryText;
       } else if (err.status === 409 && err.payload && err.payload.error === "invalid_status") {
         gotDone = true;
@@ -3238,12 +3292,15 @@ $("feed").addEventListener("click", (e) => {
   if (btn) { e.preventDefault(); openLorePopover(btn); }
 });
 
-// — Jet de d6 —
+// — Jet de dés —
 
 async function doRoll() {
   const btn = $("roll-needed") && $("roll-needed").querySelector("#roll-btn");
   if (btn) btn.disabled = true;
-  const res = await api("/sessions/" + S.id + "/roll", jsonPost({ reason: S.pendingRoll }));
+  // Les conditions du jet sont celles posées par le MJ, côté serveur : le
+  // client n'envoie qu'un repère de raison pour un éventuel jet libre.
+  const reason = S.pendingRoll ? normalizeRoll(S.pendingRoll).reason : null;
+  const res = await api("/sessions/" + S.id + "/roll", jsonPost({ reason }));
   const body = await res.json();
   if (!res.ok) {
     if (body.error === "roll_already_pending") {
@@ -3262,14 +3319,14 @@ async function doRoll() {
   S.pendingRoll = null;
   S.lastRoll = body;
   S.rollShown = true; // l'event SSE `roll` du prochain tour ne sera pas ré-affiché
-  addRollBlock(body, { animate: true });
+  const animMs = addRollBlock(body, { animate: true });
   scrollFeed(true);
   updateRail();
   // La narration reprend d'elle-même là où le MJ l'avait suspendue : tour
-  // de continuation sans saisie (le dé animé se pose d'abord).
+  // de continuation sans saisie (toute la poignée se pose d'abord).
   setTimeout(() => {
     runGeneration(S.id, "/sessions/" + S.id + "/turn", { player_input: "" });
-  }, 700);
+  }, animMs + 300);
 }
 
 // — Reprise d'une session existante —
@@ -3338,7 +3395,8 @@ document.addEventListener("visibilitychange", () => {
     // Un tour a avancé (ou un jet est apparu) pendant l'absence → rebâtir.
     if (
       state.turn_count !== S.turnCount ||
-      (state.pending_roll || null) !== (S.pendingRoll || null)
+      JSON.stringify(state.pending_roll || null) !==
+        JSON.stringify(S.pendingRoll || null)
     ) {
       enterSession(S.id);
     }

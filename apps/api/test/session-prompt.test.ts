@@ -11,7 +11,11 @@ import {
   selectSetupGaps,
   turnEndsOpen,
 } from "../src/sessions/prompt";
-import { initialGameState } from "../src/sessions/rules";
+import {
+  initialGameState,
+  normalizeRollRequest,
+  resolveRoll,
+} from "../src/sessions/rules";
 
 const scores: RichnessScores = {
   cosmology: 9,
@@ -157,7 +161,9 @@ describe("buildSystemPrompt (SPEC §7)", () => {
 
   it("contient la fiche et le contrat de balises", () => {
     expect(prompt).toContain("Kael");
-    expect(prompt).toContain('<roll reason="..."/>');
+    expect(prompt).toContain('<roll reason="ce qui est tenté"');
+    expect(prompt).toContain('difficulty="easy|normal|hard"');
+    expect(prompt).toContain('stance="advantage|neutral|disadvantage"');
     expect(prompt).toContain('<invention axis="...">');
     expect(prompt).toContain("Trame libre");
   });
@@ -260,23 +266,37 @@ describe("turnEndsOpen (garde-fou §7)", () => {
 });
 
 describe("buildTurnMessage / buildSetupMessage", () => {
-  it("injecte le résultat du d6 au tour suivant", () => {
-    const msg = buildTurnMessage("Je saute.", {
-      value: 4,
-      outcome: "success_cost",
-      reason: "saut",
-    });
-    expect(msg).toBe("[Jet d6 (saut) : 4 → réussite avec coût]\n\nJe saute.");
+  it("injecte le résultat du jet et ses conditions au tour suivant", () => {
+    const msg = buildTurnMessage(
+      "Je saute.",
+      resolveRoll(
+        normalizeRollRequest({
+          reason: "saut",
+          difficulty: "hard",
+          stance: "advantage",
+          bonus_dice: 1,
+          skills: ["Acrobatie"],
+        }),
+        [2, 5, 3],
+      ),
+    );
+    expect(msg).toBe(
+      "[Jet saut — difficulté difficile (réussite à 5+), avantage, " +
+        "compétences : Acrobatie : 3 dés 2 (annulé), 5*, 3 → dé retenu 5, " +
+        "réussite]\n\nJe saute.",
+    );
     expect(buildTurnMessage("Je marche.", null)).toBe("Je marche.");
   });
 
   it("saisie vide + jet = tour de continuation (le jet seul)", () => {
-    const msg = buildTurnMessage("", {
-      value: 1,
-      outcome: "failure_complication",
-      reason: "frappe",
-    });
-    expect(msg).toBe("[Jet d6 (frappe) : 1 → échec avec complication]");
+    const msg = buildTurnMessage(
+      "",
+      resolveRoll(normalizeRollRequest("frappe"), [1]),
+    );
+    expect(msg).toBe(
+      "[Jet frappe — difficulté normale (réussite à 4+), neutre : 1 dé 1* " +
+        "→ dé retenu 1, échec critique]",
+    );
   });
 
   it("apparie questions et réponses de mise en place", () => {

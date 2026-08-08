@@ -195,7 +195,7 @@ POST   /api/sessions/:id/trame         { trame }  → { trame, setup_questions[]
         → fil rouge posé une fois le personnage choisi ; recentre les questions sur lui
 POST   /api/sessions/:id/setup         { answers[] }  → le DO génère la scène 1
 POST   /api/sessions/:id/turn          { player_input }  → SSE stream
-POST   /api/sessions/:id/roll          { reason }  → jet d6 côté serveur (anti-triche)
+POST   /api/sessions/:id/roll          { reason }  → jet côté serveur (anti-triche) : poignée de d6, dé retenu, issue
 POST   /api/sessions/:id/finish        → résumé + canon_proposals + purge KV
 GET    /api/sessions/:id/state         → fiche perso, Souffle, log
 DELETE /api/sessions/:id               → purge le DO, les caches KV, les propositions
@@ -208,10 +208,23 @@ Le SSE de `/turn` émet des events typés : `narration` (texte), `roll` (dé + r
 
 ## 6. Moteur de jeu — règles « Souffle » (système léger par défaut)
 
-- Action risquée → **1d6 serveur** : 1-2 échec avec complication, 3-4 réussite avec coût, 5-6 réussite franche.
+- Action risquée → **poignée de d6 serveur**, issue **binaire** : réussite ou
+  échec, avec **critique sur 6** et **critique sur 1** (dé retenu).
+- **Le contexte fixe les conditions du jet**, décidées par le MJ dans sa balise
+  `<roll reason difficulty stance dice skills/>` :
+  - **Difficulté** → seuil d'un dé : *facile* 1-2 échec / 3-6 réussite ;
+    *normale* 1-3 échec / 4-6 réussite ; *difficile* 1-4 échec / 5-6 réussite.
+  - **Avantage** : un dé de plus, on garde le **meilleur**.
+    **Désavantage** : un dé de plus, on garde le **pire**.
+  - Chaque dé à **5 ou 6 annule un dé raté** (le pire d'abord) — les dés annulés
+    sortent du pool, ce qui adoucit notamment le désavantage.
+  - **Dice pool** : chaque compétence / pouvoir / atout pertinent ajoute un dé
+    (max 4 dés bonus, poignée max 6).
 - **3 points de Souffle** par session : 1 point transforme un échec en réussite (ou dope un pouvoir). 0 Souffle = épuisement (malus narratif).
 - Pouvoir « en éveil » : chaque usage intense peut déclencher un effet secondaire décidé par le MJ.
-- Le d6 est TOUJOURS lancé côté DO (`/roll`), jamais par le modèle — le résultat est injecté dans le prompt du tour suivant.
+- Les dés sont TOUJOURS lancés côté DO (`/roll`), jamais par le modèle, et les
+  conditions viennent de l'état serveur (le client ne choisit ni difficulté ni
+  posture) — le résultat détaillé est injecté dans le prompt du tour suivant.
 
 ---
 
@@ -276,8 +289,10 @@ Règles dérivées :
 fantastique, violence modérée, pas de contenu adulte"}}
 
 == RÈGLES DE JEU ==
-Système Souffle (d6 serveur). Ne lance JAMAIS de dé toi-même : quand une action
-est risquée, termine ton tour par <roll reason="..."/> et attends le résultat.
+Système Souffle (dés serveur). Ne lance JAMAIS de dé toi-même : quand une action
+est risquée, termine ton tour par <roll reason="..." difficulty="..."
+stance="..." dice="..." skills="..."/> — c'est toi qui fixes les conditions
+d'après le contexte — et attends le résultat.
 État courant : {{fiche perso, Souffle, faits établis, PNJ rencontrés}}
 
 == STYLE DE NARRATION ==
@@ -346,7 +361,9 @@ même composant.
 **Motion (sobre et orchestrée) :**
 - Chargement de session : fondu du `--void` + apparition du titre de scène en
   Cinzel (600ms) — un seul moment orchestré.
-- Jet de dé : le d6 roule 500ms en `--spirit` puis se fige (résultat en mono).
+- Jet de dés : toute la poignée roule en `--spirit`, puis chaque dé se pose en
+  cascade (~220ms d'écart) ; le dé retenu s'allume, les dés annulés par un 5/6
+  s'effacent, l'issue apparaît en fondu.
 - `prefers-reduced-motion` : tout est remplacé par des fondus simples.
 - Pas de particules ambiantes permanentes (coût perf + effet « template IA »).
 

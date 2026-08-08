@@ -30,13 +30,41 @@ describe("GmStreamParser", () => {
     expect(events).toEqual([]);
   });
 
-  it("extrait <roll reason=.../> et le retire de la narration", () => {
+  it("extrait <roll .../> et le retire de la narration", () => {
     const { text, events } = replay([
       'Tu sautes vers la corniche. <roll reason="saut périlleux"/>',
     ]);
     expect(text).toBe("Tu sautes vers la corniche. ");
     expect(events).toEqual([
-      { type: "roll_request", reason: "saut périlleux" },
+      {
+        type: "roll_request",
+        request: {
+          reason: "saut périlleux",
+          difficulty: "normal",
+          stance: "neutral",
+          bonus_dice: 0,
+          skills: [],
+        },
+      },
+    ]);
+  });
+
+  it("lit les conditions du jet (difficulté, posture, dice pool)", () => {
+    const { events } = replay([
+      '<roll reason="crochetage" difficulty="hard" stance="disadvantage" ',
+      'dice="2" skills="Doigts de fée, Sang-froid"/>',
+    ]);
+    expect(events).toEqual([
+      {
+        type: "roll_request",
+        request: {
+          reason: "crochetage",
+          difficulty: "hard",
+          stance: "disadvantage",
+          bonus_dice: 2,
+          skills: ["Doigts de fée", "Sang-froid"],
+        },
+      },
     ]);
   });
 
@@ -47,7 +75,10 @@ describe("GmStreamParser", () => {
       "/> Tu retiens ton souffle.",
     ]);
     expect(text).toBe("Le pont craque.  Tu retiens ton souffle.");
-    expect(events).toEqual([{ type: "roll_request", reason: "traversée" }]);
+    expect(events[0]).toMatchObject({
+      type: "roll_request",
+      request: { reason: "traversée", difficulty: "normal" },
+    });
   });
 
   it("masque le contenu d'une invention et le loggue, même coupée", () => {
@@ -173,10 +204,14 @@ describe("stripGmTags / extractGmEvents", () => {
   });
 
   it("extractGmEvents retrouve tous les événements d'un texte stocké", () => {
-    expect(extractGmEvents(raw)).toEqual([
+    const events = extractGmEvents(raw);
+    expect(events.slice(0, 2)).toEqual([
       { type: "souffle_delta", delta: 1 },
       { type: "invention", axis: "tone", content: "Humour noir." },
-      { type: "roll_request", reason: "fuite" },
     ]);
+    expect(events[2]).toMatchObject({
+      type: "roll_request",
+      request: { reason: "fuite" },
+    });
   });
 });

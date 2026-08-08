@@ -9,8 +9,12 @@ import {
 } from "../richness/logic";
 import {
   describeOutcome,
+  DIFFICULTY_LABELS,
+  MAX_BONUS_DICE,
+  SKILL_TIER_DICE,
   SKILL_TIERS,
   SOUFFLE_MAX,
+  STANCE_LABELS,
   type GameState,
   type RollResult,
 } from "./rules";
@@ -230,14 +234,31 @@ définis-le via <invention> pour qu'il ne reste pas « mort ».
 ${tone}${feedbackBlock}
 
 == RÈGLES DE JEU ==
-Système Souffle : d6 serveur uniquement. Ne lance JAMAIS de dé toi-même ni
+Système Souffle : dés d6 serveur uniquement. Ne lance JAMAIS de dé toi-même ni
 n'annonce de résultat. Quand une action est risquée : narre JUSQU'À l'instant
 de bascule (le geste s'amorce, l'issue reste incertaine), SANS décrire le
-résultat ni la moindre conséquence, puis émets <roll reason="..."/> et
-termine ton tour immédiatement — pas une phrase de plus. Le résultat
-(1-2 échec avec complication, 3-4 réussite avec coût, 5-6 réussite franche)
-te sera transmis au tour suivant : reprends alors la narration exactement où
-elle s'était arrêtée et raconte l'issue selon ce résultat.
+résultat ni la moindre conséquence, puis émets la balise de jet et termine ton
+tour immédiatement — pas une phrase de plus.
+
+C'est TOI qui fixes les conditions du jet d'après le contexte de la scène :
+<roll reason="ce qui est tenté" difficulty="easy|normal|hard"
+      stance="advantage|neutral|disadvantage" dice="0-${MAX_BONUS_DICE}"
+      skills="compétences engagées, séparées par des virgules"/>
+- difficulty : facile (1-2 échec, 3-6 réussite) quand la situation aide ;
+  normal (1-3 échec, 4-6 réussite) par défaut ;
+  difficile (1-4 échec, 5-6 réussite) quand la fiction est hostile.
+- stance : advantage si la position, la préparation ou un allié favorisent
+  l'action (on garde le meilleur dé) ; disadvantage si blessure, obscurité,
+  encombrement, épuisement (on garde le pire) ; neutral sinon.
+- dice : dés supplémentaires du dice pool, apportés par les compétences (liste
+  ci-dessous), pouvoirs ou atouts de la fiche réellement pertinents pour CETTE
+  action — 0 si aucun. Barème par palier :
+  ${SKILL_TIERS.map((t) => `${t} +${SKILL_TIER_DICE[t]}`).join(", ")}.
+  Nomme dans skills les compétences retenues.
+L'issue est binaire : réussite ou échec, avec critique sur 6 et sur 1. Chaque
+dé à 5 ou 6 annule un dé raté. Le résultat te sera transmis au tour suivant :
+reprends alors la narration exactement où elle s'était arrêtée et raconte
+l'issue. Un critique amplifie franchement (aubaine inespérée / catastrophe).
 Le joueur dispose de ${SOUFFLE_MAX} points de Souffle par session ; 1 point transforme
 un échec en réussite ou dope un pouvoir. À 0, épuisement (malus narratif).
 Quand la fiction consomme ou rend du Souffle, émets <souffle delta="-1"/>
@@ -269,6 +290,8 @@ ${SKILL_TIERS.map((t, i) => `${i + 1}. ${t}`).join(" → ")}.
     peuvent en appeler un.
 - Un jet raté sur une compétence maîtrisée porte sur l'enjeu, jamais sur la
   capacité elle-même (l'expert ne « rate » pas son geste de base).
+- Quand un jet a bien lieu, les compétences engagées alimentent son dice pool
+  (attribut dice de <roll/>, barème par palier ci-dessus).
 
 == MÉMOIRE DES FAITS ==
 Quand un événement marquant établit un fait durable (mort d'un PNJ, promesse,
@@ -290,7 +313,7 @@ pour le joueur — ne le recopie jamais, n'y fais jamais référence expliciteme
   une question ouverte explicite adressée au joueur, soit par 2-3 options
   concrètes numérotées ou à puces. JAMAIS sur une simple description ou une
   scène qui « retombe » sans relance. La seule exception est une action risquée
-  suspendue sur <roll reason="..."/> (l'issue devient alors la relance).
+  suspendue sur <roll .../> (l'issue devient alors la relance).
 - Fais vivre les PNJ canon avec leurs motivations écrites.
 - Jamais de contradiction avec le canon ni avec les faits établis en session.
 - Réponds en français, uniquement la narration (plus les balises prévues).`;
@@ -339,7 +362,16 @@ export function buildTurnMessage(
   lastRoll: RollResult | null,
 ): string {
   if (!lastRoll) return playerInput;
-  const rollLine = `[Jet d6 (${lastRoll.reason}) : ${lastRoll.value} → ${describeOutcome(lastRoll.outcome)}]`;
+  const dice = lastRoll.dice
+    .map(
+      (d) =>
+        `${d.value}${d.kept ? "*" : ""}${d.cancelled ? " (annulé)" : ""}`,
+    )
+    .join(", ");
+  const skills = lastRoll.skills.length
+    ? `, compétences : ${lastRoll.skills.join(", ")}`
+    : "";
+  const rollLine = `[Jet ${lastRoll.reason} — difficulté ${DIFFICULTY_LABELS[lastRoll.difficulty]} (réussite à ${lastRoll.threshold}+), ${STANCE_LABELS[lastRoll.stance]}${skills} : ${lastRoll.dice.length} dé${lastRoll.dice.length > 1 ? "s" : ""} ${dice} → dé retenu ${lastRoll.value}, ${describeOutcome(lastRoll.outcome)}]`;
   return playerInput.trim() === ""
     ? rollLine
     : `${rollLine}\n\n${playerInput}`;

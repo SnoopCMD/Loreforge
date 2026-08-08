@@ -174,7 +174,8 @@ describe("M3 — moteur de session (DO GameSession)", () => {
     // Tour 1 : le MJ demande un jet.
     mockAnthropicStream([
       "Tu t'élances au-dessus de la faille. ",
-      '<roll reason="saut au-dessus de la faille"/>',
+      '<roll reason="saut au-dessus de la faille" difficulty="hard" ' +
+        'stance="advantage" dice="1" skills="Acrobatie"/>',
     ]);
     const turn1 = await readSse(
       await post(cookie, `/api/sessions/${session_id}/turn`, {
@@ -182,7 +183,13 @@ describe("M3 — moteur de session (DO GameSession)", () => {
       }),
     );
     expect(turn1.find((e) => e.event === "state_patch")?.data).toEqual({
-      pending_roll: "saut au-dessus de la faille",
+      pending_roll: {
+        reason: "saut au-dessus de la faille",
+        difficulty: "hard",
+        stance: "advantage",
+        bonus_dice: 1,
+        skills: ["Acrobatie"],
+      },
     });
 
     // Tour interdit tant que le jet n'est pas résolu.
@@ -194,17 +201,35 @@ describe("M3 — moteur de session (DO GameSession)", () => {
       "roll_required",
     );
 
-    // d6 serveur.
-    const rollRes = await post(cookie, `/api/sessions/${session_id}/roll`, {});
+    // Dés serveur : la poignée suit les conditions posées par le MJ
+    // (1 dé de base + 1 dé de compétence + 1 dé d'avantage).
+    const rollRes = await post(cookie, `/api/sessions/${session_id}/roll`, {
+      // Le client ne choisit rien : ces conditions-là doivent être ignorées.
+      difficulty: "easy",
+      stance: "advantage",
+      dice: 4,
+    });
     expect(rollRes.status).toBe(200);
     const roll = (await rollRes.json()) as {
       value: number;
       outcome: string;
       reason: string;
+      difficulty: string;
+      stance: string;
+      threshold: number;
+      dice: Array<{ value: number; kept: boolean }>;
     };
     expect(roll.value).toBeGreaterThanOrEqual(1);
     expect(roll.value).toBeLessThanOrEqual(6);
     expect(roll.reason).toBe("saut au-dessus de la faille");
+    expect(roll.difficulty).toBe("hard");
+    expect(roll.stance).toBe("advantage");
+    expect(roll.threshold).toBe(5);
+    expect(roll.dice).toHaveLength(3);
+    expect(roll.dice.filter((d) => d.kept)).toHaveLength(1);
+    expect(["critical_failure", "failure", "success", "critical_success"]).toContain(
+      roll.outcome,
+    );
 
     // Pas de relance tant que le résultat n'est pas joué (anti-triche).
     const reroll = await post(cookie, `/api/sessions/${session_id}/roll`, {});

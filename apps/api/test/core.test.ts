@@ -6,8 +6,15 @@ import {
   createSseParser,
   extractActionChips,
   mdToHtml,
+  normalizeRoll,
+  rollPoolSize,
   // @ts-expect-error — module JS servi tel quel au front, sans types.
 } from "../public/core.js";
+import {
+  normalizeRollRequest,
+  poolSize,
+  resolveRoll,
+} from "../src/sessions/rules";
 
 /** Rejoue un texte dans le segmenteur en le coupant en petits deltas. */
 function speak(text: string, step = 5): string[] {
@@ -149,5 +156,49 @@ describe("mdToHtml", () => {
     expect(html).toContain("<p>Avant.</p>");
     expect(html).toContain("<td>x</td>");
     expect(html).toContain("<p>Après.</p>");
+  });
+});
+
+describe("normalizeRoll / rollPoolSize (miroir front du moteur §6)", () => {
+  it("rend affichable un résultat serveur sans le déformer", () => {
+    const result = resolveRoll(
+      normalizeRollRequest({
+        reason: "crochetage",
+        difficulty: "hard",
+        stance: "disadvantage",
+        bonus_dice: 1,
+        skills: ["Doigts de fée"],
+      }),
+      [1, 6, 3],
+    );
+    expect(normalizeRoll(result)).toEqual(result);
+  });
+
+  it("rattrape un ancien état (raison seule, résultat mono-dé)", () => {
+    expect(normalizeRoll("saut")).toMatchObject({
+      reason: "saut",
+      difficulty: "normal",
+      stance: "neutral",
+      bonus_dice: 0,
+    });
+    const legacy = normalizeRoll({
+      value: 5,
+      outcome: "clean_success",
+      reason: "saut",
+    });
+    expect(legacy.dice).toEqual([
+      { value: 5, success: false, cancelled: false, kept: true },
+    ]);
+    expect(legacy.threshold).toBe(4);
+    expect(normalizeRoll(null)).toBeNull();
+  });
+
+  it("annonce la même poignée que le serveur", () => {
+    for (const stance of ["neutral", "advantage", "disadvantage"]) {
+      for (let bonus = 0; bonus <= 4; bonus++) {
+        const request = normalizeRollRequest({ reason: "x", stance, bonus_dice: bonus });
+        expect(rollPoolSize(request)).toBe(poolSize(request));
+      }
+    }
   });
 });

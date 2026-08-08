@@ -1,41 +1,234 @@
 // Moteur « Souffle » : logique pure (SPEC §6), sans dépendance runtime —
 // testable unitairement (DoD M3).
 //
-// - Action risquée → 1d6 côté serveur : 1-2 échec avec complication,
-//   3-4 réussite avec coût, 5-6 réussite franche.
-// - 3 points de Souffle par session, bornés [0, 3].
-// - Le d6 n'est JAMAIS lancé par le modèle : il demande un jet via
-//   <roll reason="..."/>, le DO le résout et injecte le résultat au tour
-//   suivant.
+// Résolution contextuelle : le MJ ne demande plus « un d6 », il décrit les
+// CONDITIONS du jet (difficulté, posture, compétences engagées) et le serveur
+// lance la poignée de dés correspondante.
+//
+//   - Issue binaire : réussite ou échec. Un dé retenu à 6 = réussite critique,
+//     à 1 = échec critique.
+//   - Difficulté → seuil de réussite d'un dé :
+//       facile   1-2 échec / 3-4-5-6 réussite   (seuil 3)
+//       normal   1-2-3 échec / 4-5-6 réussite   (seuil 4)
+//       difficile 1-2-3-4 échec / 5-6 réussite  (seuil 5)
+//   - Avantage : un dé de plus, on garde le MEILLEUR.
+//     Désavantage : un dé de plus, on garde le PIRE.
+//   - Chaque dé à 5 ou 6 annule un dé raté (le pire d'abord) : les dés annulés
+//     ne comptent plus, ce qui adoucit notamment le désavantage.
+//   - Dice pool : les compétences engagées ajoutent des dés à la poignée.
+//
+// Les dés ne sont JAMAIS lancés par le modèle : il demande un jet via
+// <roll reason="..." difficulty="..." stance="..." dice="..."/>, le DO le
+// résout et injecte le résultat au tour suivant.
 
 export const SOUFFLE_MAX = 3;
 
-export type RollOutcome =
-  | "failure_complication"
-  | "success_cost"
-  | "clean_success";
+export const DIFFICULTIES = ["easy", "normal", "hard"] as const;
+export type Difficulty = (typeof DIFFICULTIES)[number];
 
-export interface RollResult {
-  value: number; // 1-6
-  outcome: RollOutcome;
+/** Valeur minimale d'un dé pour qu'il compte comme une réussite. */
+export const DIFFICULTY_THRESHOLD: Record<Difficulty, number> = {
+  easy: 3,
+  normal: 4,
+  hard: 5,
+};
+
+export const DIFFICULTY_LABELS: Record<Difficulty, string> = {
+  easy: "facile",
+  normal: "normale",
+  hard: "difficile",
+};
+
+export const STANCES = ["advantage", "neutral", "disadvantage"] as const;
+export type Stance = (typeof STANCES)[number];
+
+export const STANCE_LABELS: Record<Stance, string> = {
+  advantage: "avantage",
+  neutral: "neutre",
+  disadvantage: "désavantage",
+};
+
+/** Un dé à 5 ou 6 annule un dé raté. */
+export const CANCEL_VALUE = 5;
+/** Dés bonus apportés par les compétences, au plus. */
+export const MAX_BONUS_DICE = 4;
+/** Taille maximale de la poignée (1 base + bonus + dé de posture). */
+export const MAX_POOL = 1 + MAX_BONUS_DICE + 1;
+
+export type RollOutcome =
+  | "critical_failure"
+  | "failure"
+  | "success"
+  | "critical_success";
+
+/** Conditions du jet, fixées par le MJ (jamais par le client : anti-triche). */
+export interface RollRequest {
   reason: string;
+  difficulty: Difficulty;
+  stance: Stance;
+  /** Dés bonus du dice pool (compétences engagées). */
+  bonus_dice: number;
+  /** Compétences/atouts qui justifient les dés bonus (affichage). */
+  skills: string[];
 }
 
-export function outcomeForRoll(value: number): RollOutcome {
-  if (value <= 2) return "failure_complication";
-  if (value <= 4) return "success_cost";
-  return "clean_success";
+export interface RolledDie {
+  value: number; // 1-6
+  /** Le dé atteint-il le seuil de difficulté ? */
+  success: boolean;
+  /** Dé raté annulé par un 5/6. */
+  cancelled: boolean;
+  /** Dé finalement retenu pour l'issue. */
+  kept: boolean;
+}
+
+export interface RollResult extends RollRequest {
+  dice: RolledDie[];
+  /** Valeur du dé retenu. */
+  value: number;
+  outcome: RollOutcome;
+  /** Nombre d'échecs annulés par les 5/6. */
+  cancelled: number;
+  /** Seuil appliqué (dérivé de la difficulté, utile côté affichage). */
+  threshold: number;
+}
+
+function clampInt(value: unknown, min: number, max: number): number {
+  const n = Math.round(Number(value));
+  if (!Number.isFinite(n)) return min;
+  return Math.min(max, Math.max(min, n));
+}
+
+/**
+ * Normalise une demande de jet venant du modèle, du client ou d'un état
+ * persisté avant ce système (où `pending_roll` n'était qu'une raison texte).
+ */
+export function normalizeRollRequest(
+  input: unknown,
+  fallbackReason = "action risquée",
+): RollRequest {
+  if (typeof input === "string" || input == null) {
+    return {
+      reason: (typeof input === "string" && input.trim()) || fallbackReason,
+      difficulty: "normal",
+      stance: "neutral",
+      bonus_dice: 0,
+      skills: [],
+    };
+  }
+  const raw = input as Record<string, unknown>;
+  const difficulty = DIFFICULTIES.includes(raw.difficulty as Difficulty)
+    ? (raw.difficulty as Difficulty)
+    : "normal";
+  const stance = STANCES.includes(raw.stance as Stance)
+    ? (raw.stance as Stance)
+    : "neutral";
+  const skills = Array.isArray(raw.skills)
+    ? raw.skills
+        .filter((s): s is string => typeof s === "string")
+        .map((s) => s.trim())
+        .filter(Boolean)
+        .slice(0, MAX_BONUS_DICE)
+    : [];
+  const reason =
+    (typeof raw.reason === "string" && raw.reason.trim().slice(0, 200)) ||
+    fallbackReason;
+  return {
+    reason,
+    difficulty,
+    stance,
+    bonus_dice: clampInt(raw.bonus_dice ?? 0, 0, MAX_BONUS_DICE),
+    skills,
+  };
+}
+
+/** Taille de la poignée : 1 dé de base + dice pool + 1 dé de posture. */
+export function poolSize(request: RollRequest): number {
+  const extra = request.stance === "neutral" ? 0 : 1;
+  return Math.min(MAX_POOL, 1 + request.bonus_dice + extra);
+}
+
+export function outcomeForValue(
+  value: number,
+  difficulty: Difficulty,
+): RollOutcome {
+  if (value >= 6) return "critical_success";
+  if (value <= 1) return "critical_failure";
+  return value >= DIFFICULTY_THRESHOLD[difficulty] ? "success" : "failure";
+}
+
+export function isSuccess(outcome: RollOutcome): boolean {
+  return outcome === "success" || outcome === "critical_success";
+}
+
+/**
+ * Résolution pure : à valeurs de dés données, quelle issue ?
+ * 1. chaque dé réussit s'il atteint le seuil de difficulté ;
+ * 2. chaque 5/6 annule un dé raté (le pire d'abord) ;
+ * 3. on retient, parmi les dés restants, le meilleur (neutre/avantage) ou le
+ *    pire (désavantage) ;
+ * 4. l'issue vient du dé retenu (6 critique en réussite, 1 critique en échec).
+ */
+export function resolveRoll(
+  request: RollRequest,
+  values: number[],
+): RollResult {
+  const threshold = DIFFICULTY_THRESHOLD[request.difficulty];
+  const dice: RolledDie[] = values.map((value) => ({
+    value,
+    success: value >= threshold,
+    cancelled: false,
+    kept: false,
+  }));
+
+  // Les 5/6 effacent les ratés, en commençant par les plus mauvais.
+  const boons = dice.filter((d) => d.value >= CANCEL_VALUE).length;
+  const failures = dice
+    .filter((d) => !d.success)
+    .sort((a, b) => a.value - b.value);
+  let cancelled = 0;
+  for (const die of failures) {
+    if (cancelled >= boons) break;
+    die.cancelled = true;
+    cancelled++;
+  }
+
+  // Un dé à 5/6 n'est jamais un raté (seuil max = 5) : il reste toujours au
+  // moins un dé en lice. Le `?? dice` n'est qu'une ceinture.
+  const remaining = dice.filter((d) => !d.cancelled);
+  const pool = remaining.length ? remaining : dice;
+  const kept = pool.reduce((best, die) =>
+    request.stance === "disadvantage"
+      ? die.value < best.value
+        ? die
+        : best
+      : die.value > best.value
+        ? die
+        : best,
+  );
+  kept.kept = true;
+
+  return {
+    ...request,
+    dice,
+    value: kept.value,
+    outcome: outcomeForValue(kept.value, request.difficulty),
+    cancelled,
+    threshold,
+  };
 }
 
 /** Libellé français injecté dans le prompt du tour suivant. */
 export function describeOutcome(outcome: RollOutcome): string {
   switch (outcome) {
-    case "failure_complication":
-      return "échec avec complication";
-    case "success_cost":
-      return "réussite avec coût";
-    case "clean_success":
-      return "réussite franche";
+    case "critical_failure":
+      return "échec critique";
+    case "failure":
+      return "échec";
+    case "success":
+      return "réussite";
+    case "critical_success":
+      return "réussite critique";
   }
 }
 
@@ -44,6 +237,12 @@ export function rollD6(): number {
   const buf = new Uint32Array(1);
   crypto.getRandomValues(buf);
   return (buf[0] % 6) + 1;
+}
+
+/** Lance la poignée du jet et le résout côté serveur. */
+export function performRoll(request: RollRequest): RollResult {
+  const values = Array.from({ length: poolSize(request) }, () => rollD6());
+  return resolveRoll(request, values);
 }
 
 /** Souffle borné [0, SOUFFLE_MAX] ; les deltas non entiers sont arrondis. */
@@ -71,6 +270,18 @@ export interface SkillEntry {
   /** Précision courte du MJ (portée, limite, coût...). */
   note?: string;
 }
+
+/**
+ * Dés bonus qu'apporte une compétence engagée dans un jet, selon son palier
+ * (§6). Barème indicatif donné au MJ : c'est lui qui décide quelles
+ * compétences comptent pour l'action tentée.
+ */
+export const SKILL_TIER_DICE: Record<SkillTier, number> = {
+  découverte: 0,
+  apprentissage: 1,
+  maîtrise: 2,
+  inné: 2,
+};
 
 export const MAX_SKILLS = 40;
 /** Faits établis maximum ; au-delà, les plus anciens sortent (FIFO). */
@@ -190,7 +401,7 @@ export interface GameState {
   /** Compétences acquises, enregistrées par le MJ via <skill/>. */
   skills: SkillEntry[];
   /** Jet demandé par le MJ via <roll/>, en attente de POST /roll. */
-  pending_roll: string | null;
+  pending_roll: RollRequest | null;
   /** Dernier jet résolu, à injecter dans le prompt du prochain tour. */
   last_roll: RollResult | null;
   /** Nombre de tours de narration générés (setup inclus). */
