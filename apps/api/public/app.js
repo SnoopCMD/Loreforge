@@ -1801,8 +1801,12 @@ const MOODBOARD_ERRORS = {
   image_not_found: "Cette image n’existe plus.",
 };
 
-const mbError = (body, status) =>
-  MOODBOARD_ERRORS[body && body.error] || "Échec (" + status + ").";
+const mbError = (body, status) => {
+  const base = MOODBOARD_ERRORS[body && body.error] || "Échec (" + status + ").";
+  // La cause exacte d'un échec d'analyse (troncature, 400 de l'API, clé morte)
+  // est autrement invisible sans wrangler tail.
+  return body && body.detail ? base + " (" + body.detail + ")" : base;
+};
 
 async function loadMoodboards(bibleId) {
   const list = $("moodboard-list");

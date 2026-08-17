@@ -636,7 +636,14 @@ moodboards.post("/:id/moodboards/:mid/analyze", async (c) => {
     palettes = result.palettes;
   } catch (err) {
     console.error("[moodboards] analyse :", err);
-    return c.json({ error: "analysis_failed" }, 502);
+    return c.json(
+      {
+        error: "analysis_failed",
+        // Sans la cause, l'échec n'est lisible que dans wrangler tail.
+        detail: err instanceof Error ? err.message : String(err),
+      },
+      502,
+    );
   }
 
   const now = Date.now();

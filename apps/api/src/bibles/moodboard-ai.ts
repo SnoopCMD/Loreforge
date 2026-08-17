@@ -22,6 +22,14 @@ export const VISION_MEDIA_TYPES = [
 /** Au-delà, l'appel devient lourd sans rien apporter à la lecture d'ambiance. */
 export const MAX_ANALYZED_IMAGES = 8;
 
+/**
+ * Budget d'images d'un appel. L'API refuse une requête au-delà de 32 Mo et le
+ * base64 gonfle d'un tiers : huit photos de 5 Mo (tolérées à l'import une par
+ * une) dépassent la limite ensemble, et l'appel échoue en bloc. On s'arrête
+ * donc avant — mieux vaut lire quatre images que zéro.
+ */
+export const MAX_ANALYZED_BYTES = 18 * 1024 * 1024;
+
 export interface VisionImage {
   mediaType: string;
   bytes: Uint8Array;
@@ -88,16 +96,25 @@ export async function analyzeMoodboard(
 ): Promise<MoodboardAnalysis> {
   const client = new Anthropic({ apiKey });
 
-  const content: Anthropic.ContentBlockParam[] = images
-    .slice(0, MAX_ANALYZED_IMAGES)
-    .map((image) => ({
-      type: "image" as const,
+  const content: Anthropic.ContentBlockParam[] = [];
+  let budget = MAX_ANALYZED_BYTES;
+  for (const image of images.slice(0, MAX_ANALYZED_IMAGES)) {
+    if (image.bytes.byteLength > budget) break;
+    budget -= image.bytes.byteLength;
+    content.push({
+      type: "image",
       source: {
-        type: "base64" as const,
-        media_type: image.mediaType as "image/jpeg" | "image/png" | "image/gif" | "image/webp",
+        type: "base64",
+        media_type: image.mediaType as
+          | "image/jpeg"
+          | "image/png"
+          | "image/gif"
+          | "image/webp",
         data: toBase64(image.bytes),
       },
-    }));
+    });
+  }
+  if (content.length === 0) throw new Error("moodboard_images_too_large");
   content.push({
     type: "text",
     text: buildMoodboardPrompt(bibleTitle, boardTitle, note),
@@ -107,7 +124,9 @@ export async function analyzeMoodboard(
   // couper par le runtime Workers avant même le catch de l'appelant.
   const stream = client.messages.stream({
     model: MOODBOARD_MODEL,
-    max_tokens: 8000,
+    // La réflexion adaptive est comptée dans ce budget et précède le JSON :
+    // trop bas, la sortie est tronquée en plein objet (cf. richness/analyze).
+    max_tokens: 32000,
     thinking: { type: "adaptive" },
     output_config: {
       format: { type: "json_schema", schema: MOODBOARD_OUTPUT_SCHEMA },
@@ -115,9 +134,26 @@ export async function analyzeMoodboard(
     messages: [{ role: "user", content }],
   });
 
-  const response = await stream.finalMessage();
+  let response;
+  try {
+    response = await stream.finalMessage();
+  } catch (err) {
+    if (err instanceof Anthropic.AuthenticationError) {
+      throw new Error("moodboard_bad_api_key");
+    }
+    // 400 de l'API (requête trop lourde, image refusée) : le message porte la
+    // raison, sans quoi l'échec est indiscernable d'un problème de réseau.
+    if (err instanceof Anthropic.APIError) {
+      throw new Error(`moodboard_api_error (${err.status}: ${err.message})`);
+    }
+    throw err;
+  }
+
   if (response.stop_reason === "refusal") {
     throw new Error("moodboard_refused");
+  }
+  if (response.stop_reason === "max_tokens") {
+    throw new Error("moodboard_truncated");
   }
 
   const text = response.content
@@ -129,7 +165,9 @@ export async function analyzeMoodboard(
   try {
     payload = JSON.parse(text);
   } catch {
-    throw new Error("moodboard_invalid_json");
+    throw new Error(
+      `moodboard_invalid_json (stop=${response.stop_reason}, len=${text.length})`,
+    );
   }
 
   const result = parseAnalysisPayload(payload);
