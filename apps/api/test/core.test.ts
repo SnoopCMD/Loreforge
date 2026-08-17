@@ -2,14 +2,19 @@
 
 import { describe, expect, it } from "vitest";
 import {
+  DEFAULT_PALETTE_COLORS,
+  PALETTE_KEYS,
   createSpeechSegmenter,
   createSseParser,
   extractActionChips,
   mdToHtml,
   normalizeRoll,
+  paletteCssVars,
+  paletteVar,
   rollPoolSize,
   // @ts-expect-error — module JS servi tel quel au front, sans types.
 } from "../public/core.js";
+import { DEFAULT_PALETTE, PALETTE_KEYS as SERVER_KEYS } from "../src/bibles/palette";
 import {
   normalizeRollRequest,
   poolSize,
@@ -200,5 +205,45 @@ describe("normalizeRoll / rollPoolSize (miroir front du moteur §6)", () => {
         expect(rollPoolSize(request)).toBe(poolSize(request));
       }
     }
+  });
+});
+
+describe("palettes d'ambiance", () => {
+  /** Palette valide minimale : les huit clés, couleurs distinctes. */
+  const palette = (over: Record<string, string> = {}) => ({
+    name: "Braise et cendre",
+    mood: "Un feu qui s'éteint.",
+    colors: { ...DEFAULT_PALETTE_COLORS, ...over },
+  });
+
+  it("parle des mêmes couleurs que le serveur", () => {
+    // Le front pose les variables, le serveur les valide : un désaccord sur les
+    // clés ferait passer des palettes muettes.
+    expect(PALETTE_KEYS).toEqual([...SERVER_KEYS]);
+    expect(DEFAULT_PALETTE_COLORS).toEqual(DEFAULT_PALETTE.colors);
+  });
+
+  it("nomme les variables CSS comme styles.css", () => {
+    expect(paletteVar("void")).toBe("--void");
+    expect(paletteVar("parchment_dim")).toBe("--parchment-dim");
+  });
+
+  it("rend les huit couples variable/valeur, en minuscules", () => {
+    const vars = paletteCssVars(palette({ ember: "#FF0088" }));
+    expect(vars).toHaveLength(8);
+    expect(vars[0]).toEqual(["--void", DEFAULT_PALETTE_COLORS.void]);
+    expect(vars).toContainEqual(["--ember", "#ff0088"]);
+  });
+
+  it("ne rend rien d'une palette absente, incomplète ou mal formée", () => {
+    expect(paletteCssVars(null)).toEqual([]);
+    expect(paletteCssVars(undefined)).toEqual([]);
+    expect(paletteCssVars({})).toEqual([]);
+    const partial = palette();
+    delete (partial.colors as Record<string, string>).line;
+    expect(paletteCssVars(partial)).toEqual([]);
+    // Tout ou rien : une seule couleur invalide et l'ambiance d'origine reste.
+    expect(paletteCssVars(palette({ arcane: "rouge" }))).toEqual([]);
+    expect(paletteCssVars(palette({ arcane: "#12" }))).toEqual([]);
   });
 });

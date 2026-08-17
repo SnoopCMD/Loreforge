@@ -287,6 +287,17 @@
     <div id="proposal-list"></div>
   </div>
 
+  <!-- Références graphiques : tableaux d'ambiance (upload ou URL). -->
+  <div class="panel" id="moodboards-panel">
+    <div class="row spread">
+      <h2>Références graphiques</h2>
+      <button class="ghost" id="new-moodboard-btn">Nouveau tableau</button>
+    </div>
+    <p class="msg">Des images pour fixer l'ambiance : fichiers ou URL. L'analyse en tire une lecture d'ambiance et des palettes, proposées au lancement de vos sessions.</p>
+    <div id="moodboard-list"></div>
+    <p id="moodboard-msg" class="msg"></p>
+  </div>
+
   <div class="panel">
     <h2>Sessions</h2>
     <div id="session-list"></div>
@@ -393,6 +404,15 @@
     </div>
     <p id="setup-msg" class="msg"></p>
   </div>
+  <!-- Ambiance : palettes tirées des tableaux de références de la bible. -->
+  <div class="panel hidden" id="setup-palette-panel">
+    <div class="row spread">
+      <h2>Ambiance</h2>
+      <span class="msg" id="setup-palette-current"></span>
+    </div>
+    <p class="msg">La teinte de cette session. Vous pourrez en changer en cours de partie.</p>
+    <div class="palette-choices" id="setup-palettes"></div>
+  </div>
 </section>
 </div>
 
@@ -408,6 +428,8 @@
     <span class="row">
       <button class="ghost hidden" id="voice-toggle" aria-pressed="false"
         title="Lire chaque tour du MJ à voix haute">🔊 Voix du MJ</button>
+      <button class="ghost hidden" id="palette-toggle"
+        title="Changer l'ambiance de la session">🎨 Ambiance</button>
       <button class="ghost" id="follow-toggle" aria-pressed="true"
         title="Faire défiler le fil automatiquement pendant la narration">⇣ Suivi</button>
       <button class="ghost" id="rail-toggle">Fiche &amp; Souffle</button>
@@ -469,6 +491,17 @@
 </div>
 
 <div id="overlay-root"></div>
+
+<!-- Sélecteur d'ambiance, ouvert depuis la session (change à chaud). -->
+<div id="palette-modal" class="modal-backdrop hidden">
+  <div class="modal" role="dialog" aria-modal="true" aria-labelledby="palette-modal-title">
+    <button type="button" class="modal-close" id="palette-close" aria-label="Fermer">✕</button>
+    <h3 id="palette-modal-title">Ambiance de la session</h3>
+    <p class="msg">Survolez pour prévisualiser, cliquez pour adopter. Les palettes viennent des tableaux de références de votre bible.</p>
+    <div class="palette-choices" id="palette-choices"></div>
+    <p class="msg" id="palette-modal-msg"></p>
+  </div>
+</div>
 
 <!-- Panneau d'une zone floue : explication + proposition éditable + actions. -->
 <div id="gap-modal" class="modal-backdrop hidden">

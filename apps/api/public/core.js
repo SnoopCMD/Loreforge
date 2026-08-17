@@ -15,6 +15,63 @@ export const AXIS_LABELS = {
 
 export const AXES = Object.keys(AXIS_LABELS);
 
+// ── Palettes d'ambiance ──────────────────────────────────────────────────
+
+// Les huit couleurs de la DA (§8), dans l'ordre d'affichage. Une palette de
+// session n'est rien d'autre que ces variables CSS repeintes : le serveur les
+// valide (bibles/palette.ts), le front les pose sur l'élément racine.
+export const PALETTE_KEYS = [
+  "void", "nebula", "arcane", "spirit",
+  "ember", "parchment", "parchment_dim", "line",
+];
+
+/** `parchment_dim` → `--parchment-dim`. */
+export const paletteVar = (key) => "--" + key.replace(/_/g, "-");
+
+/** Rôle de chaque couleur, en info-bulle des pastilles d'une palette. */
+export const PALETTE_LABELS = {
+  void: "Vide — fond de page",
+  nebula: "Nébuleuse — panneaux",
+  arcane: "Arcane — identité",
+  spirit: "Esprit — le vivant (stream, dés)",
+  ember: "Braise — danger, Souffle",
+  parchment: "Parchemin — texte",
+  parchment_dim: "Parchemin discret — texte secondaire",
+  line: "Trait — bordures",
+};
+
+// L'ambiance d'origine, telle qu'écrite dans `:root` (styles.css). Sert à
+// dessiner le choix « ambiance d'origine » : celui qui retire les variables.
+export const DEFAULT_PALETTE_COLORS = {
+  void: "#12081f",
+  nebula: "#2a1548",
+  arcane: "#7c3aed",
+  spirit: "#67e8f9",
+  ember: "#f97316",
+  parchment: "#f3ede4",
+  parchment_dim: "#b8aecb",
+  line: "#4b2f7a",
+};
+
+/**
+ * Couleurs d'une palette sous forme [variable CSS, valeur].
+ * Une palette absente ou mal formée ne rend rien : l'appelant retire alors les
+ * variables et la DA d'origine reprend la main.
+ */
+export function paletteCssVars(palette) {
+  const colors = palette && palette.colors;
+  if (!colors || typeof colors !== "object") return [];
+  const vars = [];
+  for (const key of PALETTE_KEYS) {
+    const value = colors[key];
+    if (typeof value === "string" && /^#[0-9a-fA-F]{6}$/.test(value)) {
+      vars.push([paletteVar(key), value.toLowerCase()]);
+    }
+  }
+  // Tout ou rien : une palette partielle mélangerait deux ambiances.
+  return vars.length === PALETTE_KEYS.length ? vars : [];
+}
+
 // Issue binaire + critiques (§6). Les trois premières clés sont l'ancien
 // système : d'anciennes sessions peuvent encore les porter dans leur état.
 export const OUTCOME_LABELS = {

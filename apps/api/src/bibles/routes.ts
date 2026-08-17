@@ -235,8 +235,17 @@ bibles.delete("/:id", async (c) => {
   const row = await findOwnedBible(c.env.DB, id, c.get("user").id);
   if (!row) return c.json({ error: "not_found" }, 404);
 
+  // Images de référence : les clés R2 doivent être lues avant le DELETE.
+  const { results: moodboardImages } = await c.env.DB.prepare(
+    `SELECT r2_key FROM moodboard_images WHERE bible_id = ?`,
+  )
+    .bind(id)
+    .all<{ r2_key: string }>();
+
   // Enfants d'abord (canon_proposals référence aussi game_sessions).
   await c.env.DB.batch([
+    c.env.DB.prepare(`DELETE FROM moodboard_images WHERE bible_id = ?`).bind(id),
+    c.env.DB.prepare(`DELETE FROM bible_moodboards WHERE bible_id = ?`).bind(id),
     c.env.DB.prepare(`DELETE FROM canon_proposals WHERE bible_id = ?`).bind(id),
     c.env.DB.prepare(`DELETE FROM game_sessions WHERE bible_id = ?`).bind(id),
     c.env.DB.prepare(`DELETE FROM characters WHERE bible_id = ?`).bind(id),
@@ -248,6 +257,13 @@ bibles.delete("/:id", async (c) => {
 
   if (row.r2_key) {
     c.executionCtx.waitUntil(c.env.BUCKET.delete(row.r2_key));
+  }
+  if (moodboardImages.length) {
+    c.executionCtx.waitUntil(
+      Promise.all(
+        moodboardImages.map((img) => c.env.BUCKET.delete(img.r2_key)),
+      ).then(() => {}),
+    );
   }
   c.executionCtx.waitUntil(purgeBibleIndex(c.env, id));
 

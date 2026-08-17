@@ -6,6 +6,7 @@ import type { Context } from "hono";
 import type { AppEnv } from "../env";
 import { requireAuth } from "../auth/middleware";
 import { findOwnedBible } from "../bibles/db";
+import { parsePalette, serializePalette } from "../bibles/palette";
 import { loreKvPrefix, normalizeTrame, sessionKvKey } from "./do";
 
 const FORMATS = ["oneshot", "mini", "campaign"] as const;
@@ -26,6 +27,7 @@ interface GameSessionRow {
   summary_md: string | null;
   created_at: number;
   finished_at: number | null;
+  palette_json: string | null;
 }
 
 // POST /api/sessions — { bible_id, character_id?, format, trame? }
@@ -37,6 +39,7 @@ sessions.post("/", async (c) => {
     character_mode?: unknown;
     format?: unknown;
     trame?: unknown;
+    palette?: unknown;
   };
   try {
     body = await c.req.json();
@@ -77,6 +80,13 @@ sessions.post("/", async (c) => {
     return c.json({ error: "invalid_character_mode" }, 400);
   }
 
+  // Palette d'ambiance (§8) : facultative, modifiable en cours de partie.
+  let paletteJson: string | null = null;
+  if (body.palette !== undefined && body.palette !== null) {
+    paletteJson = serializePalette(body.palette);
+    if (paletteJson === null) return c.json({ error: "invalid_palette" }, 400);
+  }
+
   const user = c.get("user");
   const bible = await findOwnedBible(c.env.DB, body.bible_id, user.id);
   if (!bible) return c.json({ error: "bible_not_found" }, 404);
@@ -97,10 +107,19 @@ sessions.post("/", async (c) => {
 
   await c.env.DB.prepare(
     `INSERT INTO game_sessions
-       (id, bible_id, user_id, character_id, format, trame, status, created_at)
-     VALUES (?, ?, ?, ?, ?, ?, 'setup', ?)`,
+       (id, bible_id, user_id, character_id, format, trame, status, created_at, palette_json)
+     VALUES (?, ?, ?, ?, ?, ?, 'setup', ?, ?)`,
   )
-    .bind(sessionId, bible.id, user.id, characterId, body.format, trame, now)
+    .bind(
+      sessionId,
+      bible.id,
+      user.id,
+      characterId,
+      body.format,
+      trame,
+      now,
+      paletteJson,
+    )
     .run();
 
   const stub = c.env.GAME_SESSIONS.get(doId);
@@ -144,7 +163,7 @@ sessions.get("/", async (c) => {
   const { results } = await c.env.DB.prepare(
     `SELECT gs.id, gs.bible_id, b.title AS bible_title,
             gs.character_id, ch.name AS character_name, gs.format,
-            gs.trame, gs.status, gs.created_at, gs.finished_at
+            gs.trame, gs.status, gs.created_at, gs.finished_at, gs.palette_json
      FROM game_sessions gs
      JOIN bibles b ON b.id = gs.bible_id
      LEFT JOIN characters ch ON ch.id = gs.character_id
@@ -152,9 +171,14 @@ sessions.get("/", async (c) => {
      ORDER BY gs.created_at DESC`,
   )
     .bind(user.id, bibleId ?? null, bibleId ?? null)
-    .all();
+    .all<Record<string, unknown>>();
 
-  return c.json({ sessions: results });
+  // La palette voyage décodée : le client la pose telle quelle en variables CSS.
+  const sessions = results.map(({ palette_json, ...row }) => ({
+    ...row,
+    palette: parsePalette(palette_json),
+  }));
+  return c.json({ sessions });
 });
 
 async function loadOwnedSession(
@@ -184,6 +208,41 @@ function proxy(path: string) {
     return stub.fetch(new Request(`https://do${path}`, c.req.raw));
   };
 }
+
+// GET /api/sessions/:id/palette — ambiance en cours (null = DA par défaut).
+// Vit en D1 et non dans le DO : c'est une préférence d'affichage, pas de la
+// fiction — elle survit donc au refresh sans réveiller le Durable Object.
+sessions.get("/:id/palette", async (c) => {
+  const row = await loadOwnedSession(c.env.DB, c.req.param("id"), c.get("user").id);
+  if (!row) return c.json({ error: "not_found" }, 404);
+  return c.json({ palette: parsePalette(row.palette_json) });
+});
+
+// PUT /api/sessions/:id/palette — { palette } pour changer d'ambiance en cours
+// de partie, ou { palette: null } pour revenir à la DA par défaut.
+sessions.put("/:id/palette", async (c) => {
+  const row = await loadOwnedSession(c.env.DB, c.req.param("id"), c.get("user").id);
+  if (!row) return c.json({ error: "not_found" }, 404);
+
+  let body: { palette?: unknown };
+  try {
+    body = await c.req.json();
+  } catch {
+    return c.json({ error: "invalid_json" }, 400);
+  }
+  if (body.palette === undefined) return c.json({ error: "empty_patch" }, 400);
+
+  let paletteJson: string | null = null;
+  if (body.palette !== null) {
+    paletteJson = serializePalette(body.palette);
+    if (paletteJson === null) return c.json({ error: "invalid_palette" }, 400);
+  }
+
+  await c.env.DB.prepare(`UPDATE game_sessions SET palette_json = ? WHERE id = ?`)
+    .bind(paletteJson, row.id)
+    .run();
+  return c.json({ palette: parsePalette(paletteJson) });
+});
 
 sessions.post("/:id/trame", proxy("/trame"));
 sessions.post("/:id/setup", proxy("/setup"));

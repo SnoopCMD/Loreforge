@@ -3,10 +3,11 @@
 // La logique sans DOM vit dans core.js (= @app/core, SPEC §8.3).
 
 import {
-  AXES, AXIS_LABELS, DIFFICULTY_LABELS, FORMAT_LABELS, GENERIC_FIELDS,
-  OUTCOME_LABELS, STANCE_LABELS, STATUS_LABELS, createSseParser,
+  AXES, AXIS_LABELS, DEFAULT_PALETTE_COLORS, DIFFICULTY_LABELS, FORMAT_LABELS,
+  GENERIC_FIELDS, OUTCOME_LABELS, PALETTE_KEYS, PALETTE_LABELS, STANCE_LABELS,
+  STATUS_LABELS, createSseParser,
   createSpeechSegmenter, esc, extractActionChips, labelFor, mdInline,
-  mdToHtml, normalizeRoll, rollPoolSize, stripLore,
+  mdToHtml, normalizeRoll, paletteCssVars, paletteVar, rollPoolSize, stripLore,
 } from "/core.js";
 
 const $ = (id) => document.getElementById(id);
@@ -202,6 +203,15 @@ function showScreen(id) {
   clearInterval(pollTimer);
   pollTimer = null;
   if (typeof stopVoice === "function") stopVoice();
+  // L'ambiance n'existe que dans le contexte d'une session : ailleurs, la DA
+  // d'origine reprend la main.
+  $("palette-modal").classList.add("hidden");
+  if (id !== "screen-setup" && id !== "screen-session" && id !== "screen-end") {
+    PAL.sessionId = null;
+    PAL.current = null;
+    PAL.choices = [];
+    applyPalette(null);
+  }
   window.scrollTo(0, 0);
 }
 
@@ -552,6 +562,7 @@ async function showBible(id) {
   loadWorkspace();
   refreshRichness();
   loadProposals(id);
+  loadMoodboards(id);
   loadCharacters(id);
   loadSessions(id);
 }
@@ -1622,6 +1633,412 @@ async function loadProposals(bibleId) {
   }
 }
 
+// ── Palettes d'ambiance ──────────────────────────────────────────────────
+//
+// Une palette n'est rien d'autre que les huit variables CSS de la DA (§8)
+// repeintes sur <html> : les retirer rend la main au `:root` de styles.css.
+// Elle appartient à la session (D1, game_sessions.palette_json) et survit donc
+// au refresh ; les choix proposés viennent des tableaux de références de la
+// bible (GET /bibles/:id/palettes).
+
+const PAL = { sessionId: null, current: null, choices: [] };
+
+/** Pose les huit variables de la palette, ou les retire si elle est absente. */
+function applyPalette(palette) {
+  const root = document.documentElement;
+  const vars = paletteCssVars(palette);
+  if (vars.length === 0) {
+    for (const key of PALETTE_KEYS) root.style.removeProperty(paletteVar(key));
+    return;
+  }
+  for (const [name, value] of vars) root.style.setProperty(name, value);
+}
+
+/** Deux palettes se valent si elles peignent les mêmes couleurs. */
+function samePalette(a, b) {
+  const va = paletteCssVars(a);
+  const vb = paletteCssVars(b);
+  if (va.length !== vb.length) return false;
+  return va.every(([name, value], i) => vb[i][0] === name && vb[i][1] === value);
+}
+
+/**
+ * Carte d'une palette (null = ambiance d'origine). Avec `onPick` elle devient
+ * cliquable, et le survol prévisualise l'ambiance sur toute la page.
+ */
+function paletteCard(palette, { active = false, onPick = null } = {}) {
+  const el = document.createElement(onPick ? "button" : "div");
+  if (onPick) el.type = "button";
+  el.className = "palette-card" + (active ? " active" : "");
+  el.innerHTML =
+    '<span class="pal-swatches"></span>' +
+    '<span class="pal-name"></span>' +
+    '<span class="pal-mood"></span>';
+
+  el.querySelector(".pal-name").textContent = palette
+    ? palette.name
+    : "Ambiance d’origine";
+  el.querySelector(".pal-mood").textContent = palette
+    ? [palette.mood, palette.moodboard_title && "· " + palette.moodboard_title]
+        .filter(Boolean)
+        .join(" ")
+    : "La teinte par défaut de Loreforge.";
+
+  const swatches = el.querySelector(".pal-swatches");
+  const colors = (palette && palette.colors) || DEFAULT_PALETTE_COLORS;
+  for (const key of PALETTE_KEYS) {
+    const dot = document.createElement("span");
+    dot.className = "pal-dot";
+    dot.style.background = colors[key] || "transparent";
+    dot.title = PALETTE_LABELS[key] || key;
+    swatches.appendChild(dot);
+  }
+
+  if (onPick) {
+    const preview = () => applyPalette(palette);
+    const restore = () => applyPalette(PAL.current);
+    el.addEventListener("mouseenter", preview);
+    el.addEventListener("focus", preview);
+    el.addEventListener("mouseleave", restore);
+    el.addEventListener("blur", restore);
+    el.addEventListener("click", () => onPick(palette));
+  }
+  return el;
+}
+
+/** Ambiance d'origine puis palettes de la bible, la courante mise en avant. */
+function renderPaletteChoices(host, onPick) {
+  host.innerHTML = "";
+  for (const palette of [null, ...PAL.choices]) {
+    host.appendChild(
+      paletteCard(palette, {
+        active: samePalette(palette, PAL.current),
+        onPick,
+      }),
+    );
+  }
+}
+
+/**
+ * Charge l'ambiance de la session et les palettes disponibles, puis applique
+ * l'ambiance. Les appelants revérifient `PAL.sessionId` : une navigation
+ * rapide ne doit pas laisser deux chargements se marcher dessus.
+ */
+async function loadPaletteState(sessionId) {
+  PAL.sessionId = sessionId;
+  PAL.current = null;
+  PAL.choices = [];
+  const info = sessionBibleInfo(sessionId);
+  const [state, choices] = await Promise.all([
+    api("/sessions/" + sessionId + "/palette")
+      .then((r) => (r.ok ? r.json() : null))
+      .catch(() => null),
+    info
+      ? api("/bibles/" + info.id + "/palettes")
+          .then((r) => (r.ok ? r.json() : null))
+          .catch(() => null)
+      : Promise.resolve(null),
+  ]);
+  if (PAL.sessionId !== sessionId) return;
+  PAL.current = (state && state.palette) || null;
+  PAL.choices = (choices && choices.palettes) || [];
+  applyPalette(PAL.current);
+}
+
+/** Adopte une palette pour la session en cours (null = retour à la DA). */
+async function adoptPalette(palette, msgEl) {
+  const sessionId = PAL.sessionId;
+  if (!sessionId) return false;
+  const res = await api("/sessions/" + sessionId + "/palette", {
+    method: "PUT",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({ palette }),
+  });
+  if (!res.ok) {
+    applyPalette(PAL.current); // la prévisualisation ne doit pas rester
+    if (msgEl) {
+      msgEl.textContent = "L’ambiance n’a pas pu être enregistrée.";
+      msgEl.className = "msg error";
+    }
+    return false;
+  }
+  const body = await res.json().catch(() => ({}));
+  PAL.current = body.palette || null;
+  applyPalette(PAL.current);
+  if (msgEl) { msgEl.textContent = ""; msgEl.className = "msg"; }
+  return true;
+}
+
+// ── Références graphiques : tableaux d'ambiance ───────────────────────────
+//
+// Un tableau rassemble des images (fichier ou URL, toutes recopiées en R2) et
+// l'intention de l'auteur. Son analyse rend une lecture d'ambiance et des
+// palettes, proposées ensuite au lancement d'une session.
+
+const MOODBOARD_ERRORS = {
+  too_many_moodboards: "Vous avez atteint la limite de tableaux (20).",
+  too_many_images: "Ce tableau est plein (24 images).",
+  unsupported_type: "Format non géré — JPEG, PNG, GIF ou WebP.",
+  image_too_large: "Image trop lourde (5 Mo maximum).",
+  missing_file: "Aucun fichier reçu.",
+  missing_url: "Collez l’URL d’une image.",
+  invalid_url: "URL invalide.",
+  blocked_url: "Cette URL est refusée.",
+  fetch_failed: "Aucune image récupérable à cette URL.",
+  empty_moodboard: "Ajoutez au moins une image avant de lire l’ambiance.",
+  analysis_failed: "La lecture d’ambiance a échoué — réessayez.",
+  analyzer_not_configured: "La lecture d’images n’est pas configurée sur ce serveur.",
+  moodboard_not_found: "Ce tableau n’existe plus.",
+  image_not_found: "Cette image n’existe plus.",
+};
+
+const mbError = (body, status) =>
+  MOODBOARD_ERRORS[body && body.error] || "Échec (" + status + ").";
+
+async function loadMoodboards(bibleId) {
+  const list = $("moodboard-list");
+  list.innerHTML = "";
+  $("moodboard-msg").textContent = "";
+  $("moodboard-msg").className = "msg";
+  const res = await api("/bibles/" + bibleId + "/moodboards");
+  if (!res.ok) return;
+  const { moodboards } = await res.json();
+  if (moodboards.length === 0) {
+    list.innerHTML =
+      '<p class="msg">Aucun tableau — créez-en un pour rassembler vos images de référence.</p>';
+    return;
+  }
+  for (const board of moodboards) list.appendChild(moodboardCard(board, bibleId));
+}
+
+$("new-moodboard-btn").addEventListener("click", async () => {
+  const bibleId = currentBible.id;
+  const res = await api("/bibles/" + bibleId + "/moodboards", jsonPost({}));
+  const body = await res.json().catch(() => ({}));
+  if (!res.ok) {
+    $("moodboard-msg").textContent = mbError(body, res.status);
+    $("moodboard-msg").className = "msg error";
+    return;
+  }
+  const list = $("moodboard-list");
+  if (!list.querySelector(".moodboard")) list.innerHTML = "";
+  const card = moodboardCard(body, bibleId);
+  list.appendChild(card);
+  card.querySelector(".mb-title").focus();
+  card.querySelector(".mb-title").select();
+});
+
+function moodboardCard(board, bibleId) {
+  const base = "/bibles/" + bibleId + "/moodboards/" + board.id;
+  const el = document.createElement("div");
+  el.className = "moodboard";
+  el.innerHTML =
+    '<div class="row spread mb-head">' +
+      '<input class="mb-title" type="text" maxlength="120" aria-label="Titre du tableau">' +
+      '<span class="row mb-acts">' +
+        '<button class="ghost mb-analyze">Lire l’ambiance</button>' +
+        '<button class="ghost card-delete mb-del" title="Supprimer ce tableau">✕</button>' +
+      "</span>" +
+    "</div>" +
+    '<textarea class="mb-note" rows="2" maxlength="1000" ' +
+      'placeholder="Ce que ces images doivent dire — cette intention guide la lecture d’ambiance."></textarea>' +
+    '<div class="mb-images"></div>' +
+    '<div class="row mb-add">' +
+      '<label class="mb-file">＋ Images' +
+        '<input type="file" accept="image/*" multiple hidden></label>' +
+      '<input class="mb-url" type="url" placeholder="…ou l’URL d’une image">' +
+      '<button class="ghost mb-url-add">Importer</button>' +
+    "</div>" +
+    '<p class="mb-msg msg"></p>' +
+    '<div class="mb-analysis"></div>' +
+    '<div class="palette-choices mb-palettes"></div>';
+
+  const msg = el.querySelector(".mb-msg");
+  const title = el.querySelector(".mb-title");
+  const note = el.querySelector(".mb-note");
+  title.value = board.title;
+  note.value = board.note || "";
+  let images = board.images || [];
+
+  const fail = (body, status) => {
+    msg.textContent = mbError(body, status);
+    msg.className = "msg error";
+  };
+
+  function renderImages() {
+    const host = el.querySelector(".mb-images");
+    host.innerHTML = "";
+    if (images.length === 0) {
+      host.innerHTML = '<p class="msg">Aucune image pour l’instant.</p>';
+      return;
+    }
+    for (const img of images) {
+      const cell = document.createElement("div");
+      cell.className = "mb-thumb";
+      cell.innerHTML =
+        '<img alt="" loading="lazy">' +
+        '<button class="ghost thumb-del" title="Retirer cette image">✕</button>';
+      const image = cell.querySelector("img");
+      image.src = img.url;
+      if (img.source_url) image.title = img.source_url;
+      cell.querySelector(".thumb-del").addEventListener("click", async () => {
+        const res = await api(base + "/images/" + img.id, { method: "DELETE" });
+        if (!res.ok) return fail(await res.json().catch(() => ({})), res.status);
+        images = images.filter((i) => i.id !== img.id);
+        msg.textContent = "";
+        msg.className = "msg";
+        renderImages();
+      });
+      host.appendChild(cell);
+    }
+  }
+
+  // La lecture d'ambiance et les palettes du dernier passage de l'IA.
+  function renderAnalysis() {
+    const host = el.querySelector(".mb-analysis");
+    const pals = el.querySelector(".mb-palettes");
+    host.innerHTML = "";
+    pals.innerHTML = "";
+    if (!board.analysis_md) return;
+    host.innerHTML = '<p class="mb-when msg"></p><div class="mb-read"></div>';
+    host.querySelector(".mb-when").textContent = board.analyzed_at
+      ? "Ambiance lue le " + frDate(board.analyzed_at)
+      : "Ambiance lue";
+    host.querySelector(".mb-read").innerHTML = mdToHtml(board.analysis_md);
+    for (const palette of board.palettes || []) {
+      pals.appendChild(paletteCard(palette));
+    }
+  }
+
+  // Titre et intention : enregistrés à la sortie du champ, jamais à la frappe.
+  async function patch(field, value) {
+    const res = await api(base, {
+      method: "PATCH",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ [field]: value }),
+    });
+    if (!res.ok) return fail(await res.json().catch(() => ({})), res.status);
+    const body = await res.json();
+    board.title = body.title;
+    board.note = body.note;
+    title.value = body.title;
+    msg.textContent = "";
+    msg.className = "msg";
+  }
+  title.addEventListener("change", () => {
+    const value = title.value.trim();
+    if (value === "" || value === board.title) {
+      title.value = board.title;
+      return;
+    }
+    patch("title", value);
+  });
+  note.addEventListener("change", () => {
+    const value = note.value.trim();
+    if (value === (board.note || "")) return;
+    patch("note", value);
+  });
+
+  /** Ajoute une image (fichier ou URL) et la range dans le tableau. */
+  async function addImage(opts) {
+    const res = await api(base + "/images", opts);
+    const body = await res.json().catch(() => ({}));
+    if (!res.ok) { fail(body, res.status); return false; }
+    images = [...images, body];
+    renderImages();
+    return true;
+  }
+
+  const fileInput = el.querySelector(".mb-file input");
+  fileInput.addEventListener("change", async (e) => {
+    const files = [...e.target.files];
+    e.target.value = "";
+    if (files.length === 0) return;
+    msg.className = "msg";
+    // Une par une : le worker reçoit ainsi des requêtes de taille bornée.
+    for (let i = 0; i < files.length; i++) {
+      msg.innerHTML = spin(
+        files.length > 1
+          ? "Envoi de l’image " + (i + 1) + " sur " + files.length + "…"
+          : "Envoi de l’image…",
+      );
+      const form = new FormData();
+      form.append("file", files[i]);
+      if (!(await addImage({ method: "POST", body: form }))) return;
+    }
+    msg.textContent = "";
+  });
+
+  const urlInput = el.querySelector(".mb-url");
+  const urlBtn = el.querySelector(".mb-url-add");
+  async function importUrl() {
+    const url = urlInput.value.trim();
+    if (url === "") {
+      fail({ error: "missing_url" }, 400);
+      return;
+    }
+    urlBtn.disabled = true;
+    msg.innerHTML = spin("Récupération de l’image…");
+    msg.className = "msg";
+    const ok = await addImage(jsonPost({ url }));
+    urlBtn.disabled = false;
+    if (ok) {
+      urlInput.value = "";
+      msg.textContent = "";
+    }
+  }
+  urlBtn.addEventListener("click", importUrl);
+  urlInput.addEventListener("keydown", (e) => {
+    if (e.key === "Enter") { e.preventDefault(); importUrl(); }
+  });
+
+  el.querySelector(".mb-analyze").addEventListener("click", async (e) => {
+    const btn = e.currentTarget;
+    btn.disabled = true;
+    msg.innerHTML = spin("Le MJ regarde vos références…");
+    msg.className = "msg";
+    const res = await api(base + "/analyze", jsonPost({}));
+    const body = await res.json().catch(() => ({}));
+    btn.disabled = false;
+    if (!res.ok) return fail(body, res.status);
+    msg.textContent = "";
+    board.analysis_md = body.analysis_md;
+    board.palettes = body.palettes || [];
+    board.analyzed_at = body.analyzed_at;
+    renderAnalysis();
+  });
+
+  // Suppression en deux temps, comme les bibles et les sessions.
+  const del = el.querySelector(".mb-del");
+  del.addEventListener("click", async () => {
+    if (!del.classList.contains("armed")) {
+      del.classList.add("armed");
+      del.textContent = "Supprimer ?";
+      setTimeout(() => {
+        del.classList.remove("armed");
+        del.textContent = "✕";
+      }, 4000);
+      return;
+    }
+    del.disabled = true;
+    const res = await api(base, { method: "DELETE" });
+    if (!res.ok) {
+      del.disabled = false;
+      return fail(await res.json().catch(() => ({})), res.status);
+    }
+    const list = el.parentElement;
+    el.remove();
+    if (list && !list.querySelector(".moodboard")) {
+      list.innerHTML =
+        '<p class="msg">Aucun tableau — créez-en un pour rassembler vos images de référence.</p>';
+    }
+  });
+
+  renderImages();
+  renderAnalysis();
+  return el;
+}
+
 // ── Personnages ──────────────────────────────────────────────────────────
 
 async function loadCharacters(bibleId) {
@@ -2377,6 +2794,26 @@ function showSetup(sessionId) {
   $("setup-trame-form").dataset.sessionId = sessionId;
   $("setup-trame-form").classList.remove("hidden");
   $("setup-questions").classList.add("hidden");
+  initSetupPalettes(sessionId);
+}
+
+/** Choix d'ambiance de la mise en place : masqué si la bible n'en propose pas. */
+async function initSetupPalettes(sessionId) {
+  const panel = $("setup-palette-panel");
+  panel.classList.add("hidden");
+  await loadPaletteState(sessionId);
+  if (PAL.sessionId !== sessionId || PAL.choices.length === 0) return;
+  panel.classList.remove("hidden");
+  renderSetupPalettes();
+}
+
+function renderSetupPalettes() {
+  $("setup-palette-current").textContent = PAL.current
+    ? "Retenue : " + PAL.current.name
+    : "Retenue : ambiance d’origine";
+  renderPaletteChoices($("setup-palettes"), async (palette) => {
+    if (await adoptPalette(palette, $("setup-msg"))) renderSetupPalettes();
+  });
 }
 
 $("setup-trame-form").addEventListener("submit", async (e) => {
@@ -2490,7 +2927,44 @@ function startSessionScreen(id, { fresh = false } = {}) {
   vtoggle.classList.toggle("on", voice.enabled);
   vtoggle.textContent = voice.enabled ? "🔊 Voix activée" : "🔊 Voix du MJ";
   renderFollowToggle();
+
+  // Ambiance : le bouton n'apparaît que si la bible propose des palettes.
+  $("palette-toggle").classList.add("hidden");
+  loadSessionPalette(id);
 }
+
+async function loadSessionPalette(sessionId) {
+  await loadPaletteState(sessionId);
+  if (PAL.sessionId !== sessionId) return;
+  // Rien à choisir et aucune ambiance en cours : le bouton ne servirait à rien.
+  // Une ambiance adoptée le garde même si son tableau a disparu depuis — il
+  // reste le chemin du retour à la DA d'origine.
+  const useful = PAL.choices.length > 0 || PAL.current !== null;
+  $("palette-toggle").classList.toggle("hidden", !useful);
+}
+
+// ── Sélecteur d'ambiance en cours de partie ──────────────────────────────
+
+function closePaletteModal() {
+  $("palette-modal").classList.add("hidden");
+  applyPalette(PAL.current); // une prévisualisation en cours ne survit pas
+}
+
+function openPaletteModal() {
+  const msg = $("palette-modal-msg");
+  msg.textContent = "";
+  msg.className = "msg";
+  renderPaletteChoices($("palette-choices"), async (palette) => {
+    if (await adoptPalette(palette, msg)) closePaletteModal();
+  });
+  $("palette-modal").classList.remove("hidden");
+}
+
+$("palette-toggle").addEventListener("click", openPaletteModal);
+$("palette-close").addEventListener("click", closePaletteModal);
+$("palette-modal").addEventListener("click", (e) => {
+  if (e.target === $("palette-modal")) closePaletteModal();
+});
 
 function showSceneOverlay(title) {
   const root = $("overlay-root");
@@ -3445,6 +3919,8 @@ async function showEnd(id) {
   showScreen("screen-end");
   const info = sessionBibleInfo(id);
   $("end-back").href = info ? "#/bible/" + info.id : "#/";
+  // L'ambiance de la partie tient jusqu'au résumé (arrivée directe comprise).
+  if (PAL.sessionId !== id) loadPaletteState(id);
   let data = store.get("lf:end:" + id);
   if (!data || !data.summary_md) {
     const res = await api("/sessions/" + id + "/state");

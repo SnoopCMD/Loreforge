@@ -1382,3 +1382,81 @@ button.armed, .card-delete.armed {
 #screen-library details { margin-top: 0.4rem; }
 #screen-library summary { cursor: pointer; }
 #screen-library details textarea { margin-top: 0.6rem; }
+
+/* ── Références graphiques : tableaux d'ambiance ───────────────────────────── */
+.moodboard {
+  border: 1px solid var(--line); border-radius: 12px;
+  padding: 0.9rem 1rem; margin-top: 0.8rem;
+  background: rgba(18, 8, 31, 0.45);
+}
+.mb-head { gap: 0.6rem; align-items: center; }
+.mb-title {
+  flex: 1; min-width: 8rem; width: auto; margin: 0;
+  background: transparent; border: 1px solid transparent; border-radius: 8px;
+  font-family: Cinzel, serif; letter-spacing: 0.06em; padding: 0.3rem 0.4rem;
+}
+.mb-title:hover { border-color: var(--line); }
+.mb-title:focus { border-color: var(--arcane); background: var(--void); }
+.mb-acts { flex: none; gap: 0.5rem; }
+.mb-acts .card-delete { padding: 0.15rem 0.55rem; font-size: 0.8rem; }
+.moodboard .mb-note {
+  min-height: 0; margin: 0.5rem 0 0.7rem;
+  font-family: Inter, system-ui, sans-serif; font-size: 0.9rem;
+}
+.mb-images {
+  display: grid; gap: 0.5rem; margin-bottom: 0.7rem;
+  grid-template-columns: repeat(auto-fill, minmax(96px, 1fr));
+}
+.mb-images .msg { grid-column: 1 / -1; margin: 0; }
+.mb-thumb {
+  position: relative; aspect-ratio: 1; border-radius: 8px; overflow: hidden;
+  border: 1px solid var(--line); background: var(--void);
+}
+.mb-thumb img { width: 100%; height: 100%; object-fit: cover; display: block; }
+.mb-thumb .thumb-del {
+  position: absolute; top: 0.2rem; right: 0.2rem;
+  min-height: 0; padding: 0.05rem 0.35rem; font-size: 0.7rem; line-height: 1.4;
+  background: rgba(6, 2, 12, 0.75); border-color: transparent; opacity: 0;
+  transition: opacity 0.15s ease;
+}
+.mb-thumb:hover .thumb-del,
+.mb-thumb .thumb-del:focus-visible { opacity: 1; }
+.mb-add { gap: 0.5rem; }
+.mb-file {
+  flex: none; cursor: pointer; border: 1px solid var(--line); border-radius: 8px;
+  padding: 0.5rem 0.8rem; color: var(--parchment-dim); font-size: 0.9rem;
+}
+.mb-file:hover { border-color: var(--arcane); color: var(--parchment); }
+.mb-add .mb-url { flex: 1; min-width: 10rem; width: auto; margin: 0; }
+.mb-add button { flex: none; }
+.mb-when {
+  margin-top: 0.8rem; text-transform: uppercase;
+  letter-spacing: 0.08em; font-size: 0.72rem;
+}
+.mb-read { font-size: 0.92rem; }
+.mb-read p { margin-bottom: 0.6rem; }
+.mb-read p:last-child { margin-bottom: 0; }
+
+/* ── Palettes d'ambiance (aperçu et choix) ─────────────────────────────────── */
+.palette-choices {
+  display: grid; gap: 0.6rem; margin-top: 0.8rem;
+  grid-template-columns: repeat(auto-fill, minmax(200px, 1fr));
+}
+.palette-choices:empty { display: none; }
+.palette-card {
+  display: flex; flex-direction: column; gap: 0.3rem; text-align: left;
+  background: rgba(18, 8, 31, 0.45); color: var(--parchment);
+  border: 1px solid var(--line); border-radius: 10px;
+  padding: 0.7rem 0.8rem; min-height: 0;
+}
+button.palette-card { cursor: pointer; }
+button.palette-card:hover { border-color: var(--arcane); }
+.palette-card.active { border-color: var(--spirit); }
+.pal-swatches {
+  display: flex; gap: 0; height: 1.4rem;
+  border-radius: 6px; overflow: hidden;
+}
+.pal-dot { flex: 1; }
+.pal-name { font-family: Cinzel, serif; font-size: 0.9rem; letter-spacing: 0.05em; }
+.palette-card.active .pal-name::after { content: " ✦"; color: var(--spirit); }
+.pal-mood { color: var(--parchment-dim); font-size: 0.8rem; line-height: 1.45; }
