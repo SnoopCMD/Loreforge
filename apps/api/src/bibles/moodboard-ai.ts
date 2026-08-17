@@ -4,6 +4,7 @@
 
 import Anthropic from "@anthropic-ai/sdk";
 import {
+  describeAnalysisPayload,
   MOODBOARD_OUTPUT_SCHEMA,
   parseAnalysisPayload,
   type MoodboardAnalysis,
@@ -171,6 +172,10 @@ export async function analyzeMoodboard(
   }
 
   const result = parseAnalysisPayload(payload);
-  if (!result) throw new Error("moodboard_invalid_payload");
+  if (!result) {
+    throw new Error(
+      `moodboard_invalid_payload (${describeAnalysisPayload(payload)})`,
+    );
+  }
   return result;
 }

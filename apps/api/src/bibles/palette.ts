@@ -56,10 +56,39 @@ export function cssVarName(key: PaletteKey): string {
   return "--" + key.replace(/_/g, "-");
 }
 
-/** #abc / #AABBCC → #aabbcc. Null si ce n'est pas une couleur hexadécimale. */
+/**
+ * Vers #rrggbb minuscule, en acceptant ce que le modèle écrit réellement :
+ * #abc, #AABBCC, aabbcc sans dièse, #aabbccff (alpha ignoré), rgb(18, 8, 31).
+ * Null si ce n'est décidément pas une couleur.
+ */
 export function normalizeHex(input: unknown): string | null {
   if (typeof input !== "string") return null;
-  const hex = input.trim().toLowerCase();
+  let hex = input.trim().toLowerCase();
+
+  // Le schéma de sortie ne sait pas contraindre le FORMAT d’une chaîne (pas de
+  // `pattern`) : le modèle écrit parfois aabbcc, #aabbccff ou rgb(12, 8, 31).
+  // Refuser ces formes revenait à jeter toute la palette pour une couleur.
+  // Écrit sans expression régulière : la forme rgb() varie (espaces, barre
+  // oblique de l’alpha, pourcentages) et un découpage explicite se relit.
+  if (hex.startsWith("rgb")) {
+    const open = hex.indexOf("(");
+    const close = hex.lastIndexOf(")");
+    if (open === -1 || close <= open) return null;
+    const parts = hex
+      .slice(open + 1, close)
+      .split(/[, /]+/)
+      .filter((part) => part !== "");
+    if (parts.length < 3) return null;
+    const percent = parts.slice(0, 3).some((part) => part.includes("%"));
+    const channels = parts
+      .slice(0, 3)
+      .map((part) => Number(part.replace("%", "")) * (percent ? 2.55 : 1));
+    if (channels.some((v) => !Number.isFinite(v))) return null;
+    return toHex(channels as [number, number, number]);
+  }
+
+  if (!hex.startsWith("#")) hex = "#" + hex;
+  if (/^#[0-9a-f]{8}$/.test(hex)) hex = hex.slice(0, 7); // canal alpha ignoré
   if (/^#[0-9a-f]{6}$/.test(hex)) return hex;
   if (/^#[0-9a-f]{3}$/.test(hex)) {
     return "#" + hex[1] + hex[1] + hex[2] + hex[2] + hex[3] + hex[3];
@@ -153,9 +182,17 @@ function cleanLine(value: unknown, max: number, fallback: string): string {
 }
 
 /**
- * Valide une palette venue du client ou du modèle. Toutes les couleurs sont
- * requises et doivent être hexadécimales ; le résultat est normalisé et rendu
- * lisible. Renvoie null si la forme n'est pas exploitable.
+ * Nombre de couleurs qu'on accepte de reprendre à la palette par défaut quand
+ * le modèle les oublie ou les écrit hors format. Au-delà, ce n'est plus sa
+ * palette qu'on affiche : mieux vaut l'écarter.
+ */
+export const MAX_BORROWED_COLORS = 2;
+
+/**
+ * Valide une palette venue du client ou du modèle. Les couleurs sont
+ * normalisées et le résultat rendu lisible ; jusqu'à MAX_BORROWED_COLORS
+ * manquantes sont empruntées à la palette par défaut. Renvoie null si la
+ * forme n'est pas exploitable.
  */
 export function parsePalette(input: unknown): Palette | null {
   let value = input;
@@ -176,10 +213,15 @@ export function parsePalette(input: unknown): Palette | null {
   }
 
   const colors = {} as PaletteColors;
+  let borrowed = 0;
   for (const key of PALETTE_KEYS) {
     const hex = normalizeHex((colorsIn as Record<string, unknown>)[key]);
-    if (!hex) return null;
-    colors[key] = hex;
+    if (hex) {
+      colors[key] = hex;
+      continue;
+    }
+    if (++borrowed > MAX_BORROWED_COLORS) return null;
+    colors[key] = DEFAULT_PALETTE.colors[key];
   }
 
   return ensureReadable({
@@ -259,6 +301,35 @@ export const MOODBOARD_OUTPUT_SCHEMA = {
 export interface MoodboardAnalysis {
   analysisMd: string;
   palettes: Palette[];
+}
+
+/**
+ * Ce qui manquait à une charge utile refusée, en une ligne : sans ça, un
+ * échec de lecture d'ambiance ne dit rien de ce que le modèle a écrit.
+ */
+export function describeAnalysisPayload(payload: unknown): string {
+  if (payload === null || typeof payload !== "object") return "réponse " + typeof payload;
+  const raw = payload as { analysis_md?: unknown; palettes?: unknown };
+  if (typeof raw.analysis_md !== "string" || raw.analysis_md.trim() === "") {
+    return "analysis_md vide";
+  }
+  const count = Array.isArray(raw.palettes) ? raw.palettes.length : 0;
+  const first = Array.isArray(raw.palettes) ? raw.palettes[0] : null;
+  const colors =
+    first && typeof first === "object"
+      ? ((first as { colors?: unknown }).colors ?? null)
+      : null;
+  const rejected =
+    colors && typeof colors === "object"
+      ? PALETTE_KEYS.filter(
+          (key) => !normalizeHex((colors as Record<string, unknown>)[key]),
+        )
+      : PALETTE_KEYS.slice();
+  return (
+    count +
+    " palette(s), couleurs refusées : " +
+    (rejected.length ? rejected.join(", ") : "aucune")
+  );
 }
 
 /** Valide la charge utile renvoyée par le modèle. Null si inexploitable. */
