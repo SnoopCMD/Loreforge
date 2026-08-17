@@ -225,9 +225,11 @@ export const MOODBOARD_OUTPUT_SCHEMA = {
         "Lecture d'ambiance en Markdown : lumière, matières, époque, émotion dominante, ce que cela implique pour la narration. 150 à 300 mots.",
     },
     palettes: {
+      // Les sorties structurées n'acceptent minItems qu'à 0 ou 1, et ignorent
+      // maxItems : le « 2 ou 3 » est demandé dans le prompt et bordé par
+      // parseAnalysisPayload (au moins une palette valide, trois au plus).
       type: "array",
-      minItems: 2,
-      maxItems: 3,
+      minItems: 1,
       items: {
         type: "object",
         properties: {
