@@ -17,6 +17,12 @@ import {
   type VisionImage,
 } from "./moodboard-ai";
 import { parsePalettes, type Palette } from "./palette";
+import {
+  MAX_ZIP_BYTES,
+  pickZipImages,
+  ZipError,
+  type ZipPick,
+} from "./moodboard-zip";
 
 export const moodboards = new Hono<AppEnv>();
 
@@ -441,6 +447,104 @@ moodboards.post("/:id/moodboards/:mid/images", async (c) => {
     .bind(id)
     .first<ImageRow>();
   return c.json(toPublicImage(row!), 201);
+});
+
+// POST /:id/moodboards/:mid/images/zip — multipart (champ "file" : une archive
+// .zip). Toutes les images reconnues y sont importées d'un coup, dans l'ordre
+// des chemins ; le reste est ignoré et compté (l'import ne casse pas pour un
+// .txt égaré). Le nom de fichier sert de légende, souvent le seul indice de
+// provenance qui reste d'une planche récupérée ailleurs.
+moodboards.post("/:id/moodboards/:mid/images/zip", async (c) => {
+  const bible = await owned(c);
+  if (!bible) return c.json({ error: "not_found" }, 404);
+
+  const board = await loadBoard(c.env.DB, bible.id, c.req.param("mid"));
+  if (!board) return c.json({ error: "moodboard_not_found" }, 404);
+
+  const existing = await listImages(c.env.DB, board.id);
+  const room = MAX_IMAGES_PER_BOARD - existing.length;
+  if (room <= 0) return c.json({ error: "too_many_images" }, 409);
+
+  if (!(c.req.header("content-type") ?? "").includes("multipart/form-data")) {
+    return c.json({ error: "expected_multipart" }, 400);
+  }
+  const form = await c.req.parseBody();
+  const file = form["file"];
+  if (!(file instanceof File)) return c.json({ error: "missing_file" }, 400);
+  if (file.size > MAX_ZIP_BYTES) return c.json({ error: "zip_too_large" }, 413);
+
+  let picked: ZipPick;
+  try {
+    picked = pickZipImages(
+      new Uint8Array(await file.arrayBuffer()),
+      room,
+      MAX_IMAGE_BYTES,
+    );
+  } catch (err) {
+    if (err instanceof ZipError) return c.json({ error: err.code }, 400);
+    throw err;
+  }
+  if (picked.images.length === 0) {
+    return c.json({ error: "no_image_in_zip", skipped: picked.skipped }, 400);
+  }
+
+  let nextOrder = existing.length
+    ? Math.max(...existing.map((i) => i.sort_order)) + 1
+    : 0;
+  const now = Date.now();
+  const statements = [];
+  const added: string[] = [];
+  for (const image of picked.images) {
+    const id = crypto.randomUUID();
+    const r2Key = `moodboards/${board.id}/${id}.${extFor(image.contentType)}`;
+    // R2 d'abord : une image en trop dans le bucket est inerte, une ligne D1
+    // sans objet servirait une vignette cassée.
+    await c.env.BUCKET.put(r2Key, image.bytes, {
+      httpMetadata: { contentType: image.contentType },
+    });
+    statements.push(
+      c.env.DB
+        .prepare(
+          `INSERT INTO moodboard_images
+             (id, moodboard_id, bible_id, r2_key, content_type, size_bytes,
+              source_url, caption, sort_order, created_at)
+           VALUES (?, ?, ?, ?, ?, ?, NULL, ?, ?, ?)`,
+        )
+        .bind(
+          id,
+          board.id,
+          bible.id,
+          r2Key,
+          image.contentType,
+          image.bytes.byteLength,
+          (image.name.split("/").pop() ?? image.name).slice(0, MAX_CAPTION),
+          nextOrder++,
+          now,
+        ),
+    );
+    added.push(id);
+  }
+  statements.push(
+    c.env.DB
+      .prepare(`UPDATE bible_moodboards SET updated_at = ? WHERE id = ?`)
+      .bind(now, board.id),
+  );
+  await c.env.DB.batch(statements);
+
+  const { results } = await c.env.DB.prepare(
+    `SELECT * FROM moodboard_images WHERE moodboard_id = ?
+     ORDER BY sort_order, created_at`,
+  )
+    .bind(board.id)
+    .all<ImageRow>();
+  return c.json(
+    {
+      added: added.length,
+      skipped: picked.skipped,
+      images: results.map(toPublicImage),
+    },
+    201,
+  );
 });
 
 // GET /:id/moodboards/:mid/images/:iid/file — sert l'image depuis R2.

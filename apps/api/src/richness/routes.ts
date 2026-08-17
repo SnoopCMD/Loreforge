@@ -3,6 +3,7 @@ import { streamSSE } from "hono/streaming";
 import type { AppEnv, Env } from "../env";
 import { requireAuth } from "../auth/middleware";
 import { findOwnedBible } from "../bibles/db";
+import { loadMoodboardAnnex } from "../bibles/moodboard-context";
 import { computeRichness } from "./analyze";
 import { computeGlobal, type Axis, type RichnessResult } from "./logic";
 
@@ -110,6 +111,7 @@ richness.post("/:id/analyze", async (c) => {
         const result = await computeRichness(
           c.env.ANTHROPIC_API_KEY!,
           canonMd,
+          await loadMoodboardAnnex(c.env.DB, bible.id),
           (p) => {
             const now = Date.now();
             if (now - lastTick < 2000) return;
@@ -130,7 +132,13 @@ richness.post("/:id/analyze", async (c) => {
         const status = await markAnalysisFailed(c.env.DB, bible.id);
         await stream.writeSSE({
           event: "error",
-          data: JSON.stringify({ error: "analysis_failed", status }),
+          data: JSON.stringify({
+            error: "analysis_failed",
+            status,
+            // La cause exacte (troncature, refus, 4xx Anthropic) est sinon
+            // invisible sans wrangler tail.
+            detail: err instanceof Error ? err.message : String(err),
+          }),
         });
       }
     });
@@ -148,7 +156,11 @@ async function runAnalysis(
   canonMd: string,
 ): Promise<void> {
   try {
-    const result = await computeRichness(env.ANTHROPIC_API_KEY!, canonMd);
+    const result = await computeRichness(
+      env.ANTHROPIC_API_KEY!,
+      canonMd,
+      await loadMoodboardAnnex(env.DB, bibleId),
+    );
     await persistAnalysis(env, bibleId, userId, result);
   } catch (err) {
     console.error(`[richness] analyse échouée pour ${bibleId}:`, err);

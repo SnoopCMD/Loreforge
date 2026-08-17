@@ -34,6 +34,7 @@ import {
 import { GmStreamParser, stripGmTags, type GmTagEvent } from "./tags";
 import { resolveLore } from "./lore";
 import { retrieveCanonExcerpts } from "../rag/store";
+import { loadMoodboardAnnex } from "../bibles/moodboard-context";
 import {
   buildSetupMessage,
   buildSystemPrompt,
@@ -87,6 +88,9 @@ interface SessionMeta {
   characterSheet: string | null;
   bibleTitle: string;
   toneProfile: string | null;
+  /** Annexe des tableaux de références (§8), figée à l'init — le prompt
+   * système doit rester identique à l'octet près pour le cache. */
+  moodboardAnnex?: string;
   scores: RichnessScores | null;
   gaps: RichnessGap[];
   /** Retours d'auteur des sessions passées (contexte, SPEC §3) — plus récents d'abord. */
@@ -294,6 +298,7 @@ export class GameSession extends DurableObject<Env> {
       characterSheet,
       bibleTitle: bible.title,
       toneProfile: bible.tone_profile,
+      moodboardAnnex: await loadMoodboardAnnex(this.env.DB, payload.bibleId),
       scores,
       gaps,
       authorFeedback,
@@ -981,6 +986,7 @@ export class GameSession extends DurableObject<Env> {
           gaps: meta.gaps,
           authorFeedback: meta.authorFeedback ?? [],
           toneProfile: meta.toneProfile,
+          moodboardAnnex: meta.moodboardAnnex ?? "",
           characterName: meta.characterName,
           characterSheet: meta.characterSheet,
           format: meta.format,

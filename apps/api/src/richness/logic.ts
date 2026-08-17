@@ -99,7 +99,10 @@ export const RICHNESS_OUTPUT_SCHEMA = {
   },
 } as const;
 
-export function buildRichnessPrompt(canonMd: string): string {
+export function buildRichnessPrompt(
+  canonMd: string,
+  moodboardAnnex = "",
+): string {
   let canon = canonMd;
   if (canon.length > MAX_CANON_CHARS) {
     canon =
@@ -153,7 +156,19 @@ antagonistes majeurs ni les dieux). Pré-remplis leur fiche depuis le canon en
 réutilisant les clés de "sheet_fields" ; n'invente pas, laisse de côté les
 champs que le canon ne renseigne pas.
 
-== BIBLE À ÉVALUER ==
+${
+    moodboardAnnex
+      ? `${moodboardAnnex}
+
+Ces références comptent pour l'axe "tone" (registre, atmosphère, inspirations
+assumées) et peuvent nourrir les "suggestions" de la fiche. Elles ne notent
+JAMAIS les autres axes — une ambiance n'est ni une cosmologie, ni une carte, ni
+une intrigue — et une lacune de canon reste une lacune même si l'image la
+suggère.
+
+`
+      : ""
+  }== BIBLE À ÉVALUER ==
 ${canon}`;
 }
 

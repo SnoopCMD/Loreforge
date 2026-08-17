@@ -142,6 +142,8 @@ export interface SystemPromptInput {
   /** Retours d'auteur de sessions passées (contexte à honorer). */
   authorFeedback?: string[];
   toneProfile: string | null;
+  /** Annexe des tableaux de références (§8) ; vide s'il n'y en a pas. */
+  moodboardAnnex?: string;
   characterName: string | null;
   characterSheet: string | null; // JSON brut de characters.sheet_json
   format: string;
@@ -201,6 +203,17 @@ Honore-les (ton, orientation, préférences) sans jamais contredire le canon :
 ${input.authorFeedback.map((f) => `- ${f}`).join("\n")}`
     : "";
 
+  // L'ambiance oriente la description (lumière, matières, échelle), jamais les
+  // faits : elle vient donc après le ton, et se dit explicitement non canon.
+  const moodboardBlock = input.moodboardAnnex
+    ? `
+
+${input.moodboardAnnex}
+
+Décris avec ces matières, cette lumière et cette échelle. En cas de désaccord
+entre une image et le canon, le canon gagne toujours.`
+    : "";
+
   return `Tu es le Maître de Jeu de l'univers « ${input.bibleTitle} ».
 
 == CANON (source de vérité absolue) ==
@@ -231,7 +244,7 @@ Si tu inventes un terme d'univers (axe faible), annote-le AUSSI avec <lore>, et
 définis-le via <invention> pour qu'il ne reste pas « mort ».
 
 == TON ==
-${tone}${feedbackBlock}
+${tone}${feedbackBlock}${moodboardBlock}
 
 == RÈGLES DE JEU ==
 Système Souffle : dés d6 serveur uniquement. Ne lance JAMAIS de dé toi-même ni

@@ -1267,9 +1267,14 @@ $("analyze-btn").addEventListener("click", async () => {
         $("analyze-msg").textContent = "";
         refreshRichness();
       },
-      error() {
+      error(e) {
         finished = true;
-        $("analyze-msg").textContent = "L’analyse a échoué — relancez-la.";
+        const detail = (e && e.detail) || "";
+        $("analyze-msg").textContent =
+          detail.includes("bad_api_key")
+            ? "Clé Anthropic invalide ou expirée — renouvelez-la côté serveur."
+            : "L’analyse a échoué — relancez-la." +
+              (detail ? " (" + detail + ")" : "");
         $("analyze-msg").className = "msg error";
         refreshRichness();
       },
@@ -1786,6 +1791,10 @@ const MOODBOARD_ERRORS = {
   blocked_url: "Cette URL est refusée.",
   fetch_failed: "Aucune image récupérable à cette URL.",
   empty_moodboard: "Ajoutez au moins une image avant de lire l’ambiance.",
+  invalid_zip: "Archive illisible — vérifiez que c’est bien un .zip.",
+  zip_too_large: "Archive trop lourde (60 Mo maximum).",
+  no_image_in_zip: "Aucune image exploitable dans cette archive.",
+  expected_multipart: "Envoi invalide.",
   analysis_failed: "La lecture d’ambiance a échoué — réessayez.",
   analyzer_not_configured: "La lecture d’images n’est pas configurée sur ce serveur.",
   moodboard_not_found: "Ce tableau n’existe plus.",
@@ -1846,6 +1855,8 @@ function moodboardCard(board, bibleId) {
     '<div class="row mb-add">' +
       '<label class="mb-file">＋ Images' +
         '<input type="file" accept="image/*" multiple hidden></label>' +
+      '<label class="mb-file mb-zip" title="Toutes les images d’une archive, d’un coup">＋ .zip' +
+        '<input type="file" accept=".zip,application/zip" hidden></label>' +
       '<input class="mb-url" type="url" placeholder="…ou l’URL d’une image">' +
       '<button class="ghost mb-url-add">Importer</button>' +
     "</div>" +
@@ -1969,6 +1980,28 @@ function moodboardCard(board, bibleId) {
     msg.textContent = "";
   });
 
+  // Archive : une seule requête, le serveur trie ce qui est une image.
+  const zipInput = el.querySelector(".mb-zip input");
+  zipInput.addEventListener("change", async (e) => {
+    const file = e.target.files[0];
+    e.target.value = "";
+    if (!file) return;
+    msg.innerHTML = spin("Ouverture de l’archive…");
+    msg.className = "msg";
+    const form = new FormData();
+    form.append("file", file);
+    const res = await api(base + "/images/zip", { method: "POST", body: form });
+    const body = await res.json().catch(() => ({}));
+    if (!res.ok) return fail(body, res.status);
+    images = body.images;
+    renderImages();
+    msg.textContent =
+      body.added +
+      (body.added > 1 ? " images importées" : " image importée") +
+      (body.skipped ? " — " + body.skipped + " entrée(s) ignorée(s)." : ".");
+    msg.className = "msg";
+  });
+
   const urlInput = el.querySelector(".mb-url");
   const urlBtn = el.querySelector(".mb-url-add");
   async function importUrl() {
@@ -2001,11 +2034,18 @@ function moodboardCard(board, bibleId) {
     const body = await res.json().catch(() => ({}));
     btn.disabled = false;
     if (!res.ok) return fail(body, res.status);
-    msg.textContent = "";
     board.analysis_md = body.analysis_md;
     board.palettes = body.palettes || [];
     board.analyzed_at = body.analyzed_at;
     renderAnalysis();
+    // L'ambiance nourrit l'analyse de richesse et la narration, mais toutes
+    // deux la lisent au moment où elles démarrent : ni l'indice déjà calculé
+    // ni une session en cours ne la voient apparaître.
+    msg.textContent =
+      currentBible.status === "analyzed"
+        ? "Relancez l’analyse de richesse pour qu’elle en tienne compte."
+        : "";
+    msg.className = "msg";
   });
 
   // Suppression en deux temps, comme les bibles et les sessions.
