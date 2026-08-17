@@ -30,8 +30,10 @@ moodboards.use("*", requireAuth);
 
 /** Limite Anthropic pour une image en base64 ; sert aussi de garde-fou R2. */
 export const MAX_IMAGE_BYTES = 5 * 1024 * 1024;
-/** Au-delà, un tableau n'est plus une référence mais une galerie. */
-export const MAX_IMAGES_PER_BOARD = 24;
+/** Au-delà, un tableau n'est plus une référence mais une galerie. Seules les
+ * MAX_ANALYZED_IMAGES premières partent à la lecture d'ambiance : le reste
+ * documente l'univers pour l'auteur, sans coût d'analyse. */
+export const MAX_IMAGES_PER_BOARD = 60;
 const MAX_BOARDS_PER_BIBLE = 20;
 const MAX_TITLE = 120;
 const MAX_NOTE = 1000;
@@ -541,6 +543,8 @@ moodboards.post("/:id/moodboards/:mid/images/zip", async (c) => {
     {
       added: added.length,
       skipped: picked.skipped,
+      over_quota: picked.overQuota,
+      limit: MAX_IMAGES_PER_BOARD,
       images: results.map(toPublicImage),
     },
     201,

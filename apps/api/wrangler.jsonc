@@ -59,9 +59,11 @@
     }
   ],
   "vars": {
-    // Passe à "production" via `wrangler deploy --var ENVIRONMENT:production`
-    // ou un environnement wrangler dédié.
-    "ENVIRONMENT": "development",
+    // Valeur du Worker déployé. Le mode "development" renvoie le lien magique
+    // dans la réponse HTTP (pratique en local, ouverture de compte à distance
+    // en ligne) : il ne s'active donc QUE localement, via `npm run dev` qui
+    // passe `--var ENVIRONMENT:development`.
+    "ENVIRONMENT": "production",
     // Narration vocale (Cartesia) : voix FR choisie par l'utilisateur.
     // La clé API vit en secret (CARTESIA_API_KEY) ; l'ID de voix n'est pas
     // sensible. Changer de voix = remplacer cet ID (voir /api/tts/voices?language=fr).

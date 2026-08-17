@@ -47,21 +47,24 @@ describe("pickZipImages", () => {
       "__MACOSX/._01.jpg": fakeImage("jpeg"),
       ".DS_Store": new Uint8Array([1, 2, 3]),
     });
-    const { images, skipped } = pickZipImages(zip, 24, 5_000_000);
+    const { images, skipped, overQuota } = pickZipImages(zip, 24, 5_000_000);
     expect(images.map((i) => i.name)).toEqual(["01.jpg", "02.png"]);
     expect(images[0].contentType).toBe("image/jpeg");
     expect(skipped).toBe(1); // notes.txt ; les entrées de service ne comptent pas
+    expect(overQuota).toBe(0);
   });
 
-  it("respecte le quota restant du tableau", () => {
+  it("distingue le quota du tableau d'un fichier inexploitable", () => {
     const zip = zipSync({
       "a.png": fakeImage("png"),
       "b.png": fakeImage("png"),
       "c.png": fakeImage("png"),
+      "lisezmoi.txt": new TextEncoder().encode("bonjour"),
     });
-    const { images, skipped } = pickZipImages(zip, 2, 5_000_000);
+    const { images, skipped, overQuota } = pickZipImages(zip, 2, 5_000_000);
     expect(images).toHaveLength(2);
-    expect(skipped).toBe(1);
+    expect(overQuota).toBe(1); // image valide, tableau plein
+    expect(skipped).toBe(1); // pas une image
   });
 
   it("écarte une image trop lourde sans faire échouer l'import", () => {
@@ -69,9 +72,10 @@ describe("pickZipImages", () => {
       "petite.png": fakeImage("png"),
       "enorme.png": fakeImage("png", 4000),
     });
-    const { images, skipped } = pickZipImages(zip, 24, 1000);
+    const { images, skipped, overQuota } = pickZipImages(zip, 24, 1000);
     expect(images.map((i) => i.name)).toEqual(["petite.png"]);
     expect(skipped).toBe(1);
+    expect(overQuota).toBe(0);
   });
 
   it("refuse une archive illisible", () => {

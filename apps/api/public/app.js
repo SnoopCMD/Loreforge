@@ -1782,7 +1782,7 @@ async function adoptPalette(palette, msgEl) {
 
 const MOODBOARD_ERRORS = {
   too_many_moodboards: "Vous avez atteint la limite de tableaux (20).",
-  too_many_images: "Ce tableau est plein (24 images).",
+  too_many_images: "Ce tableau est plein (60 images).",
   unsupported_type: "Format non géré — JPEG, PNG, GIF ou WebP.",
   image_too_large: "Image trop lourde (5 Mo maximum).",
   missing_file: "Aucun fichier reçu.",
@@ -1995,10 +1995,22 @@ function moodboardCard(board, bibleId) {
     if (!res.ok) return fail(body, res.status);
     images = body.images;
     renderImages();
+    // Deux motifs d'écart bien distincts : un fichier que le tableau ne sait
+    // pas lire, et une image valide refusée parce que le tableau est plein.
+    const notes = [];
+    if (body.skipped) {
+      notes.push(body.skipped + " entrée(s) non exploitable(s)");
+    }
+    if (body.over_quota) {
+      notes.push(
+        body.over_quota +
+          " image(s) au-delà de la limite de " + body.limit + " du tableau",
+      );
+    }
     msg.textContent =
       body.added +
       (body.added > 1 ? " images importées" : " image importée") +
-      (body.skipped ? " — " + body.skipped + " entrée(s) ignorée(s)." : ".");
+      (notes.length ? " — " + notes.join(", ") + "." : ".");
     msg.className = "msg";
   });
 

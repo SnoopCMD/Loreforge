@@ -3,7 +3,7 @@
   "private": true,
   "type": "module",
   "scripts": {
-    "dev": "wrangler dev",
+    "dev": "wrangler dev --var ENVIRONMENT:development",
     "deploy": "wrangler deploy",
     "build:check": "wrangler deploy --dry-run --outdir=dist",
     "test": "vitest run",

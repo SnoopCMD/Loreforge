@@ -16,8 +16,10 @@ export interface ZipImage {
 
 export interface ZipPick {
   images: ZipImage[];
-  /** Entrées écartées (type non reconnu, trop lourdes, au-delà du quota). */
+  /** Entrées inexploitables : type non reconnu ou image trop lourde. */
   skipped: number;
+  /** Images valides laissées de côté faute de place dans le tableau. */
+  overQuota: number;
 }
 
 /** Au-delà, l'archive n'est plus une planche de références. */
@@ -84,6 +86,7 @@ export function pickZipImages(
 
   const images: ZipImage[] = [];
   let skipped = 0;
+  let overQuota = 0;
   const paths = Object.keys(entries).sort((a, b) => a.localeCompare(b));
   for (const path of paths) {
     if (path.endsWith("/") || isJunkEntry(path)) continue;
@@ -99,10 +102,12 @@ export function pickZipImages(
       continue;
     }
     if (images.length >= limit) {
-      skipped++;
+      // Une image valide qu'on refuse faute de place n'est pas un déchet :
+      // l'auteur doit pouvoir la distinguer d'un fichier non géré.
+      overQuota++;
       continue;
     }
     images.push({ name: path, bytes, contentType });
   }
-  return { images, skipped };
+  return { images, skipped, overQuota };
 }
