@@ -587,3 +587,43 @@ Interdits : pas de prose, pas d'atmosphère, pas d'adjectifs de style, pas de
 phrases complètes quand un fragment suffit, aucune redite entre sections.
 Écris moins de 2 000 caractères. Réponds uniquement avec ce Markdown, sans
 aucune balise.`;
+
+// ── Résumé narré d'un acte (lot 7.3) ──────────────────────────────────────
+
+/**
+ * Récit d'un acte destiné au JOUEUR, à relire (ou écouter) entre deux
+ * sessions. C'est l'exact opposé d'ACT_SUMMARY_MESSAGE, et les deux ne doivent
+ * jamais être confondus :
+ *
+ *   contexte  → le modèle, à chaque tour, dense et télégraphique, payé à vie
+ *   narré     → le joueur, une fois, de la prose, généré à la demande
+ *
+ * Un seul texte pour les deux usages donnerait soit un contexte bavard qui
+ * coûte cher à chaque tour, soit un récit sec que personne ne veut relire.
+ */
+export const NARRATED_ACT_MESSAGE = `Cet acte de la partie est terminé. Raconte-le au joueur, comme on résume
+l'épisode précédent avant de reprendre.
+
+- À la troisième personne et au passé, dans ta voix de Maître de Jeu et le ton
+  de cet univers.
+- Une page, pas plus : ce qui s'est joué, ce qui a basculé, ce qui reste en
+  suspens. Termine sur ce qui donne envie de reprendre.
+- De la prose continue. Pas de listes, pas de titres, pas de sections, pas de
+  méta (« dans cet acte », « le joueur »).
+- N'invente rien qui ne se soit pas joué.
+- Aucune balise : ce texte est lu tel quel, et peut être écouté à voix haute.
+
+Réponds uniquement avec ce récit.`;
+
+/**
+ * Message de repli quand les tours d'origine ne sont plus disponibles : le
+ * récit se fabrique alors depuis la seule fiche de mémoire de l'acte. C'est
+ * moins riche, mais ça marche — et ça évite de garder les tours pour toujours.
+ */
+export function buildNarratedFromSummary(contextSummary: string): string {
+  return `Voici la fiche de mémoire d'un acte de la partie, tout ce qu'il en reste :
+
+${contextSummary}
+
+${NARRATED_ACT_MESSAGE}`;
+}

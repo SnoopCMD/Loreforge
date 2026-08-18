@@ -11,6 +11,8 @@
 //   GET  /state                    → JSON état public
 //   POST /finish                   → JSON {summary_md, inventions}
 //   POST /act/close                → JSON {act} (clôt l'acte courant, lot 7.1)
+//   POST /act/narrate?index=N      → JSON {act} (récit pour le joueur, 7.3)
+//   GET  /act/audio?index=N        → MP3 (récit lu, stocké en R2, 7.3)
 //   POST /destroy                  → JSON {ok} (purge totale, session supprimée)
 
 import { DurableObject } from "cloudflare:workers";
@@ -44,16 +46,24 @@ import {
   type LoreFiche,
 } from "./lore";
 import { retrieveCanonExcerpts } from "../rag/store";
+import {
+  actAudioKey,
+  MAX_TTS_CHARS,
+  synthesizeSpeech,
+  ttsConfigured,
+} from "../tts/cartesia";
 import { loadMoodboardAnnex } from "../bibles/moodboard-context";
 import {
   ACT_SUMMARY_MESSAGE,
   buildActsBlock,
+  buildNarratedFromSummary,
   buildSetupMessage,
   buildSystemPrompt,
   buildTurnContext,
   buildTurnMessage,
   capActSummary,
   gapQuestion,
+  NARRATED_ACT_MESSAGE,
   RELANCE_MESSAGE,
   selectSetupGaps,
   SUMMARY_MESSAGE,
@@ -109,6 +119,9 @@ const ACT_SOFT_LIMIT = 20;
 const ACT_HARD_LIMIT = 35;
 // Le résumé d'acte est court par construction (voir MAX_ACT_SUMMARY_CHARS).
 const MAX_ACT_SUMMARY_TOKENS = 1024;
+// Récit narré : une page de prose, plus généreux que la fiche de mémoire —
+// il n'est ni relu à chaque tour ni facturé plus d'une fois.
+const MAX_NARRATED_ACT_TOKENS = 1600;
 // Prompt caching (coût) : le préfixe stable (system + historique) est mis en
 // cache côté API ; TTL 1h car le rythme d'une partie dépasse souvent les 5 min
 // entre deux tours. Relecture ≈ 0,1× le prix d'un token d'entrée.
@@ -231,6 +244,13 @@ export class GameSession extends DurableObject<Env> {
   /** Cache mémoire du canon (relu depuis D1 à chaque réveil du DO). */
   private canonCache: string | null = null;
 
+  /**
+   * Synthèses vocales d'acte en cours, par index. Le DO traite une requête à
+   * la fois mais l'appel Cartesia est un long await : deux clics rapprochés
+   * s'y entrelaceraient et paieraient deux fois la même voix.
+   */
+  private audioInFlight = new Map<number, Promise<ArrayBuffer | null>>();
+
   async fetch(request: Request): Promise<Response> {
     const path = new URL(request.url).pathname;
     try {
@@ -271,6 +291,12 @@ export class GameSession extends DurableObject<Env> {
       }
       if (request.method === "POST" && path === "/act/close") {
         return await this.closeAct(meta);
+      }
+      if (request.method === "POST" && path === "/act/narrate") {
+        return await this.narrateAct(meta, new URL(request.url));
+      }
+      if (request.method === "GET" && path === "/act/audio") {
+        return await this.actAudio(meta, new URL(request.url));
       }
       return json({ error: "not_found" }, 404);
     } catch (err) {
@@ -1000,6 +1026,190 @@ export class GameSession extends DurableObject<Env> {
     };
   }
 
+  // ── Récit narré d'un acte (lot 7.3) ───────────────────────────────────
+
+  /**
+   * Récit d'un acte pour le JOUEUR. À ne surtout pas confondre avec le résumé
+   * de contexte : celui-là s'adresse au modèle et doit être télégraphique,
+   * celui-ci s'adresse au joueur et doit être de la prose. Deux générations,
+   * deux prompts, deux colonnes en base.
+   *
+   * Idempotent : un acte déjà narré renvoie l'existant, sauf ?force=1.
+   */
+  private async narrateAct(meta: SessionMeta, url: URL): Promise<Response> {
+    const index = Number(url.searchParams.get("index"));
+    if (!Number.isInteger(index) || index < 0) {
+      return json({ error: "invalid_index" }, 400);
+    }
+    const force = url.searchParams.get("force") === "1";
+
+    const act = await this.env.DB.prepare(
+      `SELECT act_index, title, context_summary_md, narrated_summary_md,
+              turn_start, turn_end
+       FROM session_acts WHERE session_id = ? AND act_index = ?`,
+    )
+      .bind(meta.sessionId, index)
+      .first<{
+        act_index: number;
+        title: string | null;
+        context_summary_md: string;
+        narrated_summary_md: string | null;
+        turn_start: number;
+        turn_end: number;
+      }>();
+    if (!act) return json({ error: "act_not_found" }, 404);
+
+    if (act.narrated_summary_md && !force) {
+      return json({ act, generated: false });
+    }
+    if (!this.env.ANTHROPIC_API_KEY) {
+      return json({ error: "narrator_not_configured" }, 503);
+    }
+
+    // Les tours d'origine donnent un bien meilleur récit — on ne les purge
+    // donc pas à la clôture. Mais le récit doit rester possible sans eux : la
+    // fiche de mémoire suffit à raconter, en moins détaillé.
+    const turns = (
+      await this.listAllTurns({ start: act.turn_start, end: act.turn_end })
+    ).filter((t) => t.text.trim() !== "");
+    // Les messages doivent commencer par le joueur et alterner : un historique
+    // qui débuterait sur le MJ serait refusé par l'API.
+    while (turns.length > 0 && turns[0].role === "assistant") turns.shift();
+
+    const messages: Anthropic.MessageParam[] =
+      turns.length > 0
+        ? [
+            ...turns.map(
+              (t): Anthropic.MessageParam => ({ role: t.role, content: t.text }),
+            ),
+            { role: "user", content: NARRATED_ACT_MESSAGE },
+          ]
+        : [
+            {
+              role: "user",
+              content: buildNarratedFromSummary(act.context_summary_md),
+            },
+          ];
+
+    let narrated: string;
+    try {
+      const client = new Anthropic({ apiKey: this.env.ANTHROPIC_API_KEY });
+      const response = await client.messages.create({
+        model: NARRATION_MODEL,
+        max_tokens: MAX_NARRATED_ACT_TOKENS,
+        system: await this.systemBlocks(meta),
+        messages,
+      });
+      this.logUsage("récit d'acte", meta.sessionId, response.usage);
+      narrated = stripGmTags(
+        response.content
+          .filter((b) => b.type === "text")
+          .map((b) => b.text)
+          .join(""),
+      ).trim();
+      if (!narrated) throw new Error("empty_narration");
+    } catch (err) {
+      console.error(`[game-session] récit d'acte ${meta.sessionId} :`, err);
+      return json({ error: "narration_failed" }, 502);
+    }
+
+    await this.env.DB.prepare(
+      `UPDATE session_acts SET narrated_summary_md = ?
+       WHERE session_id = ? AND act_index = ?`,
+    )
+      .bind(narrated, meta.sessionId, index)
+      .run();
+
+    return json({
+      act: { ...act, narrated_summary_md: narrated },
+      generated: true,
+    });
+  }
+
+  /**
+   * Récit d'un acte, lu à voix haute. Le MP3 est fabriqué UNE fois puis vit
+   * dans R2 : la synthèse est le poste de coût le plus facile à faire exploser
+   * par un double clic. Trois garde-fous, du moins cher au plus cher :
+   * la clé déjà en base, l'objet déjà dans R2, et la déduplication des appels
+   * concurrents sur cette instance de DO.
+   */
+  private async actAudio(meta: SessionMeta, url: URL): Promise<Response> {
+    const index = Number(url.searchParams.get("index"));
+    if (!Number.isInteger(index) || index < 0) {
+      return json({ error: "invalid_index" }, 400);
+    }
+    if (!ttsConfigured(this.env)) {
+      return json({ error: "tts_not_configured" }, 503);
+    }
+
+    const act = await this.env.DB.prepare(
+      `SELECT narrated_summary_md, audio_key FROM session_acts
+       WHERE session_id = ? AND act_index = ?`,
+    )
+      .bind(meta.sessionId, index)
+      .first<{ narrated_summary_md: string | null; audio_key: string | null }>();
+    if (!act) return json({ error: "act_not_found" }, 404);
+    if (!act.narrated_summary_md) {
+      // Le récit se génère explicitement : on ne déclenche pas une génération
+      // de texte ET une synthèse vocale sur un simple clic de lecture.
+      return json({ error: "act_not_narrated" }, 409);
+    }
+
+    const key = actAudioKey(meta.sessionId, index);
+    const existing = await this.env.BUCKET.get(key);
+    if (existing) return audioResponse(existing.body);
+
+    const pending = this.audioInFlight.get(index);
+    if (pending) {
+      const bytes = await pending;
+      return bytes
+        ? audioResponse(bytes)
+        : json({ error: "tts_failed" }, 502);
+    }
+
+    const job = this.generateActAudio(meta, index, key, act.narrated_summary_md);
+    this.audioInFlight.set(index, job);
+    try {
+      const bytes = await job;
+      if (!bytes) return json({ error: "tts_failed" }, 502);
+      return audioResponse(bytes);
+    } finally {
+      this.audioInFlight.delete(index);
+    }
+  }
+
+  private async generateActAudio(
+    meta: SessionMeta,
+    index: number,
+    key: string,
+    text: string,
+  ): Promise<ArrayBuffer | null> {
+    try {
+      const res = await synthesizeSpeech(
+        this.env,
+        text.replace(/\*+/g, "").slice(0, MAX_TTS_CHARS),
+      );
+      if (!res.ok) {
+        console.error(`[game-session] tts acte ${meta.sessionId} : ${res.status}`);
+        return null;
+      }
+      const bytes = await res.arrayBuffer();
+      await this.env.BUCKET.put(key, bytes, {
+        httpMetadata: { contentType: "audio/mpeg" },
+      });
+      await this.env.DB.prepare(
+        `UPDATE session_acts SET audio_key = ?
+         WHERE session_id = ? AND act_index = ?`,
+      )
+        .bind(key, meta.sessionId, index)
+        .run();
+      return bytes;
+    } catch (err) {
+      console.error(`[game-session] tts acte ${meta.sessionId} :`, err);
+      return null;
+    }
+  }
+
   // ── Génération streamée (setup et turn) ───────────────────────────────
 
   private async generate(
@@ -1609,6 +1819,16 @@ function parseActSummary(text: string): {
     title: match[1].trim().slice(0, 120),
     context_summary_md: text.slice(match[0].length).trim(),
   };
+}
+
+/** MP3 servi au joueur ; cache privé long, l'objet R2 ne change jamais. */
+function audioResponse(body: ReadableStream | ArrayBuffer | null): Response {
+  return new Response(body, {
+    headers: {
+      "content-type": "audio/mpeg",
+      "cache-control": "private, max-age=86400",
+    },
+  });
 }
 
 function safeParse(text: string | null): unknown {

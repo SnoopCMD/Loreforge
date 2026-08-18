@@ -1528,3 +1528,46 @@ button.palette-card:hover { border-color: var(--arcane); }
 .pal-name { font-family: Cinzel, serif; font-size: 0.9rem; letter-spacing: 0.05em; }
 .palette-card.active .pal-name::after { content: " ✦"; color: var(--spirit); }
 .pal-mood { color: var(--parchment-dim); font-size: 0.8rem; line-height: 1.45; }
+
+/* ── Actes (M7) ──────────────────────────────────────────────────────────
+   Un acte est une frontière de mémoire, pas un danger ni un moment « vivant » :
+   il porte donc l'identité (--arcane), jamais --ember ni --spirit. */
+
+.act-break {
+  display: flex; flex-direction: column; align-items: center; gap: 0.35rem;
+  margin: 2.6rem 0;
+  padding: 1rem 0;
+  border-top: 1px solid var(--line);
+  border-bottom: 1px solid var(--line);
+  color: var(--arcane);
+}
+.act-break-label {
+  font-family: Cinzel, serif; font-size: 0.8rem;
+  letter-spacing: 0.3em; text-transform: uppercase;
+}
+.act-break-title {
+  font-family: Cinzel, serif; font-size: 1.05rem;
+  color: var(--parchment-dim); letter-spacing: 0.04em;
+}
+
+.acts-panel { max-width: 46rem; }
+
+.act-card {
+  border: 1px solid var(--line); border-radius: 12px;
+  padding: 1rem 1.15rem; margin-bottom: 0.9rem;
+  background: rgba(124, 58, 237, 0.06);
+}
+.act-card h4 {
+  margin: 0 0 0.6rem; font-family: Cinzel, serif;
+  font-size: 1rem; color: var(--arcane);
+}
+.act-story { line-height: 1.7; }
+.act-story p { margin: 0 0 0.7rem; }
+.act-actions { margin-top: 0.8rem; gap: 0.5rem; flex-wrap: wrap; }
+/* Cibles tactiles ≥ 44 px (SPEC §8.3). */
+.act-actions button { min-height: 44px; }
+.act-actions .playing { border-color: var(--arcane); color: var(--arcane); }
+
+@media (prefers-reduced-motion: reduce) {
+  .act-break { animation: none; }
+}

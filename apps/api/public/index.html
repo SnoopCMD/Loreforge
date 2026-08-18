@@ -429,6 +429,10 @@
     <span class="row">
       <button class="ghost hidden" id="voice-toggle" aria-pressed="false"
         title="Lire chaque tour du MJ à voix haute">🔊 Voix du MJ</button>
+      <button class="ghost hidden" id="acts-toggle"
+        title="Relire les actes déjà joués">📜 Actes précédents</button>
+      <button class="ghost hidden" id="act-close-btn"
+        title="Clore l'acte en cours et en résumer la mémoire">⧗ Clore l'acte</button>
       <button class="ghost hidden" id="palette-toggle"
         title="Changer l'ambiance de la session">🎨 Ambiance</button>
       <button class="ghost" id="follow-toggle" aria-pressed="true"
@@ -501,6 +505,17 @@
     <p class="msg">Survolez pour prévisualiser, cliquez pour adopter. Les palettes viennent des tableaux de références de votre bible.</p>
     <div class="palette-choices" id="palette-choices"></div>
     <p class="msg" id="palette-modal-msg"></p>
+  </div>
+</div>
+
+<!-- Actes déjà joués : le récit de chacun, à relire ou à écouter (M7). -->
+<div id="acts-modal" class="modal-backdrop hidden">
+  <div class="modal acts-panel" role="dialog" aria-modal="true" aria-labelledby="acts-modal-title">
+    <button type="button" class="modal-close" id="acts-close" aria-label="Fermer">✕</button>
+    <h3 id="acts-modal-title">Actes précédents</h3>
+    <p class="msg">Ce que la partie a déjà traversé. Le récit se génère à la demande.</p>
+    <div id="acts-list"></div>
+    <p class="msg" id="acts-msg"></p>
   </div>
 </div>
 

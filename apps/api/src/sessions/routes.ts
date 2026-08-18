@@ -274,6 +274,39 @@ sessions.get("/:id/acts", async (c) => {
   });
 });
 
+/** Stub du DO d'une session, pour les handlers qui portent une query string. */
+function stubFor(c: Context<AppEnv>, id: string): DurableObjectStub {
+  return c.env.GAME_SESSIONS.get(c.env.GAME_SESSIONS.idFromString(id));
+}
+
+// POST /api/sessions/:id/acts/:index/narrate — le récit d'un acte, pour le
+// joueur. Idempotent : un acte déjà narré renvoie l'existant (?force=1 pour
+// régénérer). Handler dédié : le proxy générique perdrait la query string.
+sessions.post("/:id/acts/:index/narrate", async (c) => {
+  const row = await loadOwnedSession(c.env.DB, c.req.param("id"), c.get("user").id);
+  if (!row) return c.json({ error: "not_found" }, 404);
+
+  const qs = new URLSearchParams({
+    index: c.req.param("index"),
+    ...(c.req.query("force") === "1" ? { force: "1" } : {}),
+  }).toString();
+  return stubFor(c, row.id).fetch(`https://do/act/narrate?${qs}`, {
+    method: "POST",
+  });
+});
+
+// GET /api/sessions/:id/acts/:index/audio — le récit lu à voix haute.
+// Protégée par l'accès à la session : l'objet R2 n'est jamais servi
+// directement, et un non-membre prend 404 sur la session avant tout le reste.
+sessions.get("/:id/acts/:index/audio", async (c) => {
+  const row = await loadOwnedSession(c.env.DB, c.req.param("id"), c.get("user").id);
+  if (!row) return c.json({ error: "not_found" }, 404);
+
+  return stubFor(c, row.id).fetch(
+    `https://do/act/audio?index=${encodeURIComponent(c.req.param("index"))}`,
+  );
+});
+
 // DELETE /api/sessions/:id — efface une session et tout ce qu'elle a laissé :
 // storage du DO (historique, faits, inventions), caches KV, propositions de
 // canon issues d'elle, puis la ligne D1. Le canon déjà accepté, lui, reste —
@@ -312,8 +345,29 @@ sessions.delete("/:id", async (c) => {
   ]);
 
   c.executionCtx.waitUntil(purgeSessionCache(c.env.CACHE, row.id));
+  // Les récits audio des actes partent aussi : ce sont les seuls objets R2
+  // que la session ait créés, et plus rien ne les référence.
+  c.executionCtx.waitUntil(purgeSessionAudio(c.env.BUCKET, row.id));
   return c.json({ ok: true });
 });
+
+/** Récits audio des actes d'une session (R2). */
+async function purgeSessionAudio(
+  bucket: R2Bucket,
+  sessionId: string,
+): Promise<void> {
+  try {
+    const prefix = `acts/${sessionId}/`;
+    let cursor: string | undefined;
+    do {
+      const page = await bucket.list({ prefix, cursor });
+      await Promise.all(page.objects.map((o) => bucket.delete(o.key)));
+      cursor = page.truncated ? page.cursor : undefined;
+    } while (cursor);
+  } catch (err) {
+    console.error(`[sessions] purge audio ${sessionId} :`, err);
+  }
+}
 
 /** Caches KV d'une session : état public + fiches lore résolues. */
 async function purgeSessionCache(

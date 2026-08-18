@@ -3296,6 +3296,9 @@ const S = {
   streaming: false,
   rollShown: false, // le jet vient d'être affiché via /roll → ignorer l'event SSE
   writer: null,
+  actIndex: 0, // acte en cours (M7)
+  actsClosed: 0, // actes déjà clos, relisibles
+  actCloseSuggested: false, // le seuil souple est franchi
 };
 
 function sessionBibleInfo(id) {
@@ -3330,6 +3333,12 @@ function startSessionScreen(id, { fresh = false } = {}) {
   vtoggle.classList.toggle("on", voice.enabled);
   vtoggle.textContent = voice.enabled ? "🔊 Voix activée" : "🔊 Voix du MJ";
   renderFollowToggle();
+
+  // Actes : les deux boutons repartent cachés, /state les rallumera.
+  S.actIndex = 0;
+  S.actsClosed = 0;
+  S.actCloseSuggested = false;
+  updateActControls();
 
   // Ambiance : le bouton n'apparaît que si la bible propose des palettes.
   $("palette-toggle").classList.add("hidden");
@@ -3942,6 +3951,152 @@ function sendTurn() {
   runGeneration(S.id, "/sessions/" + S.id + "/turn", { player_input: text }, text);
 }
 
+// — Actes (M7) : clôture manuelle et relecture —
+//
+// Un acte borne la mémoire narrative de la partie : à sa clôture, l'historique
+// est remplacé par un résumé dense côté serveur. Ici on n'expose que les deux
+// gestes du joueur — clore, et relire ce qui a déjà été joué.
+
+function updateActControls() {
+  $("acts-toggle").classList.toggle("hidden", S.actsClosed === 0);
+  $("act-close-btn").classList.toggle(
+    "hidden",
+    !S.actCloseSuggested || S.status !== "playing",
+  );
+}
+
+async function closeActManually() {
+  const btn = $("act-close-btn");
+  if (btn.disabled) return;
+  btn.disabled = true;
+  const label = btn.textContent;
+  btn.textContent = "⧗ Clôture…";
+  try {
+    const res = await api("/sessions/" + S.id + "/acts/close", jsonPost({}));
+    if (res.ok) {
+      const body = await res.json();
+      if (body.closed) onActClosed(body.act);
+      else S.actCloseSuggested = false;
+    }
+  } catch { /* réseau : le bouton redevient cliquable */ }
+  btn.disabled = false;
+  btn.textContent = label;
+  updateActControls();
+}
+
+/** Repère visuel dans le fil + mise à jour des compteurs. */
+function onActClosed(act) {
+  S.actIndex += 1;
+  S.actsClosed += 1;
+  S.actCloseSuggested = false;
+  const box = document.createElement("div");
+  box.className = "act-break chunk";
+  box.innerHTML =
+    '<span class="act-break-label">Fin de l\'acte ' + S.actIndex + "</span>" +
+    (act && act.title ? '<span class="act-break-title">' + esc(act.title) + "</span>" : "");
+  $("feed").appendChild(box);
+  scrollFeed(true);
+  updateActControls();
+}
+
+function actCardHtml(act) {
+  const num = act.act_index + 1;
+  const title = act.title ? " — " + esc(act.title) : "";
+  const body = act.narrated_summary_md
+    ? '<div class="act-story">' + mdToHtml(act.narrated_summary_md) + "</div>"
+    : '<p class="msg">Le récit de cet acte n\'a pas encore été écrit.</p>';
+  const actions =
+    '<div class="row act-actions">' +
+    '<button type="button" class="ghost act-narrate" data-index="' + act.act_index + '">' +
+    (act.narrated_summary_md ? "↻ Réécrire" : "✍ Écrire le récit") +
+    "</button>" +
+    (act.narrated_summary_md && voice.ready
+      ? '<button type="button" class="ghost act-listen" data-index="' +
+        act.act_index + '">🔊 Écouter</button>'
+      : "") +
+    "</div>";
+  return (
+    '<article class="act-card" data-index="' + act.act_index + '">' +
+    "<h4>Acte " + num + title + "</h4>" + body + actions + "</article>"
+  );
+}
+
+async function renderActs() {
+  const list = $("acts-list");
+  list.innerHTML = spin("Chargement des actes…");
+  const res = await api("/sessions/" + S.id + "/acts");
+  if (!res.ok) { list.innerHTML = '<p class="msg">Actes indisponibles.</p>'; return; }
+  const { acts } = await res.json();
+  list.innerHTML = acts.length
+    ? acts.map(actCardHtml).join("")
+    : '<p class="msg">Aucun acte clos pour l\'instant.</p>';
+}
+
+async function narrateAct(index, btn) {
+  const msg = $("acts-msg");
+  btn.disabled = true;
+  msg.innerHTML = spin("Le MJ raconte l'acte " + (index + 1) + "…");
+  try {
+    const res = await api(
+      "/sessions/" + S.id + "/acts/" + index + "/narrate",
+      jsonPost({}),
+    );
+    msg.textContent = res.ok ? "" : "Le récit n'a pas pu être écrit.";
+    if (res.ok) await renderActs();
+  } catch {
+    msg.textContent = "Le récit n'a pas pu être écrit.";
+  }
+  btn.disabled = false;
+}
+
+/**
+ * Lecture du récit d'un acte. Le MP3 vit dans R2 côté serveur : on ne
+ * re-synthétise jamais, le navigateur ne fait que le rejouer.
+ */
+function listenAct(index, btn) {
+  stopVoice();
+  const audio = new Audio("/api/sessions/" + S.id + "/acts/" + index + "/audio");
+  voice.current = audio;
+  voice.currentBtn = btn;
+  btn.classList.add("playing");
+  btn.textContent = "⏸ Lecture…";
+  const reset = () => {
+    btn.classList.remove("playing");
+    btn.textContent = "🔊 Écouter";
+    if (voice.currentBtn === btn) voice.currentBtn = null;
+  };
+  audio.addEventListener("ended", reset);
+  audio.addEventListener("error", () => {
+    reset();
+    $("acts-msg").textContent = "La lecture a échoué.";
+  });
+  audio.play().catch(reset);
+}
+
+function openActsModal() {
+  $("acts-msg").textContent = "";
+  $("acts-modal").classList.remove("hidden");
+  renderActs();
+}
+
+function closeActsModal() {
+  stopVoice();
+  $("acts-modal").classList.add("hidden");
+}
+
+$("acts-toggle").addEventListener("click", openActsModal);
+$("acts-close").addEventListener("click", closeActsModal);
+$("act-close-btn").addEventListener("click", closeActManually);
+$("acts-modal").addEventListener("click", (e) => {
+  if (e.target === $("acts-modal")) closeActsModal();
+});
+$("acts-list").addEventListener("click", (e) => {
+  const narrate = e.target.closest(".act-narrate");
+  if (narrate) return narrateAct(Number(narrate.dataset.index), narrate);
+  const listen = e.target.closest(".act-listen");
+  if (listen) return listenAct(Number(listen.dataset.index), listen);
+});
+
 // — Génération SSE (setup et tours) —
 
 function runGeneration(sessionId, path, body, retryText = null) {
@@ -3979,6 +4134,13 @@ function runGeneration(sessionId, path, body, retryText = null) {
       gotDone = true;
       S.turnCount = d.turn;
       S.souffle = d.souffle;
+    },
+    // Clôture d'acte (M7). Elle arrive APRÈS le `done` : le tour est déjà
+    // validé, le joueur lit pendant que le serveur résume.
+    act_closed: (d) => onActClosed(d.act),
+    act_close_suggested: () => {
+      S.actCloseSuggested = true;
+      updateActControls();
     },
     // Erreur serveur (génération échouée) : traitée comme une interruption
     // (gotDone reste faux) → bandeau + Régénérer dans le finally.
@@ -4235,6 +4397,9 @@ async function enterSession(id) {
   S.facts = state.facts || [];
   S.skills = state.skills || [];
   S.character = state.character;
+  S.actIndex = state.act_index || 0;
+  S.actsClosed = state.acts_closed || 0;
+  S.actCloseSuggested = Boolean(state.act_close_suggested);
 
   let lastGmEl = null;
   let lastGmText = null;
@@ -4257,6 +4422,7 @@ async function enterSession(id) {
   if (S.pendingRoll) addRollNeeded();
   else renderChoices(lastGmEl, lastGmText);
   updateRail();
+  updateActControls();
   lockInput(false);
   scrollFeed(true);
   // Jet lancé mais jamais raconté (refresh entre le dé et la suite) :

@@ -6,7 +6,7 @@
 // mockées pour vérifier une mécanique de fenêtrage qui n'en a pas besoin.
 
 import { env, runInDurableObject, SELF } from "cloudflare:test";
-import { afterEach, beforeAll, describe, expect, it } from "vitest";
+import { afterAll, afterEach, beforeAll, describe, expect, it } from "vitest";
 import {
   assertAnthropicMockConsumed,
   installAnthropicMock,
@@ -57,6 +57,14 @@ async function seedTurns(
     }
     await state.storage.put("turn_count_stored", (from + count) * 2);
   });
+}
+
+/** Toutes les clés de tours présentes dans le storage d'un DO. */
+async function listTurnKeys(
+  storage: DurableObjectState["storage"],
+): Promise<string[]> {
+  const map = await storage.list({ prefix: "turn:" });
+  return [...map.keys()];
 }
 
 /** Texte de tous les blocs d'un message, quelle que soit sa forme. */
@@ -567,5 +575,173 @@ describe("lot 7.2 — clôture d'acte et reprise", () => {
     expect(act.context_summary_md.length).toBeLessThanOrEqual(2000);
     // Coupé sur une frontière de phrase, pas au milieu d'un mot.
     expect(act.context_summary_md.endsWith(".")).toBe(true);
+  });
+});
+
+describe("lot 7.3 — récit narré et audio", () => {
+  // La voix n'est pas configurée dans l'environnement de test (tts.test.ts
+  // s'appuie dessus). On l'active pour ce bloc seulement.
+  beforeAll(() => {
+    env.CARTESIA_API_KEY = "test-cartesia-key";
+    env.CARTESIA_VOICE_ID = "test-voice";
+  });
+  afterAll(() => {
+    delete env.CARTESIA_API_KEY;
+    delete env.CARTESIA_VOICE_ID;
+  });
+
+  /** Session avec un acte 0 déjà clos, prête à être narrée. */
+  async function withClosedAct(
+    email: string,
+  ): Promise<{ cookie: string; sessionId: string }> {
+    const session = await playingSession(email);
+    mockAnthropicText("# L'acte clos\n\n- ce qui a été établi");
+    const res = await post(
+      session.cookie,
+      `/api/sessions/${session.sessionId}/acts/close`,
+    );
+    expect(res.status).toBe(200);
+    return session;
+  }
+
+  it("narre un acte en prose, distincte de sa fiche de mémoire", async () => {
+    const { cookie, sessionId } = await withClosedAct("narre@example.com");
+
+    mockAnthropicText(
+      "La brume s'était ouverte sur la ville, et Kael y était entré sans " +
+        "savoir ce qui l'attendait derrière le seuil.",
+    );
+    const res = await post(
+      cookie,
+      `/api/sessions/${sessionId}/acts/0/narrate`,
+    );
+    expect(res.status).toBe(200);
+    const { act, generated } = (await res.json()) as {
+      act: { narrated_summary_md: string; context_summary_md: string };
+      generated: boolean;
+    };
+    expect(generated).toBe(true);
+    expect(act.narrated_summary_md).toContain("La brume s'était ouverte");
+    // Deux objets distincts : le narré ne remplace jamais le contexte.
+    expect(act.context_summary_md).not.toContain("La brume s'était ouverte");
+    expect(act.context_summary_md).toContain("ce qui a été établi");
+  });
+
+  it("est idempotent : un acte déjà narré ne rappelle pas le modèle", async () => {
+    const { cookie, sessionId } = await withClosedAct("idemnarre@example.com");
+
+    mockAnthropicText("Un premier récit.");
+    await post(cookie, `/api/sessions/${sessionId}/acts/0/narrate`);
+
+    // Aucun mock n'est posé : un second appel qui générerait ferait échouer
+    // le test sur « appel Anthropic non mocké ».
+    const second = await post(
+      cookie,
+      `/api/sessions/${sessionId}/acts/0/narrate`,
+    );
+    const body = (await second.json()) as {
+      generated: boolean;
+      act: { narrated_summary_md: string };
+    };
+    expect(body.generated).toBe(false);
+    expect(body.act.narrated_summary_md).toBe("Un premier récit.");
+  });
+
+  it("narre depuis la seule fiche de mémoire quand les tours ont disparu", async () => {
+    const { cookie, sessionId } = await withClosedAct("purgé@example.com");
+
+    // Les tours d'origine ne sont plus là (purge, storage réinitialisé).
+    await runInDurableObject(stubFor(sessionId), async (_i, state) => {
+      await state.storage.delete(await listTurnKeys(state.storage));
+    });
+
+    mockAnthropicText("Un récit reconstruit depuis la fiche.");
+    const res = await post(
+      cookie,
+      `/api/sessions/${sessionId}/acts/0/narrate`,
+    );
+    expect(res.status).toBe(200);
+    expect(
+      ((await res.json()) as { act: { narrated_summary_md: string } }).act
+        .narrated_summary_md,
+    ).toBe("Un récit reconstruit depuis la fiche.");
+  });
+
+  it("refuse de lire un acte qui n'a pas encore de récit", async () => {
+    const { cookie, sessionId } = await withClosedAct("muet@example.com");
+    const res = await get(cookie, `/api/sessions/${sessionId}/acts/0/audio`);
+    expect(res.status).toBe(409);
+    expect(((await res.json()) as { error: string }).error).toBe(
+      "act_not_narrated",
+    );
+  });
+
+  it("ne synthétise l'audio qu'une fois, même sur deux appels", async () => {
+    const { cookie, sessionId } = await withClosedAct("audio@example.com");
+    mockAnthropicText("Le récit à mettre en voix.");
+    await post(cookie, `/api/sessions/${sessionId}/acts/0/narrate`);
+
+    let synthesisCalls = 0;
+    const realFetch = globalThis.fetch;
+    globalThis.fetch = (async (input: RequestInfo | URL, init?: RequestInit) => {
+      const url = typeof input === "string" ? input : (input as Request).url;
+      if (url.startsWith("https://api.cartesia.ai")) {
+        synthesisCalls++;
+        return new Response(new Uint8Array([0x49, 0x44, 0x33]), {
+          headers: { "content-type": "audio/mpeg" },
+        });
+      }
+      return realFetch(input as RequestInfo, init);
+    }) as typeof fetch;
+
+    try {
+      const first = await get(cookie, `/api/sessions/${sessionId}/acts/0/audio`);
+      expect(first.status).toBe(200);
+      expect(first.headers.get("content-type")).toBe("audio/mpeg");
+
+      const second = await get(cookie, `/api/sessions/${sessionId}/acts/0/audio`);
+      expect(second.status).toBe(200);
+      // Le second appel vient de R2 : c'est le poste de coût le plus facile à
+      // faire exploser par un double clic.
+      expect(synthesisCalls).toBe(1);
+    } finally {
+      globalThis.fetch = realFetch;
+    }
+
+    const key = `acts/${sessionId}/0.mp3`;
+    expect(await env.BUCKET.get(key)).toBeTruthy();
+    const row = await env.DB.prepare(
+      `SELECT audio_key FROM session_acts WHERE session_id = ? AND act_index = 0`,
+    )
+      .bind(sessionId)
+      .first<{ audio_key: string }>();
+    expect(row!.audio_key).toBe(key);
+
+    // Supprimer la session emporte l'objet R2 avec elle (purge en waitUntil,
+    // d'où l'attente : la réponse ne l'attend pas, et c'est voulu).
+    await SELF.fetch(`${BASE}/api/sessions/${sessionId}`, {
+      method: "DELETE",
+      headers: { cookie },
+    });
+    for (let i = 0; i < 30 && (await env.BUCKET.get(key)); i++) {
+      await new Promise((r) => setTimeout(r, 50));
+    }
+    expect(await env.BUCKET.get(key)).toBeNull();
+  });
+
+  it("ne laisse pas un autre compte lire le récit audio", async () => {
+    const { cookie, sessionId } = await withClosedAct("proprio@example.com");
+    mockAnthropicText("Un récit privé.");
+    await post(cookie, `/api/sessions/${sessionId}/acts/0/narrate`);
+
+    const intrus = await login("intrus@example.com");
+    const res = await get(intrus, `/api/sessions/${sessionId}/acts/0/audio`);
+    expect(res.status).toBe(404);
+
+    const narrate = await post(
+      intrus,
+      `/api/sessions/${sessionId}/acts/0/narrate`,
+    );
+    expect(narrate.status).toBe(404);
   });
 });
