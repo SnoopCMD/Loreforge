@@ -46,11 +46,13 @@ import {
 import { retrieveCanonExcerpts } from "../rag/store";
 import { loadMoodboardAnnex } from "../bibles/moodboard-context";
 import {
+  ACT_SUMMARY_MESSAGE,
   buildActsBlock,
   buildSetupMessage,
   buildSystemPrompt,
   buildTurnContext,
   buildTurnMessage,
+  capActSummary,
   gapQuestion,
   RELANCE_MESSAGE,
   selectSetupGaps,
@@ -95,6 +97,18 @@ export const MAX_TRAME_CHARS = 500;
 // Elle reste un plafond de sécurité.
 const CONTEXT_TURNS = 40;
 const CONTEXT_MESSAGES = CONTEXT_TURNS * 2;
+// Bornes d'un acte, en tours de jeu (lot 7.2).
+// Au-delà de ce seuil, une rupture de scène du MJ propose la clôture — on
+// coupe sur une frontière narrative, pas au milieu d'une scène.
+const ACT_SOFT_LIMIT = 20;
+// Clôture FORCÉE, sans demander. Cette borne n'est pas un choix de rythme :
+// elle existe pour ne jamais atteindre CONTEXT_TURNS (40). Au-delà, la fenêtre
+// se met à glisser, le premier message change à chaque tour, le préfixe n'est
+// plus identique et le cache d'historique décroche. 35 < 40, avec la marge
+// qu'il faut pour qu'un tour en cours ne franchisse pas la limite.
+const ACT_HARD_LIMIT = 35;
+// Le résumé d'acte est court par construction (voir MAX_ACT_SUMMARY_CHARS).
+const MAX_ACT_SUMMARY_TOKENS = 1024;
 // Prompt caching (coût) : le préfixe stable (system + historique) est mis en
 // cache côté API ; TTL 1h car le rythme d'une partie dépasse souvent les 5 min
 // entre deux tours. Relecture ≈ 0,1× le prix d'un token d'entrée.
@@ -647,6 +661,7 @@ export class GameSession extends DurableObject<Env> {
     const actStart = await this.actStartIndex();
     const stored =
       (await this.ctx.storage.get<number>("turn_count_stored")) ?? 0;
+    const actTurns = Math.max(0, Math.floor((stored - actStart) / 2));
     return {
       session_id: meta.sessionId,
       status: meta.status,
@@ -667,8 +682,11 @@ export class GameSession extends DurableObject<Env> {
       // Acte courant : son numéro et les tours déjà joués dedans. Le front s'en
       // sert pour situer la partie et proposer la clôture au bon moment.
       act_index: actIndex,
-      act_turns: Math.max(0, Math.floor((stored - actStart) / 2)),
+      act_turns: actTurns,
       acts_closed: (await this.closedActs()).length,
+      // Le front propose « Clore l'acte » dès le seuil souple, sans attendre
+      // une rupture de scène : au rechargement, l'event est déjà passé.
+      act_close_suggested: actTurns >= ACT_SOFT_LIMIT,
       log: log.map((t) => ({
         role: t.role === "assistant" ? "gm" : "player",
         // Côté joueur, la ligne technique du jet est retirée : le client
@@ -848,7 +866,10 @@ export class GameSession extends DurableObject<Env> {
    * Idempotent : rappelée sur un acte où rien n'a été joué, la clôture ne
    * crée pas d'acte vide et renvoie le dernier acte clos.
    */
-  private async closeAct(meta: SessionMeta): Promise<Response> {
+  private async closeAct(
+    meta: SessionMeta,
+    reason: "manual" | "forced" = "manual",
+  ): Promise<Response> {
     if (meta.status !== "playing") {
       return json({ error: "invalid_status", status: meta.status }, 409);
     }
@@ -865,13 +886,18 @@ export class GameSession extends DurableObject<Env> {
       return json({ act: last, closed: false });
     }
 
-    const summary = await this.summarizeAct(meta, turnStart, turnEnd);
+    const state = (await this.ctx.storage.get<GameState>("state"))!;
+    const summary = await this.summarizeAct(meta, state);
+    // Échec de génération : l'acte reste ouvert et la clôture est rejouable.
+    // On ne borne JAMAIS la fenêtre sur un résumé vide — ce serait effacer le
+    // passé de la session sans rien mettre à la place.
     if (!summary) return json({ error: "act_summary_failed" }, 502);
 
     const act: ClosedAct = {
       act_index: actIndex,
       title: summary.title,
-      context_summary_md: summary.context_summary_md,
+      // Plafond dur : c'est le seul texte que la session paie éternellement.
+      context_summary_md: capActSummary(summary.context_summary_md),
     };
     const closed = [...(await this.closedActs()), act];
 
@@ -901,24 +927,76 @@ export class GameSession extends DurableObject<Env> {
       closed_acts: closed,
     });
 
-    const state = (await this.ctx.storage.get<GameState>("state"))!;
+    // L'état de jeu n'est PAS touché : Souffle, compétences et faits établis
+    // traversent la clôture. Un acte borne la mémoire narrative, pas la partie.
     await this.syncKV(meta, state);
-    return json({ act, closed: true });
+    console.log(
+      `[game-session] acte ${actIndex} clos (${reason}) ${meta.sessionId} : tours ${turnStart}-${turnEnd}`,
+    );
+    return json({ act, closed: true, reason });
   }
 
   /**
-   * Résumé de contexte d'un acte. Provisoire à ce stade (lot 7.1) : l'objectif
-   * du lot est la mécanique de fenêtrage, testable seule. La génération réelle
-   * arrive au lot 7.2, avec son propre prompt de concision.
+   * Résumé de CONTEXTE d'un acte : la fiche de mémoire que le modèle relira à
+   * chaque tour des actes suivants. Même mécanique que finish() — l'historique
+   * courant plus un message de consigne — mais avec son propre prompt, tourné
+   * vers la densité et non vers la belle synthèse de fin de partie.
+   *
+   * buildMessages() sert de base à dessein : le préfixe est déjà en cache
+   * (c'est celui du tour qu'on vient de jouer), la clôture ne coûte donc
+   * presque rien en entrée.
    */
   private async summarizeAct(
-    _meta: SessionMeta,
-    turnStart: number,
-    turnEnd: number,
+    meta: SessionMeta,
+    state: GameState,
   ): Promise<{ title: string | null; context_summary_md: string } | null> {
+    if (!this.env.ANTHROPIC_API_KEY) return null;
+
+    const messages = await this.buildMessages(
+      buildTurnContext(state) + "\n\n" + ACT_SUMMARY_MESSAGE,
+    );
+    const system = await this.systemBlocks(meta);
+
+    try {
+      const client = new Anthropic({ apiKey: this.env.ANTHROPIC_API_KEY });
+      const response = await client.messages.create({
+        model: NARRATION_MODEL,
+        max_tokens: MAX_ACT_SUMMARY_TOKENS,
+        system,
+        messages,
+      });
+      this.logUsage("clôture d'acte", meta.sessionId, response.usage);
+      const text = response.content
+        .filter((b) => b.type === "text")
+        .map((b) => b.text)
+        .join("")
+        .trim();
+      if (!text) return null;
+      return parseActSummary(text);
+    } catch (err) {
+      console.error(`[game-session] résumé d'acte ${meta.sessionId} :`, err);
+      return null;
+    }
+  }
+
+  /**
+   * Faut-il clore l'acte courant, et de quelle façon ? Trois déclencheurs, par
+   * priorité décroissante : la main du joueur (traitée en amont, par la
+   * route), une rupture de scène passé le seuil souple, puis la borne dure.
+   */
+  private async actVerdict(sceneBreak: boolean): Promise<{
+    turns: number;
+    force: boolean;
+    suggest: boolean;
+  }> {
+    const start = await this.actStartIndex();
+    const stored =
+      (await this.ctx.storage.get<number>("turn_count_stored")) ?? 0;
+    const turns = Math.max(0, Math.floor((stored - start) / 2));
     return {
-      title: null,
-      context_summary_md: `(résumé provisoire — tours ${turnStart} à ${turnEnd})`,
+      turns,
+      force: turns >= ACT_HARD_LIMIT,
+      suggest: sceneBreak && turns >= ACT_SOFT_LIMIT,
     };
   }
 
@@ -996,6 +1074,10 @@ export class GameSession extends DurableObject<Env> {
       const inventions =
         (await this.ctx.storage.get<Invention[]>("inventions")) ?? [];
       let raw = "";
+      // Une frontière d'acte se greffe sur un signal que le MJ émet déjà :
+      // <scene_break/>. On coupe donc sur une rupture narrative choisie par
+      // le narrateur, jamais au milieu d'une scène.
+      let sceneBreak = false;
 
       const handle = async (chunk: {
         text: string;
@@ -1013,6 +1095,7 @@ export class GameSession extends DurableObject<Env> {
               await send("state_patch", { souffle: state.souffle });
               break;
             case "scene_break":
+              sceneBreak = true;
               await send("scene_break", {});
               break;
             case "invention":
@@ -1118,6 +1201,20 @@ export class GameSession extends DurableObject<Env> {
       await this.syncKV(meta, state);
 
       await send("done", { turn: state.turn_count, souffle: state.souffle });
+
+      // Bornes d'acte, APRÈS le `done` : le tour est validé et lisible pour le
+      // joueur, qui lit pendant que le résumé se fabrique. Le flux est encore
+      // ouvert, l'UI reçoit donc la suite sans second aller-retour.
+      const verdict = await this.actVerdict(sceneBreak);
+      if (verdict.force) {
+        const res = await this.closeAct(meta, "forced");
+        if (res.ok) {
+          const { act } = (await res.json()) as { act: ClosedAct };
+          await send("act_closed", { act, forced: true });
+        }
+      } else if (verdict.suggest) {
+        await send("act_close_suggested", { turns: verdict.turns });
+      }
     } catch (err) {
       console.error(`[game-session] génération ${meta.sessionId} :`, err);
       try {
@@ -1452,9 +1549,29 @@ export class GameSession extends DurableObject<Env> {
     return (await this.ctx.storage.get<number>("act_start_index")) ?? 0;
   }
 
-  /** Résumés des actes déjà clos, dans l'ordre de jeu. */
+  /**
+   * Résumés des actes déjà clos, dans l'ordre de jeu.
+   *
+   * Reprise de session : si le storage du DO n'a pas (ou plus) la liste — DO
+   * réveillé sur une session ouverte avant ce lot, storage réinitialisé —, D1
+   * fait foi et la liste est reconstruite. Rouvrir une partie ne rejoue donc
+   * jamais rien : le contexte se reconstitue depuis les résumés.
+   */
   private async closedActs(): Promise<ClosedAct[]> {
-    return (await this.ctx.storage.get<ClosedAct[]>("closed_acts")) ?? [];
+    const cached = await this.ctx.storage.get<ClosedAct[]>("closed_acts");
+    if (cached) return cached;
+
+    const meta = await this.ctx.storage.get<SessionMeta>("meta");
+    if (!meta) return [];
+    const { results } = await this.env.DB.prepare(
+      `SELECT act_index, title, context_summary_md FROM session_acts
+       WHERE session_id = ? ORDER BY act_index`,
+    )
+      .bind(meta.sessionId)
+      .all<ClosedAct>();
+
+    await this.ctx.storage.put("closed_acts", results);
+    return results;
   }
 
   /**
@@ -1475,6 +1592,23 @@ export class GameSession extends DurableObject<Env> {
       }),
     );
   }
+}
+
+/**
+ * Sépare le titre d'acte de sa fiche de mémoire. Le modèle est prié de sortir
+ * `# Titre` en première ligne ; s'il ne le fait pas, on garde tout le texte et
+ * l'acte reste sans titre — un résumé sans titre reste parfaitement utilisable.
+ */
+function parseActSummary(text: string): {
+  title: string | null;
+  context_summary_md: string;
+} {
+  const match = /^#\s+(.+?)\s*(?:\n|$)/.exec(text);
+  if (!match) return { title: null, context_summary_md: text };
+  return {
+    title: match[1].trim().slice(0, 120),
+    context_summary_md: text.slice(match[0].length).trim(),
+  };
 }
 
 function safeParse(text: string | null): unknown {

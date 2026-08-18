@@ -11,6 +11,7 @@ import {
   assertAnthropicMockConsumed,
   installAnthropicMock,
   mockAnthropicStream,
+  mockAnthropicText,
 } from "./anthropic-mock";
 
 const BASE = "http://loreforge.test";
@@ -107,6 +108,19 @@ async function post(
 
 async function get(cookie: string, path: string): Promise<Response> {
   return SELF.fetch(`${BASE}${path}`, { headers: { cookie } });
+}
+
+async function readSse(
+  res: Response,
+): Promise<Array<{ event: string; data: Record<string, unknown> }>> {
+  const text = await res.text();
+  return text
+    .split("\n\n")
+    .filter((b) => b.trim() !== "")
+    .map((b) => ({
+      event: /^event: (.+)$/m.exec(b)![1],
+      data: JSON.parse(/^data: (.+)$/m.exec(b)![1]),
+    }));
 }
 
 /** Session en cours de jeu (statut 'playing'), scène 1 déjà générée. */
@@ -291,6 +305,7 @@ describe("lot 7.1 — clôture d'acte (mécanique)", () => {
     expect(state.act_turns).toBe(1);
     expect(state.acts_closed).toBe(0);
 
+    mockAnthropicText("# Ouverture\n\n- la brume, la ville, le seuil");
     const res = await post(cookie, `/api/sessions/${sessionId}/acts/close`);
     expect(res.status).toBe(200);
     const { act, closed } = (await res.json()) as {
@@ -321,7 +336,10 @@ describe("lot 7.1 — clôture d'acte (mécanique)", () => {
   it("est idempotente : rappelée sur un acte vide, elle n'en crée pas un second", async () => {
     const { cookie, sessionId } = await playingSession("idem@example.com");
 
+    mockAnthropicText("# Ouverture\n\n- résumé du premier acte");
     await post(cookie, `/api/sessions/${sessionId}/acts/close`);
+    // Deuxième appel : aucun tour joué depuis, donc AUCUN appel au modèle —
+    // l'idempotence protège aussi la facture.
     const second = await post(cookie, `/api/sessions/${sessionId}/acts/close`);
     expect(second.status).toBe(200);
     expect(((await second.json()) as { closed: boolean }).closed).toBe(false);
@@ -336,7 +354,9 @@ describe("lot 7.1 — clôture d'acte (mécanique)", () => {
 
   it("supprimer la session purge ses actes", async () => {
     const { cookie, sessionId } = await playingSession("purge@example.com");
-    await post(cookie, `/api/sessions/${sessionId}/acts/close`);
+    mockAnthropicText("# Ouverture\n\n- résumé à purger");
+    const closeRes = await post(cookie, `/api/sessions/${sessionId}/acts/close`);
+    expect(closeRes.status).toBe(200);
 
     const del = await SELF.fetch(`${BASE}/api/sessions/${sessionId}`, {
       method: "DELETE",
@@ -350,5 +370,202 @@ describe("lot 7.1 — clôture d'acte (mécanique)", () => {
       .bind(sessionId)
       .first<{ count: number }>())!;
     expect(count).toBe(0);
+  });
+});
+
+describe("lot 7.2 — clôture d'acte et reprise", () => {
+  it("génère une fiche de mémoire dense sans toucher à l'état de jeu", async () => {
+    const { cookie, sessionId } = await playingSession("resume@example.com");
+
+    // Un tour qui fait bouger l'état : Souffle dépensé, compétence, fait.
+    mockAnthropicStream([
+      "Tu forces la serrure. ",
+      '<souffle delta="-1"/>',
+      '<skill name="Crochetage" tier="apprentissage" note="serrures simples"/>',
+      '<fait texte="La porte du sanctuaire est ouverte."/>',
+      " Que fais-tu ?",
+    ]);
+    await (
+      await post(cookie, `/api/sessions/${sessionId}/turn`, {
+        player_input: "je crochète la serrure",
+      })
+    ).text();
+
+    const avant = (await (
+      await get(cookie, `/api/sessions/${sessionId}/state`)
+    ).json()) as Record<string, unknown>;
+    expect(avant.souffle).toBe(2);
+
+    mockAnthropicText(
+      "# La porte du sanctuaire\n\n" +
+        "## Personnages\n- Reika — guide, laissée au seuil\n\n" +
+        "## Faits établis\n- La porte du sanctuaire est ouverte\n\n" +
+        "## Promesses ouvertes\n- Ce qui dort derrière la porte\n\n" +
+        "## Relations\n- Reika : confiance fragile",
+    );
+    const res = await post(cookie, `/api/sessions/${sessionId}/acts/close`);
+    expect(res.status).toBe(200);
+    const { act } = (await res.json()) as {
+      act: { title: string | null; context_summary_md: string };
+    };
+    expect(act.title).toBe("La porte du sanctuaire");
+    // Le titre est extrait, pas laissé dans le corps du résumé.
+    expect(act.context_summary_md.startsWith("## Personnages")).toBe(true);
+
+    // La clôture borne la mémoire narrative, pas la partie : rien de l'état
+    // de jeu ne doit avoir bougé.
+    const apres = (await (
+      await get(cookie, `/api/sessions/${sessionId}/state`)
+    ).json()) as Record<string, unknown>;
+    expect(apres.souffle).toBe(avant.souffle);
+    expect(apres.facts).toEqual(avant.facts);
+    expect(apres.skills).toEqual(avant.skills);
+  });
+
+  it("empile les résumés de deux actes clos dans l'ordre", async () => {
+    const { cookie, sessionId } = await playingSession("empile@example.com");
+
+    mockAnthropicText("# Acte un\n\n- premier résumé");
+    await post(cookie, `/api/sessions/${sessionId}/acts/close`);
+
+    mockAnthropicStream(["La suite s'ouvre. Que fais-tu ?"]);
+    await (
+      await post(cookie, `/api/sessions/${sessionId}/turn`, {
+        player_input: "j'avance",
+      })
+    ).text();
+
+    mockAnthropicText("# Acte deux\n\n- second résumé");
+    await post(cookie, `/api/sessions/${sessionId}/acts/close`);
+
+    const { acts } = (await (
+      await get(cookie, `/api/sessions/${sessionId}/acts`)
+    ).json()) as {
+      acts: Array<{ act_index: number; title: string; context_summary_md: string }>;
+    };
+    expect(acts.map((a) => a.title)).toEqual(["Acte un", "Acte deux"]);
+
+    await runInDurableObject(stubFor(sessionId), async (instance) => {
+      const messages = await (
+        instance as unknown as GameSessionInternals
+      ).buildMessages("tour suivant");
+      const bloc = textOf(messages[0]);
+      expect(bloc.indexOf("premier résumé")).toBeLessThan(
+        bloc.indexOf("second résumé"),
+      );
+      expect(bloc).toContain("## Acte 1 — Acte un");
+      expect(bloc).toContain("## Acte 2 — Acte deux");
+    });
+  });
+
+  it("reconstruit les résumés depuis D1 si le storage du DO les a perdus", async () => {
+    const { cookie, sessionId } = await playingSession("reprise@example.com");
+    mockAnthropicText("# Acte un\n\n- ce qui est établi");
+    await post(cookie, `/api/sessions/${sessionId}/acts/close`);
+
+    // Simule un DO réveillé sans sa liste (session ouverte avant le lot 7.1).
+    await runInDurableObject(stubFor(sessionId), async (_i, state) => {
+      await state.storage.delete("closed_acts");
+    });
+
+    await runInDurableObject(stubFor(sessionId), async (instance) => {
+      const messages = await (
+        instance as unknown as GameSessionInternals
+      ).buildMessages("tour après reprise");
+      expect(messages.map(textOf).join("\n")).toContain("ce qui est établi");
+    });
+  });
+
+  it("laisse l'acte ouvert quand la génération du résumé échoue", async () => {
+    const { cookie, sessionId } = await playingSession("echec@example.com");
+
+    mockAnthropicText(""); // le modèle ne rend rien
+    const res = await post(cookie, `/api/sessions/${sessionId}/acts/close`);
+    expect(res.status).toBe(502);
+
+    // Rien n'a été borné : on n'efface jamais le passé sans contrepartie.
+    const state = (await (
+      await get(cookie, `/api/sessions/${sessionId}/state`)
+    ).json()) as Record<string, unknown>;
+    expect(state.act_index).toBe(0);
+    expect(state.acts_closed).toBe(0);
+  });
+
+  it("force la clôture à 35 tours, bien avant la fenêtre de contexte", async () => {
+    const { cookie, sessionId } = await playingSession("force@example.com");
+
+    // On amène l'acte à 34 tours joués sans passer par 34 générations.
+    await runInDurableObject(stubFor(sessionId), async (_i, state) => {
+      await state.storage.put("turn_count_stored", 34 * 2);
+    });
+
+    mockAnthropicStream(["Le tour de trop. Que fais-tu ?"]);
+    mockAnthropicText("# Acte forcé\n\n- résumé de clôture forcée");
+    const events = await readSse(
+      await post(cookie, `/api/sessions/${sessionId}/turn`, {
+        player_input: "encore un pas",
+      }),
+    );
+
+    const closed = events.find((e) => e.event === "act_closed");
+    expect(closed, "la clôture forcée doit être diffusée au client").toBeTruthy();
+    expect(closed!.data.forced).toBe(true);
+    // Elle arrive APRÈS le `done` : le tour est validé avant d'être résumé.
+    expect(events.findIndex((e) => e.event === "done")).toBeLessThan(
+      events.findIndex((e) => e.event === "act_closed"),
+    );
+
+    const state = (await (
+      await get(cookie, `/api/sessions/${sessionId}/state`)
+    ).json()) as Record<string, unknown>;
+    expect(state.act_index).toBe(1);
+    expect(state.act_turns).toBe(0);
+    // 35 tours = 70 entrées, la fenêtre en tolère 80 : on n'y touche jamais.
+    expect(35).toBeLessThan(40);
+  });
+
+  it("propose la clôture sur une rupture de scène passé le seuil souple", async () => {
+    const { cookie, sessionId } = await playingSession("propose@example.com");
+    await runInDurableObject(stubFor(sessionId), async (_i, state) => {
+      await state.storage.put("turn_count_stored", 21 * 2);
+    });
+
+    mockAnthropicStream(["La scène bascule. <scene_break/> Que fais-tu ?"]);
+    const events = await readSse(
+      await post(cookie, `/api/sessions/${sessionId}/turn`, {
+        player_input: "je quitte la salle",
+      }),
+    );
+    const suggestion = events.find((e) => e.event === "act_close_suggested");
+    expect(suggestion).toBeTruthy();
+    expect(suggestion!.data.turns).toBe(22);
+  });
+
+  it("ne propose rien sans rupture de scène, même passé le seuil souple", async () => {
+    const { cookie, sessionId } = await playingSession("silence@example.com");
+    await runInDurableObject(stubFor(sessionId), async (_i, state) => {
+      await state.storage.put("turn_count_stored", 25 * 2);
+    });
+
+    mockAnthropicStream(["La conversation continue. Que réponds-tu ?"]);
+    const events = await readSse(
+      await post(cookie, `/api/sessions/${sessionId}/turn`, {
+        player_input: "je réponds",
+      }),
+    );
+    expect(events.some((e) => e.event === "act_close_suggested")).toBe(false);
+  });
+
+  it("plafonne le résumé de contexte, seul texte payé éternellement", async () => {
+    const { cookie, sessionId } = await playingSession("plafond@example.com");
+
+    mockAnthropicText("# Trop long\n\n" + "Une phrase de remplissage. ".repeat(400));
+    const res = await post(cookie, `/api/sessions/${sessionId}/acts/close`);
+    const { act } = (await res.json()) as {
+      act: { context_summary_md: string };
+    };
+    expect(act.context_summary_md.length).toBeLessThanOrEqual(2000);
+    // Coupé sur une frontière de phrase, pas au milieu d'un mot.
+    expect(act.context_summary_md.endsWith(".")).toBe(true);
   });
 });

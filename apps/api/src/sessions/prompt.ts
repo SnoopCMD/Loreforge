@@ -525,3 +525,65 @@ texte — pour le joueur, ce sont des souvenirs, pas des notes.
 ${body}
 [FIN DES ACTES PRÉCÉDENTS]`;
 }
+
+// ── Résumé de contexte d'un acte (lot 7.2) ────────────────────────────────
+
+/**
+ * Plafond DUR du résumé de contexte, en caractères.
+ *
+ * C'est le seul texte de l'application qu'on paie éternellement : il est relu
+ * à chaque tour de tous les actes suivants, jusqu'à la fin de la partie. Sans
+ * plafond, il enfle acte après acte et réintroduit exactement le problème que
+ * les actes devaient régler. ~2 000 caractères ≈ 500 tokens par acte.
+ */
+export const MAX_ACT_SUMMARY_CHARS = 2000;
+
+/**
+ * Applique le plafond au résumé d'un acte, en coupant à la dernière frontière
+ * de phrase pour ne pas laisser une phrase tronquée dans le contexte du MJ.
+ */
+export function capActSummary(summary: string): string {
+  const text = summary.trim();
+  if (text.length <= MAX_ACT_SUMMARY_CHARS) return text;
+
+  const head = text.slice(0, MAX_ACT_SUMMARY_CHARS);
+  const cut = Math.max(
+    head.lastIndexOf(". "),
+    head.lastIndexOf(".\n"),
+    head.lastIndexOf("\n"),
+  );
+  return (cut > MAX_ACT_SUMMARY_CHARS / 2 ? head.slice(0, cut + 1) : head).trim();
+}
+
+/**
+ * Clôture d'acte : résumé destiné au MODÈLE. Rien à voir avec le résumé de fin
+ * de session (SUMMARY_MESSAGE), qui s'adresse au joueur et peut se permettre
+ * d'être beau. Ici chaque mot est relu à chaque tour de tous les actes
+ * suivants — la concision n'est pas une préférence de style, c'est le prix.
+ *
+ * Le résumé narré destiné au joueur est un objet séparé (lot 7.3).
+ */
+export const ACT_SUMMARY_MESSAGE = `Cet acte de la partie se termine. Produis sa FICHE DE MÉMOIRE pour la suite
+de la session. Elle sera relue à chaque tour des actes suivants : chaque mot
+compte, la concision prime sur tout le reste.
+
+Format exact, rien d'autre :
+- première ligne : \`# \` suivi d'un titre d'acte de 2 à 5 mots ;
+- puis quatre sections, chacune en liste à puces télégraphiques :
+  ## Personnages
+  ## Faits établis
+  ## Promesses ouvertes
+  ## Relations
+
+- Personnages : qui a été rencontré, en une poignée de mots par entrée (rôle,
+  état actuel, où on l'a laissé). Les morts sont marqués comme tels.
+- Faits établis : ce qui est vrai désormais et ne doit jamais être contredit.
+- Promesses ouvertes : les fils lancés et non refermés — menaces, dettes,
+  rendez-vous, mystères posés. C'est ce qui permet à la suite d'y revenir.
+- Relations : où en est le personnage joueur avec chacun (confiance, dette,
+  hostilité), en quelques mots.
+
+Interdits : pas de prose, pas d'atmosphère, pas d'adjectifs de style, pas de
+phrases complètes quand un fragment suffit, aucune redite entre sections.
+Écris moins de 2 000 caractères. Réponds uniquement avec ce Markdown, sans
+aucune balise.`;

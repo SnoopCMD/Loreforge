@@ -254,6 +254,26 @@ sessions.post("/:id/finish", proxy("/finish"));
 // longue de perdre son passé et de payer plein tarif à chaque tour.
 sessions.post("/:id/acts/close", proxy("/act/close"));
 
+// GET /api/sessions/:id/acts — les actes clos et leurs résumés.
+// Lu directement en D1 : pas besoin de réveiller le Durable Object pour
+// afficher un historique qui, par définition, ne bouge plus.
+sessions.get("/:id/acts", async (c) => {
+  const row = await loadOwnedSession(c.env.DB, c.req.param("id"), c.get("user").id);
+  if (!row) return c.json({ error: "not_found" }, 404);
+
+  const { results } = await c.env.DB.prepare(
+    `SELECT act_index, title, context_summary_md, narrated_summary_md,
+            audio_key IS NOT NULL AS has_audio, turn_start, turn_end, closed_at
+     FROM session_acts WHERE session_id = ? ORDER BY act_index`,
+  )
+    .bind(row.id)
+    .all<Record<string, unknown>>();
+
+  return c.json({
+    acts: results.map((a) => ({ ...a, has_audio: Boolean(a.has_audio) })),
+  });
+});
+
 // DELETE /api/sessions/:id — efface une session et tout ce qu'elle a laissé :
 // storage du DO (historique, faits, inventions), caches KV, propositions de
 // canon issues d'elle, puis la ligne D1. Le canon déjà accepté, lui, reste —
