@@ -199,13 +199,19 @@ describe("buildSystemPrompt (SPEC §7)", () => {
 });
 
 describe("buildTurnContext (état volatile par tour)", () => {
+  // L'état est désormais indexé par personnage : le Souffle et les acquis
+  // appartiennent à quelqu'un, les faits restent collectifs.
   const state = {
-    ...initialGameState(),
-    souffle: 2,
+    ...initialGameState("kael"),
     facts: ["Karnos existe."],
+  };
+  state.characters.kael = {
+    souffle: 2,
     skills: [
       { name: "Marche-faille", tier: "maîtrise" as const, note: "3 m max" },
     ],
+    pending_roll: null,
+    last_roll: null,
   };
 
   it("contient Souffle, faits et compétences avec palier", () => {
@@ -218,14 +224,38 @@ describe("buildTurnContext (état volatile par tour)", () => {
   });
 
   it("inclut les extraits RAG quand fournis", () => {
-    const ctx = buildTurnContext(state, "[Extrait — Karnos]\nLa cité...");
+    const ctx = buildTurnContext(state, { canonExcerpts: "[Extrait — Karnos]\nLa cité..." });
     expect(ctx).toContain("Extraits de la bible");
     expect(ctx).toContain("La cité...");
   });
 
-  it("tolère un état d'ancienne session sans skills", () => {
-    const legacy = { ...initialGameState(), skills: undefined } as never;
+  it("tolère un état de personnage sans skills", () => {
+    const legacy = initialGameState("kael");
+    (legacy.characters.kael as { skills?: unknown }).skills = undefined;
     expect(buildTurnContext(legacy)).toContain("(aucune pour l'instant)");
+  });
+
+  it("ne nomme les personnages qu'à partir de deux — le solo est inchangé", () => {
+    const solo = buildTurnContext(state, {
+      characters: [{ key: "kael", name: "Kael", state: state.characters.kael }],
+    });
+    expect(solo).not.toContain("Kael —");
+
+    const table = buildTurnContext(state, {
+      characters: [
+        { key: "kael", name: "Kael", state: state.characters.kael },
+        {
+          key: "mira",
+          name: "Mira",
+          state: { souffle: 3, skills: [], pending_roll: null, last_roll: null },
+        },
+      ],
+    });
+    expect(table).toContain("Kael —");
+    expect(table).toContain("Mira —");
+    // Chacun son Souffle, dans le même bloc.
+    expect(table).toContain("Souffle : 2/3");
+    expect(table).toContain("Souffle : 3/3");
   });
 });
 

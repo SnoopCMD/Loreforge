@@ -176,9 +176,11 @@ describe("M3 — moteur de session (DO GameSession)", () => {
       "La brume s'ouvre sur Karnos. Que fais-tu ?",
     );
     expect(setupEvents.some((e) => e.event === "scene_break")).toBe(true);
-    expect(setupEvents.at(-1)).toEqual({
+    // `done` porte désormais le personnage concerné (M8 lot 8.3) : chaque
+    // client ne met à jour que la bonne fiche. Le reste est inchangé.
+    expect(setupEvents.at(-1)).toMatchObject({
       event: "done",
-      data: { turn: 1, souffle: 3 },
+      data: { turn: 1, souffle: 3, character_id: characterId },
     });
 
     // Tour 1 : le MJ demande un jet. Il crédite la capacité (marche-faille)
@@ -194,7 +196,10 @@ describe("M3 — moteur de session (DO GameSession)", () => {
         player_input: "Je saute par-dessus la faille.",
       }),
     );
-    expect(turn1.find((e) => e.event === "state_patch")?.data).toEqual({
+    // state_patch porte le personnage concerné (M8 lot 8.3), le reste est
+    // inchangé — d'où toMatchObject plutôt qu'une égalité stricte.
+    expect(turn1.find((e) => e.event === "state_patch")?.data).toMatchObject({
+      character_id: characterId,
       pending_roll: {
         reason: "saut au-dessus de la faille",
         difficulty: "hard",
@@ -281,12 +286,14 @@ describe("M3 — moteur de session (DO GameSession)", () => {
     // Le résultat du jet ouvre le flux.
     expect(turn2[0].event).toBe("roll");
     expect(turn2[0].data.value).toBe(roll.value);
-    expect(turn2.find((e) => e.event === "state_patch")?.data).toEqual({
+    expect(turn2.find((e) => e.event === "state_patch")?.data).toMatchObject({
+      character_id: characterId,
       souffle: 2,
     });
     expect(
       turn2.find((e) => e.event === "state_patch" && "skills" in e.data)?.data,
-    ).toEqual({
+    ).toMatchObject({
+      character_id: characterId,
       skills: [{ name: "Saut de faille", tier: "apprentissage" }],
     });
     // Les réponses de setup sont déjà des faits : le patch porte la liste à jour.
@@ -298,7 +305,7 @@ describe("M3 — moteur de session (DO GameSession)", () => {
     expect(narrationOf(turn2)).toBe(
       "Tu retombes de l'autre côté. La nuit tombe.",
     );
-    expect(turn2.at(-1)?.data).toEqual({ turn: 3, souffle: 2 });
+    expect(turn2.at(-1)?.data).toMatchObject({ turn: 3, souffle: 2 });
 
     // État consolidé (servi par le cache KV).
     state = (await (

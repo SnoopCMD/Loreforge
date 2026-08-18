@@ -574,27 +574,104 @@ export function addFact(facts: string[], text: string): boolean {
 }
 
 /** État mutable d'une session, sérialisé dans le storage du DO. */
-export interface GameState {
+/**
+ * Ce qui appartient à UN personnage. En solo il n'y en a qu'un ; à une table,
+ * le Souffle se dépense par joueur et deux jets peuvent être en attente en
+ * même temps — d'où la séparation d'avec l'état collectif.
+ */
+export interface CharacterState {
   souffle: number;
-  /** Faits établis en session (réponses de setup, événements clés). */
-  facts: string[];
   /** Compétences acquises, enregistrées par le MJ via <skill/>. */
   skills: SkillEntry[];
   /** Jet demandé par le MJ via <roll/>, en attente de POST /roll. */
   pending_roll: RollRequest | null;
   /** Dernier jet résolu, à injecter dans le prompt du prochain tour. */
   last_roll: RollResult | null;
-  /** Nombre de tours de narration générés (setup inclus). */
+}
+
+export interface GameState {
+  /** État de jeu par personnage, indexé par character_id. */
+  characters: Record<string, CharacterState>;
+  /** Faits établis en session (réponses de setup, événements clés) — collectif. */
+  facts: string[];
+  /** Nombre de tours de narration générés (setup inclus) — collectif. */
   turn_count: number;
 }
 
-export function initialGameState(): GameState {
+/**
+ * Clé d'état d'un joueur sans fiche. Une partie solo peut s'ouvrir sans
+ * personnage (le MJ en improvise un) ; il lui faut quand même un Souffle.
+ */
+export const SOLO_STATE_KEY = "@solo";
+
+export function stateKey(characterId: string | null | undefined): string {
+  return characterId || SOLO_STATE_KEY;
+}
+
+export function initialCharacterState(): CharacterState {
   return {
     souffle: SOUFFLE_MAX,
-    facts: [],
     skills: [],
     pending_roll: null,
     last_roll: null,
+  };
+}
+
+export function initialGameState(characterId?: string | null): GameState {
+  return {
+    characters: { [stateKey(characterId)]: initialCharacterState() },
+    facts: [],
     turn_count: 0,
+  };
+}
+
+/**
+ * État d'un personnage, créé à la volée s'il manque — un joueur peut rejoindre
+ * une table en cours de partie, il ne doit pas tomber sur un état absent.
+ */
+export function characterState(
+  state: GameState,
+  characterId: string | null | undefined,
+): CharacterState {
+  const key = stateKey(characterId);
+  state.characters ??= {};
+  state.characters[key] ??= initialCharacterState();
+  return state.characters[key];
+}
+
+/** Forme d'état d'avant la table partagée : tout était plat au niveau session. */
+interface LegacyGameState {
+  souffle?: number;
+  skills?: SkillEntry[];
+  pending_roll?: RollRequest | null;
+  last_roll?: RollResult | null;
+  facts?: string[];
+  turn_count?: number;
+}
+
+/**
+ * Relit un état enregistré avant ce lot comme celui de son unique personnage,
+ * sans perte. Une partie en cours au moment du déploiement doit reprendre là
+ * où elle s'était arrêtée, avec son Souffle et ses acquis.
+ */
+export function migrateGameState(
+  raw: GameState | LegacyGameState | null | undefined,
+  characterId: string | null | undefined,
+): GameState {
+  if (!raw) return initialGameState(characterId);
+  if ("characters" in raw && raw.characters) return raw as GameState;
+
+  const legacy = raw as LegacyGameState;
+  return {
+    characters: {
+      [stateKey(characterId)]: {
+        souffle: legacy.souffle ?? SOUFFLE_MAX,
+        skills: sanitizeSkills(legacy.skills ?? []),
+        pending_roll: legacy.pending_roll ?? null,
+        last_roll: legacy.last_roll ?? null,
+      },
+    },
+    facts: legacy.facts ?? [],
+    turn_count: legacy.turn_count ?? 0,
   };
 }

@@ -4,7 +4,7 @@
 // l'authentification a lieu à l'UPGRADE et nulle part ailleurs, et un socket
 // mort n'interrompt jamais la narration des autres.
 
-import { SELF } from "cloudflare:test";
+import { env, SELF } from "cloudflare:test";
 import { afterEach, beforeAll, describe, expect, it } from "vitest";
 import {
   assertAnthropicMockConsumed,
@@ -268,5 +268,210 @@ describe("lot 8.2 — diffusion et présence", () => {
     const events = (await setup.text()).split("\n\n").filter(Boolean);
     expect(events.some((e) => e.includes("event: narration"))).toBe(true);
     expect(events.some((e) => e.includes("event: done"))).toBe(true);
+  });
+});
+
+describe("lot 8.3 — l'état de jeu appartient à chaque personnage", () => {
+  /** Table où chaque joueur incarne sa propre fiche. */
+  async function tableWithCharacters(prefix: string): Promise<{
+    hote: string;
+    joueur: string;
+    sessionId: string;
+    kael: string;
+    mira: string;
+  }> {
+    const hote = await login(`${prefix}-hote@example.com`);
+    const bibleRes = await post(hote, "/api/bibles", {
+      markdown: "# Les Mondes Fêlés\n\nLa magie vient des failles.",
+    });
+    const { id: bibleId } = (await bibleRes.json()) as { id: string };
+
+    const kaelRes = await post(hote, "/api/characters", {
+      bible_id: bibleId,
+      name: "Kael",
+      sheet_json: { pouvoir: "marche-faille", temperament: "taciturne" },
+    });
+    const { id: kael } = (await kaelRes.json()) as { id: string };
+
+    const createRes = await post(hote, "/api/sessions", {
+      bible_id: bibleId,
+      character_id: kael,
+      format: "campaign",
+      mode: "table",
+    });
+    const { session_id } = (await createRes.json()) as { session_id: string };
+
+    mockAnthropicStream(["La brume s'ouvre. Que faites-vous ?"]);
+    await (
+      await post(hote, `/api/sessions/${session_id}/setup`, { answers: [] })
+    ).text();
+
+    const { code } = (await (
+      await post(hote, `/api/sessions/${session_id}/invite`)
+    ).json()) as { code: string };
+    const joueur = await login(`${prefix}-joueur@example.com`);
+    await post(joueur, "/api/sessions/join", { code });
+
+    // Mira appartient à l'invité et rejoint la table.
+    const miraRes = await post(joueur, "/api/characters", {
+      bible_id: bibleId,
+      name: "Mira",
+      sheet_json: { pouvoir: "lecture des vents", temperament: "curieuse" },
+    });
+    const mira =
+      miraRes.status === 201
+        ? ((await miraRes.json()) as { id: string }).id
+        : "";
+    return { hote, joueur, sessionId: session_id, kael, mira };
+  }
+
+  it("expose l'état de chaque personnage, sans casser les champs historiques", async () => {
+    const { hote, sessionId, kael } = await tableWithCharacters("etatpj");
+
+    const state = (await (
+      await SELF.fetch(`${BASE}/api/sessions/${sessionId}/state`, {
+        headers: { cookie: hote },
+      })
+    ).json()) as Record<string, unknown>;
+
+    // Les champs d'avant la table restent servis tels quels : le front
+    // mono-joueur ne voit aucune différence.
+    expect(state.souffle).toBe(3);
+    expect(state.skills).toEqual([]);
+    expect(state.character_id).toBe(kael);
+
+    // Et la vérité complète est là, indexée par personnage.
+    const characters = state.characters as Record<string, { souffle: number }>;
+    expect(characters[kael].souffle).toBe(3);
+  });
+
+  it("dépense le Souffle du joueur qui agit, pas celui de la table", async () => {
+    const { hote, joueur, sessionId, kael, mira } =
+      await tableWithCharacters("souffle");
+    if (!mira) return; // fiche non créée : rien à prouver
+
+    // L'invité s'assoit avec Mira.
+    await env.DB.prepare(
+      `UPDATE session_members SET character_id = ? WHERE session_id = ? AND role = 'player'`,
+    )
+      .bind(mira, sessionId)
+      .run();
+
+    mockAnthropicStream([
+      "Mira force le passage. ",
+      '<souffle delta="-1"/>',
+      " Et toi, Kael ?",
+    ]);
+    await (
+      await post(joueur, `/api/sessions/${sessionId}/turn`, {
+        player_input: "je force le passage",
+      })
+    ).text();
+
+    const state = (await (
+      await SELF.fetch(`${BASE}/api/sessions/${sessionId}/state`, {
+        headers: { cookie: hote },
+      })
+    ).json()) as { characters: Record<string, { souffle: number }> };
+
+    expect(state.characters[mira].souffle).toBe(2);
+    // Kael n'a rien dépensé : c'est tout l'objet de ce lot.
+    expect(state.characters[kael].souffle).toBe(3);
+  });
+
+  it("laisse deux jets en attente coexister sur la même table", async () => {
+    const { hote, joueur, sessionId, kael, mira } =
+      await tableWithCharacters("jets");
+    if (!mira) return;
+    await env.DB.prepare(
+      `UPDATE session_members SET character_id = ? WHERE session_id = ? AND role = 'player'`,
+    )
+      .bind(mira, sessionId)
+      .run();
+
+    mockAnthropicStream([
+      'Kael s\'élance. <roll reason="sauter la faille" difficulty="normal" stance="neutral" dice="1" bonuses=""/>',
+    ]);
+    await (
+      await post(hote, `/api/sessions/${sessionId}/turn`, {
+        player_input: "je saute",
+      })
+    ).text();
+
+    mockAnthropicStream([
+      'Mira tend l\'oreille. <roll reason="écouter le couloir" difficulty="easy" stance="neutral" dice="1" bonuses=""/>',
+    ]);
+    await (
+      await post(joueur, `/api/sessions/${sessionId}/turn`, {
+        player_input: "j'écoute",
+      })
+    ).text();
+
+    const state = (await (
+      await SELF.fetch(`${BASE}/api/sessions/${sessionId}/state`, {
+        headers: { cookie: hote },
+      })
+    ).json()) as {
+      characters: Record<string, { pending_roll: { reason: string } | null }>;
+    };
+
+    // Deux jets en attente en même temps : impossible avant ce lot.
+    expect(state.characters[kael].pending_roll?.reason).toBe("sauter la faille");
+    expect(state.characters[mira].pending_roll?.reason).toBe(
+      "écouter le couloir",
+    );
+
+    // Et chacun résout le sien, sur SA fiche.
+    const rollKael = await post(hote, `/api/sessions/${sessionId}/roll`);
+    expect(rollKael.status).toBe(200);
+    expect(((await rollKael.json()) as { reason: string }).reason).toBe(
+      "sauter la faille",
+    );
+    const rollMira = await post(joueur, `/api/sessions/${sessionId}/roll`);
+    expect(((await rollMira.json()) as { reason: string }).reason).toBe(
+      "écouter le couloir",
+    );
+  });
+
+  it("nomme les personnages au MJ dès qu'ils sont plusieurs", async () => {
+    const { hote, sessionId, mira } = await tableWithCharacters("roster");
+    if (!mira) return;
+    await env.DB.prepare(
+      `UPDATE session_members SET character_id = ? WHERE session_id = ? AND role = 'player'`,
+    )
+      .bind(mira, sessionId)
+      .run();
+
+    let envoye = "";
+    const realFetch = globalThis.fetch;
+    globalThis.fetch = (async (input: RequestInfo | URL, init?: RequestInit) => {
+      const url = typeof input === "string" ? input : (input as Request).url;
+      if (url.startsWith("https://api.anthropic.com") && typeof init?.body === "string") {
+        envoye = init.body;
+      }
+      return realFetch(input as RequestInfo, init);
+    }) as typeof fetch;
+
+    try {
+      mockAnthropicStream(["La suite. Que faites-vous ?"]);
+      await (
+        await post(hote, `/api/sessions/${sessionId}/turn`, {
+          player_input: "j'observe",
+        })
+      ).text();
+    } finally {
+      globalThis.fetch = realFetch;
+    }
+
+    // Le roster voyage dans le CONTEXTE DU TOUR, jamais dans le prompt
+    // système : celui-ci est en cache ephemeral et doit rester identique à
+    // l'octet près, or les joueurs vont et viennent.
+    const payload = JSON.parse(envoye) as {
+      system: Array<{ text: string }>;
+      messages: Array<{ content: unknown }>;
+    };
+    expect(payload.system[0].text).not.toContain("Mira");
+    expect(JSON.stringify(payload.messages)).toContain("Kael —");
+    expect(JSON.stringify(payload.messages)).toContain("Mira —");
   });
 });

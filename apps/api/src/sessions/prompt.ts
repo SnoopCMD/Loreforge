@@ -8,6 +8,7 @@ import {
   type RichnessScores,
 } from "../richness/logic";
 import {
+  characterState,
   describeOutcome,
   DIFFICULTY_LABELS,
   MAX_POOL,
@@ -16,6 +17,8 @@ import {
   SKILL_TIERS,
   SOUFFLE_MAX,
   STANCE_LABELS,
+  stateKey,
+  type CharacterState,
   type GameState,
   type RollResult,
 } from "./rules";
@@ -364,32 +367,77 @@ pour le joueur — ne le recopie jamais, n'y fais jamais référence expliciteme
  */
 export function buildTurnContext(
   state: GameState,
-  canonExcerpts?: string | null,
+  opts: {
+    /** Le roster de la table. Il voyage ICI, jamais dans le prompt système :
+     * celui-ci est en cache ephemeral et doit rester identique à l'octet près,
+     * or les joueurs vont et viennent. */
+    characters?: TurnCharacter[];
+    canonExcerpts?: string | null;
+  } = {},
 ): string {
   const facts = state.facts.length
     ? state.facts.map((f) => `- ${f}`).join("\n")
     : "- (aucun pour l'instant)";
-  const skills = (state.skills ?? []).length
-    ? (state.skills ?? [])
-        .map((s) => `- ${s.name} — ${s.tier}${s.note ? ` (${s.note})` : ""}`)
-        .join("\n")
-    : "- (aucune pour l'instant)";
 
-  const excerptsBlock = canonExcerpts
+  const roster = opts.characters?.length
+    ? opts.characters
+    : Object.keys(state.characters ?? {}).map((key) => ({
+        key,
+        name: null,
+        state: state.characters[key],
+      }));
+
+  // Le nom n'apparaît qu'à une table : en solo, il n'y a personne à
+  // distinguer, et le contexte reste exactement celui d'avant le multi.
+  const fiches = roster.length
+    ? roster.map((c) => describeCharacter(c, roster.length > 1)).join("\n\n")
+    : `Souffle : ${SOUFFLE_MAX}/${SOUFFLE_MAX}\nCompétences acquises (nom — palier) :\n- (aucune pour l'instant)`;
+
+  const excerptsBlock = opts.canonExcerpts
     ? `
 Extraits de la bible pertinents pour ce tour (bible volumineuse — si un détail
 manque, reste prudent et cohérent avec le canon fourni au système) :
-${canonExcerpts}
+${opts.canonExcerpts}
 `
     : "";
 
   return `[CONTEXTE DU TOUR — vérité serveur, invisible pour le joueur, ne jamais recopier]
-Souffle : ${state.souffle}/${SOUFFLE_MAX}
+${fiches}
 Faits établis (jamais contredits) :
 ${facts}
-Compétences acquises (nom — palier) :
-${skills}
 ${excerptsBlock}[FIN DU CONTEXTE]`;
+}
+
+/** Un personnage à la table, tel que le contexte de tour le décrit au MJ. */
+export interface TurnCharacter {
+  key: string;
+  name: string | null;
+  state: CharacterState;
+}
+
+function describeCharacter(character: TurnCharacter, withName: boolean): string {
+  const st = character.state ?? { souffle: SOUFFLE_MAX, skills: [] };
+  const skills = (st.skills ?? []).length
+    ? (st.skills ?? [])
+        .map((s) => `- ${s.name} — ${s.tier}${s.note ? ` (${s.note})` : ""}`)
+        .join("\n")
+    : "- (aucune pour l'instant)";
+  const entete = withName && character.name ? `${character.name} —\n` : "";
+  return `${entete}Souffle : ${st.souffle}/${SOUFFLE_MAX}
+Compétences acquises (nom — palier) :
+${skills}`;
+}
+
+/** Roster prêt pour le contexte de tour, dans l'ordre donné. */
+export function turnCharacters(
+  state: GameState,
+  members: Array<{ characterId: string | null; name: string | null }>,
+): TurnCharacter[] {
+  return members.map((m) => ({
+    key: stateKey(m.characterId),
+    name: m.name,
+    state: characterState(state, m.characterId),
+  }));
 }
 
 /** Message utilisateur du tour : injecte le résultat du d6 s'il y en a un.

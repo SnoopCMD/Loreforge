@@ -25,12 +25,17 @@ import {
   applySkillTiers,
   applySkillUpdate,
   applySouffleDelta,
+  characterState,
   initialGameState,
+  migrateGameState,
   mergeSkills,
   normalizeRollRequest,
   performRoll,
   sanitizeSkills,
+  SOLO_STATE_KEY,
   SOUFFLE_MAX,
+  stateKey,
+  type CharacterState,
   type GameState,
   type RollRequest,
   type RollResult,
@@ -64,6 +69,7 @@ import {
   buildTurnMessage,
   capActSummary,
   gapQuestion,
+  turnCharacters,
   NARRATED_ACT_MESSAGE,
   RELANCE_MESSAGE,
   selectSetupGaps,
@@ -194,6 +200,15 @@ interface StoredTurn {
 type ClosedAct = ClosedActSummary;
 
 /**
+ * Qui agit sur ce tour. Le personnage compte autant que l'utilisateur : c'est
+ * SON Souffle qui se dépense et SES compétences qui pèsent sur la poignée.
+ */
+interface Actor {
+  userId: string | null;
+  characterId: string | null;
+}
+
+/**
  * Ce qu'un socket sait de lui-même. Sérialisé sur le socket (et non gardé en
  * mémoire) pour survivre à l'hibernation du Durable Object.
  */
@@ -297,9 +312,13 @@ export class GameSession extends DurableObject<Env> {
       const meta = await this.ctx.storage.get<SessionMeta>("meta");
       if (!meta) return json({ error: "session_not_initialized" }, 409);
 
-      // Qui agit. Posé par le Worker après vérification du cookie ET de
-      // l'appartenance ; jamais lu depuis le corps de la requête.
-      const actor = request.headers.get("x-lf-user-id");
+      // Qui agit, et avec quel personnage. Posé par le Worker après
+      // vérification du cookie ET de l'appartenance ; jamais lu depuis le
+      // corps de la requête.
+      const actor: Actor = {
+        userId: request.headers.get("x-lf-user-id"),
+        characterId: request.headers.get("x-lf-character-id") || null,
+      };
 
       if (request.method === "GET" && path === "/lore") {
         return await this.lore(meta, new URL(request.url));
@@ -444,8 +463,10 @@ export class GameSession extends DurableObject<Env> {
       trame: payload.trame,
       status: "setup",
     };
-    const state = initialGameState();
-    state.skills = characterSkills;
+    const state = initialGameState(payload.characterId);
+    // Arbre de compétences persistant : les acquis repartent avec LE
+    // personnage, pas avec la session.
+    characterState(state, payload.characterId).skills = characterSkills;
     // Les lacunes retenues sont conservées telles quelles : chaque réponse du
     // joueur pourra être reliée à sa zone floue d'origine au /finish.
     const setupGaps = await this.pickSetupGaps(meta, openGaps);
@@ -505,7 +526,7 @@ export class GameSession extends DurableObject<Env> {
       .run();
     // Le cache chaud porte la trame : sans ce resync, /state la servirait
     // encore vide après un refresh.
-    await this.syncKV(meta, (await this.ctx.storage.get<GameState>("state"))!);
+    await this.syncKV(meta, await this.loadState(meta));
 
     return json({ trame, setup_questions: questions });
   }
@@ -515,7 +536,7 @@ export class GameSession extends DurableObject<Env> {
   private async setup(
     meta: SessionMeta,
     body: unknown,
-    actor: string | null = null,
+    actor: Actor = { userId: null, characterId: null },
   ): Promise<Response> {
     if (meta.status !== "setup") {
       return json({ error: "invalid_status", status: meta.status }, 409);
@@ -535,7 +556,7 @@ export class GameSession extends DurableObject<Env> {
     // les questions ci-dessous. Ici on ne traite que les réponses.
     const questions =
       (await this.ctx.storage.get<string[]>("setup_questions")) ?? [];
-    const state = (await this.ctx.storage.get<GameState>("state"))!;
+    const state = await this.loadState(meta);
 
     // Les réponses deviennent des faits établis de la session (en mémoire :
     // elles ne sont persistées qu'au succès de la scène 1, voir becomePlaying).
@@ -571,7 +592,7 @@ export class GameSession extends DurableObject<Env> {
       state,
       { stored, sent: await this.withTurnContext(meta, state, stored) },
       null,
-      { becomePlaying: true, authorUserId: actor },
+      { becomePlaying: true, actor },
     );
   }
 
@@ -580,7 +601,7 @@ export class GameSession extends DurableObject<Env> {
   private async turn(
     meta: SessionMeta,
     body: unknown,
-    actor: string | null = null,
+    actor: Actor = { userId: null, characterId: null },
   ): Promise<Response> {
     if (meta.status !== "playing") {
       return json({ error: "invalid_status", status: meta.status }, 409);
@@ -590,9 +611,11 @@ export class GameSession extends DurableObject<Env> {
       return json({ error: "invalid_player_input" }, 400);
     }
 
-    const state = (await this.ctx.storage.get<GameState>("state"))!;
-    if (state.pending_roll) {
-      const request = normalizeRollRequest(state.pending_roll);
+    // Le jet en attente est CELUI DU JOUEUR qui agit : à une table, un autre
+    // peut avoir le sien en suspens sans bloquer qui que ce soit.
+    const { state, me } = await this.actorState(meta, actor);
+    if (me.pending_roll) {
+      const request = normalizeRollRequest(me.pending_roll);
       return json(
         { error: "roll_required", request, reason: request.reason },
         409,
@@ -602,11 +625,11 @@ export class GameSession extends DurableObject<Env> {
     // Le résultat du dernier jet est consommé par ce tour. Une saisie vide
     // n'est valide que pour lui : c'est le tour de continuation post-jet,
     // où le MJ reprend la narration là où il l'avait suspendue.
-    const consumedRoll = state.last_roll;
+    const consumedRoll = me.last_roll;
     if (input.trim() === "" && !consumedRoll) {
       return json({ error: "invalid_player_input" }, 400);
     }
-    state.last_roll = null;
+    me.last_roll = null;
 
     const stored = buildTurnMessage(input.trim(), consumedRoll);
     return this.generate(
@@ -614,7 +637,7 @@ export class GameSession extends DurableObject<Env> {
       state,
       { stored, sent: await this.withTurnContext(meta, state, stored) },
       consumedRoll,
-      { authorUserId: actor },
+      { actor },
     );
   }
 
@@ -623,13 +646,13 @@ export class GameSession extends DurableObject<Env> {
   private async roll(
     meta: SessionMeta,
     body: unknown,
-    actor: string | null = null,
+    actor: Actor = { userId: null, characterId: null },
   ): Promise<Response> {
     if (meta.status !== "playing") {
       return json({ error: "invalid_status", status: meta.status }, 409);
     }
-    const state = (await this.ctx.storage.get<GameState>("state"))!;
-    if (state.last_roll) {
+    const { state, me, key } = await this.actorState(meta, actor);
+    if (me.last_roll) {
       // Anti-triche : pas de relance tant que le résultat n'est pas joué.
       return json({ error: "roll_already_pending" }, 409);
     }
@@ -638,8 +661,8 @@ export class GameSession extends DurableObject<Env> {
     // pas se choisir une difficulté ni un avantage. Sa `reason` ne sert que
     // pour un jet libre, hors demande du MJ.
     const bodyReason = (body as { reason?: unknown }).reason;
-    const request: RollRequest = state.pending_roll
-      ? normalizeRollRequest(state.pending_roll)
+    const request: RollRequest = me.pending_roll
+      ? normalizeRollRequest(me.pending_roll)
       : normalizeRollRequest(
           typeof bodyReason === "string" ? bodyReason : null,
         );
@@ -647,16 +670,22 @@ export class GameSession extends DurableObject<Env> {
     // Deux passes avant les dés : le palier des compétences engagées (calcul
     // pur, la liste des acquis fait foi), puis la vérification des bonus de
     // fiche que le MJ aurait oubliés.
-    const withTiers = applySkillTiers(request, state.skills);
+    // La poignée se calcule sur SA fiche et SES compétences.
+    const withTiers = applySkillTiers(request, me.skills);
     const result = performRoll(await this.auditedRoll(meta, withTiers));
-    state.last_roll = result;
-    state.pending_roll = null;
+    me.last_roll = result;
+    me.pending_roll = null;
 
     await this.ctx.storage.put("state", state);
     await this.syncKV(meta, state);
     // Un jet se regarde à plusieurs : le lanceur reçoit le résultat dans sa
-    // réponse, la table le voit tomber en direct.
-    this.broadcast("roll", result, { excludeUser: actor });
+    // réponse, la table le voit tomber en direct — avec le personnage
+    // concerné, pour que chaque client ne mette à jour que la bonne fiche.
+    this.broadcast(
+      "roll",
+      { ...result, character_id: key },
+      { excludeUser: actor.userId },
+    );
     return json(result);
   }
 
@@ -712,7 +741,7 @@ export class GameSession extends DurableObject<Env> {
   private async stateResponse(): Promise<Response> {
     const meta = await this.ctx.storage.get<SessionMeta>("meta");
     if (!meta) return json({ error: "session_not_initialized" }, 409);
-    const state = (await this.ctx.storage.get<GameState>("state"))!;
+    const state = await this.loadState(meta);
     const snapshot = await this.publicState(meta, state);
     if (meta.status !== "finished") {
       await this.env.CACHE.put(
@@ -736,6 +765,7 @@ export class GameSession extends DurableObject<Env> {
     const stored =
       (await this.ctx.storage.get<number>("turn_count_stored")) ?? 0;
     const actTurns = Math.max(0, Math.floor((stored - actStart) / 2));
+    const principal = characterState(state, meta.characterId);
     return {
       session_id: meta.sessionId,
       status: meta.status,
@@ -744,14 +774,31 @@ export class GameSession extends DurableObject<Env> {
       character: meta.characterName
         ? { name: meta.characterName, sheet: safeParse(meta.characterSheet) }
         : null,
-      souffle: state.souffle,
+      // Champs historiques : ceux du personnage de la session. En solo c'est
+      // le seul, et le front d'aujourd'hui ne voit aucune différence. Le mode
+      // table lira `characters`, qui porte toute la vérité.
+      souffle: principal.souffle,
       souffle_max: SOUFFLE_MAX,
       facts: state.facts,
-      skills: state.skills ?? [],
-      pending_roll: state.pending_roll
-        ? normalizeRollRequest(state.pending_roll)
+      skills: principal.skills ?? [],
+      pending_roll: principal.pending_roll
+        ? normalizeRollRequest(principal.pending_roll)
         : null,
-      last_roll: state.last_roll,
+      last_roll: principal.last_roll,
+      character_id: stateKey(meta.characterId),
+      characters: Object.fromEntries(
+        Object.entries(state.characters ?? {}).map(([key, cs]) => [
+          key,
+          {
+            souffle: cs.souffle,
+            skills: cs.skills ?? [],
+            pending_roll: cs.pending_roll
+              ? normalizeRollRequest(cs.pending_roll)
+              : null,
+            last_roll: cs.last_roll,
+          },
+        ]),
+      ),
       turn_count: state.turn_count,
       // Acte courant : son numéro et les tours déjà joués dedans. Le front s'en
       // sert pour situer la partie et proposer la clôture au bon moment.
@@ -791,11 +838,11 @@ export class GameSession extends DurableObject<Env> {
       return json({ error: "narrator_not_configured" }, 503);
     }
 
-    const state = (await this.ctx.storage.get<GameState>("state"))!;
+    const state = await this.loadState(meta);
     // Le résumé profite du contexte serveur (faits, compétences) mais pas des
     // extraits RAG (inutiles pour synthétiser ce qui s'est joué).
     const messages = await this.buildMessages(
-      buildTurnContext(state) + "\n\n" + SUMMARY_MESSAGE,
+      (await this.turnContext(meta, state)) + "\n\n" + SUMMARY_MESSAGE,
     );
     const system = await this.systemBlocks(meta);
 
@@ -833,30 +880,28 @@ export class GameSession extends DurableObject<Env> {
     // Purge du cache chaud (SPEC §5).
     await this.env.CACHE.delete(sessionKvKey(meta.sessionId));
 
-    // Arbre de compétences : les acquis de la session rejoignent le
-    // personnage (fusion sans régression) — la prochaine session repart avec.
-    if (meta.characterId && (state.skills ?? []).length > 0) {
+    // Arbre de compétences : les acquis de la session rejoignent LEUR
+    // personnage (fusion sans régression). À une table, chacun repart avec les
+    // siens — c'est bien pour ça que l'état est indexé par personnage.
+    for (const [key, cs] of Object.entries(state.characters ?? {})) {
+      if (key === SOLO_STATE_KEY || (cs.skills ?? []).length === 0) continue;
       const row = await this.env.DB.prepare(
         `SELECT skills_json FROM characters WHERE id = ?`,
       )
-        .bind(meta.characterId)
+        .bind(key)
         .first<{ skills_json: string | null }>();
-      if (row) {
-        let saved: SkillEntry[] = [];
-        try {
-          saved = sanitizeSkills(JSON.parse(row.skills_json ?? "[]"));
-        } catch {
-          saved = [];
-        }
-        await this.env.DB.prepare(
-          `UPDATE characters SET skills_json = ? WHERE id = ?`,
-        )
-          .bind(
-            JSON.stringify(mergeSkills(saved, state.skills ?? [])),
-            meta.characterId,
-          )
-          .run();
+      if (!row) continue;
+      let saved: SkillEntry[] = [];
+      try {
+        saved = sanitizeSkills(JSON.parse(row.skills_json ?? "[]"));
+      } catch {
+        saved = [];
       }
+      await this.env.DB.prepare(
+        `UPDATE characters SET skills_json = ? WHERE id = ?`,
+      )
+        .bind(JSON.stringify(mergeSkills(saved, cs.skills ?? [])), key)
+        .run();
     }
 
     // Boucle canon (M5) : chaque invention devient une proposition en attente,
@@ -978,7 +1023,7 @@ export class GameSession extends DurableObject<Env> {
       return json({ act: last, closed: false });
     }
 
-    const state = (await this.ctx.storage.get<GameState>("state"))!;
+    const state = await this.loadState(meta);
     const summary = await this.summarizeAct(meta, state);
     // Échec de génération : l'acte reste ouvert et la clôture est rejouable.
     // On ne borne JAMAIS la fenêtre sur un résumé vide — ce serait effacer le
@@ -1048,7 +1093,7 @@ export class GameSession extends DurableObject<Env> {
     if (!this.env.ANTHROPIC_API_KEY) return null;
 
     const messages = await this.buildMessages(
-      buildTurnContext(state) + "\n\n" + ACT_SUMMARY_MESSAGE,
+      (await this.turnContext(meta, state)) + "\n\n" + ACT_SUMMARY_MESSAGE,
     );
     const system = await this.systemBlocks(meta);
 
@@ -1454,7 +1499,7 @@ export class GameSession extends DurableObject<Env> {
     // seule, persistée dans l'historique (préfixe stable → cache de prompt).
     text: { sent: string; stored: string },
     consumedRoll: RollResult | null = null,
-    opts: { becomePlaying?: boolean; authorUserId?: string | null } = {},
+    opts: { becomePlaying?: boolean; actor?: Actor } = {},
   ): Promise<Response> {
     if (!this.env.ANTHROPIC_API_KEY) {
       return json({ error: "narrator_not_configured" }, 503);
@@ -1473,7 +1518,7 @@ export class GameSession extends DurableObject<Env> {
       messages,
       consumedRoll,
       Boolean(opts.becomePlaying),
-      opts.authorUserId ?? null,
+      opts.actor ?? { userId: null, characterId: null },
     );
 
     return new Response(readable, {
@@ -1494,7 +1539,7 @@ export class GameSession extends DurableObject<Env> {
     messages: Anthropic.MessageParam[],
     consumedRoll: RollResult | null,
     becomePlaying: boolean,
-    authorUserId: string | null,
+    actor: Actor,
   ): Promise<void> {
     const writer = writable.getWriter();
     const encoder = new TextEncoder();
@@ -1503,7 +1548,7 @@ export class GameSession extends DurableObject<Env> {
     // est exclu de la diffusion, sinon il verrait tout en double s'il a aussi
     // un socket ouvert.
     const send = (event: string, data: unknown) => {
-      this.broadcast(event, data, { excludeUser: authorUserId });
+      this.broadcast(event, data, { excludeUser: actor.userId });
       return writer.write(
         encoder.encode(`event: ${event}\ndata: ${JSON.stringify(data)}\n\n`),
       );
@@ -1524,6 +1569,10 @@ export class GameSession extends DurableObject<Env> {
       });
 
       const parser = new GmStreamParser();
+      // Les balises d'état du MJ portent sur le personnage qui vient d'agir :
+      // c'est SON Souffle qui se dépense, SES compétences qui progressent.
+      const meKey = stateKey(actor.characterId ?? meta.characterId);
+      const me = characterState(state, actor.characterId ?? meta.characterId);
       const inventions =
         (await this.ctx.storage.get<Invention[]>("inventions")) ?? [];
       let raw = "";
@@ -1540,12 +1589,18 @@ export class GameSession extends DurableObject<Env> {
         for (const event of chunk.events) {
           switch (event.type) {
             case "roll_request":
-              state.pending_roll = event.request;
-              await send("state_patch", { pending_roll: event.request });
+              me.pending_roll = event.request;
+              await send("state_patch", {
+                character_id: meKey,
+                pending_roll: event.request,
+              });
               break;
             case "souffle_delta":
-              state.souffle = applySouffleDelta(state.souffle, event.delta);
-              await send("state_patch", { souffle: state.souffle });
+              me.souffle = applySouffleDelta(me.souffle, event.delta);
+              await send("state_patch", {
+                character_id: meKey,
+                souffle: me.souffle,
+              });
               break;
             case "scene_break":
               sceneBreak = true;
@@ -1561,19 +1616,16 @@ export class GameSession extends DurableObject<Env> {
               break;
             case "skill_update":
               // Mémoire longue : la compétence survit à la fenêtre d'historique.
-              state.skills ??= [];
-              if (
-                applySkillUpdate(
-                  state.skills,
-                  event.name,
-                  event.tier,
-                  event.note,
-                )
-              ) {
-                await send("state_patch", { skills: state.skills });
+              me.skills ??= [];
+              if (applySkillUpdate(me.skills, event.name, event.tier, event.note)) {
+                await send("state_patch", {
+                  character_id: meKey,
+                  skills: me.skills,
+                });
               }
               break;
             case "fact":
+              // Les faits sont collectifs : ils n'appartiennent à personne.
               if (addFact(state.facts, event.text)) {
                 await send("state_patch", { facts: state.facts });
               }
@@ -1599,7 +1651,7 @@ export class GameSession extends DurableObject<Env> {
       // Garde-fou de fin de tour (§7) : si le tour retombe fermé (ni question
       // ni options) ET qu'aucun jet n'est en attente, on relance le modèle
       // pour une vraie relance — filet best-effort, invisible pour le joueur.
-      if (!state.pending_roll && !turnEndsOpen(stripGmTags(raw))) {
+      if (!me.pending_roll && !turnEndsOpen(stripGmTags(raw))) {
         try {
           const relance = await client.messages.create(
             {
@@ -1653,7 +1705,11 @@ export class GameSession extends DurableObject<Env> {
       }
       await this.syncKV(meta, state);
 
-      await send("done", { turn: state.turn_count, souffle: state.souffle });
+      await send("done", {
+        turn: state.turn_count,
+        souffle: me.souffle,
+        character_id: meKey,
+      });
 
       // Bornes d'acte, APRÈS le `done` : le tour est validé et lisible pour le
       // joueur, qui lit pendant que le résumé se fabrique. Le flux est encore
@@ -1702,6 +1758,73 @@ export class GameSession extends DurableObject<Env> {
   }
 
   // ── Helpers ───────────────────────────────────────────────────────────
+
+  /**
+   * État de jeu, relu et remis à la forme courante. Une partie ouverte avant
+   * la table partagée avait tout à plat au niveau session : elle se relit
+   * comme l'état de son unique personnage, sans perte.
+   */
+  private async loadState(meta: SessionMeta): Promise<GameState> {
+    const raw = await this.ctx.storage.get<GameState>("state");
+    return migrateGameState(raw, meta.characterId);
+  }
+
+  /** État du personnage qui agit — le sien, jamais celui de la table. */
+  private async actorState(
+    meta: SessionMeta,
+    actor: Actor,
+  ): Promise<{ state: GameState; me: CharacterState; key: string }> {
+    const state = await this.loadState(meta);
+    // Sans personnage déclaré (solo, ou membre qui n'a pas encore choisi), on
+    // retombe sur celui de la session : c'est le parcours mono-joueur.
+    const characterId = actor.characterId ?? meta.characterId;
+    return {
+      state,
+      me: characterState(state, characterId),
+      key: stateKey(characterId),
+    };
+  }
+
+  /**
+   * Qui est à la table, dans l'ordre d'arrivée. Sert au contexte de tour : le
+   * MJ doit savoir à qui il s'adresse. Une session d'avant la table partagée
+   * (aucune ligne de membre) retombe sur le personnage de la session.
+   */
+  private async roster(
+    meta: SessionMeta,
+  ): Promise<Array<{ characterId: string | null; name: string | null }>> {
+    const { results } = await this.env.DB.prepare(
+      `SELECT sm.character_id, ch.name
+       FROM session_members sm
+       LEFT JOIN characters ch ON ch.id = sm.character_id
+       WHERE sm.session_id = ? ORDER BY sm.joined_at`,
+    )
+      .bind(meta.sessionId)
+      .all<{ character_id: string | null; name: string | null }>();
+    if (results.length === 0) {
+      return [{ characterId: meta.characterId, name: meta.characterName }];
+    }
+    return results.map((r) => ({
+      characterId: r.character_id,
+      name: r.name,
+    }));
+  }
+
+  /**
+   * Bloc d'état volatile du tour, roster compris. Il voyage dans le message
+   * joueur et JAMAIS dans le prompt système : celui-ci est en cache ephemeral
+   * et doit rester identique à l'octet près, or les joueurs vont et viennent.
+   */
+  private async turnContext(
+    meta: SessionMeta,
+    state: GameState,
+    canonExcerpts?: string | null,
+  ): Promise<string> {
+    return buildTurnContext(state, {
+      characters: turnCharacters(state, await this.roster(meta)),
+      canonExcerpts,
+    });
+  }
 
   /** Canon Markdown de la bible, relu depuis D1 au premier besoin. */
   private async ensureCanon(bibleId: string): Promise<string> {
@@ -1911,7 +2034,9 @@ export class GameSession extends DurableObject<Env> {
       },
       (p) => this.ctx.waitUntil(p),
     );
-    return buildTurnContext(state, canonExcerpts) + "\n\n" + storedText;
+    return (
+      (await this.turnContext(meta, state, canonExcerpts)) + "\n\n" + storedText
+    );
   }
 
   /**

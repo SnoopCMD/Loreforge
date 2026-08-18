@@ -3,12 +3,14 @@ import {
   addFact,
   applySkillTiers,
   applySkillUpdate,
+  characterState,
   bonusDice,
   applySouffleDelta,
   describeOutcome,
   DIFFICULTY_THRESHOLD,
   initialGameState,
   isSuccess,
+  migrateGameState,
   MAX_BONUS_DICE,
   MAX_FACTS,
   MAX_POOL,
@@ -22,6 +24,7 @@ import {
   resolveRoll,
   sanitizeSkills,
   rollD6,
+  SOLO_STATE_KEY,
   SOUFFLE_MAX,
   type SkillEntry,
 } from "../src/sessions/rules";
@@ -351,14 +354,86 @@ describe("applySouffleDelta", () => {
 
 describe("initialGameState", () => {
   it("3 Souffle, aucun fait, aucune compétence, aucun jet", () => {
-    expect(initialGameState()).toEqual({
-      souffle: SOUFFLE_MAX,
+    expect(initialGameState("kael")).toEqual({
+      characters: {
+        kael: {
+          souffle: SOUFFLE_MAX,
+          skills: [],
+          pending_roll: null,
+          last_roll: null,
+        },
+      },
       facts: [],
-      skills: [],
-      pending_roll: null,
-      last_roll: null,
       turn_count: 0,
     });
+  });
+
+  it("donne quand même un Souffle à une partie ouverte sans fiche", () => {
+    const state = initialGameState(null);
+    expect(state.characters[SOLO_STATE_KEY].souffle).toBe(SOUFFLE_MAX);
+  });
+});
+
+describe("état par personnage (M8 lot 8.3)", () => {
+  it("le Souffle dépensé par l'un n'entame pas celui de l'autre", () => {
+    const state = initialGameState("kael");
+    const kael = characterState(state, "kael");
+    const mira = characterState(state, "mira");
+
+    kael.souffle = applySouffleDelta(kael.souffle, -2);
+    expect(kael.souffle).toBe(1);
+    expect(mira.souffle).toBe(SOUFFLE_MAX);
+  });
+
+  it("crée l'état d'un joueur qui rejoint la table en cours de partie", () => {
+    const state = initialGameState("kael");
+    expect(Object.keys(state.characters)).toEqual(["kael"]);
+    characterState(state, "thea");
+    expect(Object.keys(state.characters).sort()).toEqual(["kael", "thea"]);
+  });
+
+  it("laisse coexister deux jets en attente et les résout séparément", () => {
+    const state = initialGameState("kael");
+    const kael = characterState(state, "kael");
+    const mira = characterState(state, "mira");
+
+    kael.pending_roll = normalizeRollRequest("forcer la porte");
+    mira.pending_roll = normalizeRollRequest("écouter le couloir");
+    expect(kael.pending_roll.reason).toBe("forcer la porte");
+    expect(mira.pending_roll.reason).toBe("écouter le couloir");
+
+    kael.last_roll = resolveRoll(kael.pending_roll, [4]);
+    kael.pending_roll = null;
+    // Le jet de l'un résolu, celui de l'autre est intact.
+    expect(mira.pending_roll).not.toBeNull();
+    expect(mira.last_roll).toBeNull();
+  });
+
+  it("relit une session d'avant le multi comme celle de son seul personnage", () => {
+    const ancien = {
+      souffle: 1,
+      facts: ["Karnos existe."],
+      skills: [{ name: "Marche-faille", tier: "maîtrise" as const, note: "" }],
+      pending_roll: null,
+      last_roll: null,
+      turn_count: 12,
+    };
+    const state = migrateGameState(ancien, "kael");
+
+    // Rien ne se perd : c'est une partie en cours au moment du déploiement.
+    expect(state.turn_count).toBe(12);
+    expect(state.facts).toEqual(["Karnos existe."]);
+    expect(state.characters.kael.souffle).toBe(1);
+    expect(state.characters.kael.skills[0].name).toBe("Marche-faille");
+
+    // Et la migration est idempotente : relire un état déjà converti ne le
+    // reconvertit pas (ce qui écraserait l'état des autres joueurs).
+    state.characters.mira = initialGameState("mira").characters.mira;
+    expect(migrateGameState(state, "kael")).toBe(state);
+    expect(Object.keys(migrateGameState(state, "kael").characters).sort()).toEqual([
+      "kael",
+      "mira",
+    ]);
   });
 });
 
