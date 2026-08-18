@@ -138,6 +138,11 @@ const ACT_CLOSING_HEARTBEAT_MS = 5000;
 // résout avec ce qu'on a. Un joueur parti chercher un café ne doit pas geler
 // la table — et l'hôte peut toujours forcer avant.
 const TURN_WAIT_MS = 90_000;
+// Un verrou plus vieux que ça est réputé mort : le DO a pu être évincé en
+// pleine génération, et une table gelée pour toujours est pire qu'un tour
+// résolu deux fois. Large devant la durée d'une narration (quelques dizaines
+// de secondes au pire).
+const TURN_LOCK_TTL_MS = 3 * 60_000;
 // Récit narré : une page de prose, plus généreux que la fiche de mémoire —
 // il n'est ni relu à chaque tour ni facturé plus d'une fois.
 const MAX_NARRATED_ACT_TOKENS = 1600;
@@ -335,6 +340,12 @@ export class GameSession extends DurableObject<Env> {
    * s'y entrelaceraient et paieraient deux fois la même voix.
    */
   private audioInFlight = new Map<number, Promise<ArrayBuffer | null>>();
+
+  /** Composition de la table, mémoïsée entre deux requêtes du même DO. */
+  private rosterCache: Array<{
+    characterId: string | null;
+    name: string | null;
+  }> | null = null;
 
   /**
    * Clôture d'acte en cours, s'il y en a une. Le DO ne sérialise PAS deux
@@ -574,6 +585,8 @@ export class GameSession extends DurableObject<Env> {
    * - une fois terminée : il n'y a plus rien à lancer.
    */
   private async start(meta: SessionMeta): Promise<Response> {
+    // Les fiches ont pu être choisies depuis le dernier tour joué.
+    this.forgetRoster();
     if (meta.status === "finished") {
       return json({ error: "invalid_status", status: meta.status }, 409);
     }
@@ -726,6 +739,9 @@ export class GameSession extends DurableObject<Env> {
       return json({ error: "invalid_player_input" }, 400);
     }
 
+    const sansFiche = this.seated(meta, actor);
+    if (sansFiche) return sansFiche;
+
     // Le jet en attente est CELUI DU JOUEUR qui agit : à une table, un autre
     // peut avoir le sien en suspens sans bloquer qui que ce soit.
     const { state, me } = await this.actorState(meta, actor);
@@ -763,7 +779,7 @@ export class GameSession extends DurableObject<Env> {
     // Une action hors tour est REFUSÉE, jamais mise en file : la jouer plus
     // tard la sortirait de son contexte, et le joueur croirait l'avoir perdue.
     if (mode.value === "sequential") {
-      const attendu = this.expectedPlayer(mode, roster);
+      const attendu = await this.expectedPlayer(mode, roster);
       const monNom = roster.find(
         (r) => stateKey(r.characterId) === stateKey(actor.characterId),
       )?.name;
@@ -808,8 +824,7 @@ export class GameSession extends DurableObject<Env> {
     });
     await this.ctx.storage.put("pending_actions", actions);
 
-    const locked = await this.ctx.storage.get<number>("turn_lock");
-    if (locked) {
+    if (await this.lockHeld()) {
       // Une narration est en cours : l'action attend le tour suivant. Elle
       // n'est jamais perdue, et c'est tout ce qu'on promet au joueur.
       this.broadcast("turn_waiting", {
@@ -861,15 +876,41 @@ export class GameSession extends DurableObject<Env> {
     return true;
   }
 
-  /** Prochain joueur attendu en séquentiel : le premier de l'ordre du MJ. */
-  private expectedPlayer(
+  /**
+   * Prochain joueur attendu en séquentiel.
+   *
+   * L'index avance à chaque tour résolu : sans ça, l'ordre donné par le MJ ne
+   * tournerait jamais et seul le premier nommé pourrait agir — le combat
+   * resterait bloqué sur lui, puisque le prompt demande explicitement au MJ de
+   * ne pas réémettre la balise à chaque tour.
+   *
+   * Un nom qui ne correspond à personne à la table est sauté : un ordre mal
+   * orthographié ne doit pas geler la partie.
+   */
+  private async expectedPlayer(
     mode: TurnMode,
     roster: Array<{ characterId: string | null; name: string | null }>,
-  ): string | null {
+  ): Promise<string | null> {
     if (mode.order.length === 0) return null;
-    const tour = mode.order[0];
-    // Un nom qui ne correspond à personne à la table ne doit bloquer personne.
-    return roster.some((r) => r.name && sameName(r.name, tour)) ? tour : null;
+    const start = (await this.ctx.storage.get<number>("turn_order_index")) ?? 0;
+    for (let i = 0; i < mode.order.length; i++) {
+      const nom = mode.order[(start + i) % mode.order.length];
+      if (roster.some((r) => r.name && sameName(r.name, nom))) return nom;
+    }
+    return null;
+  }
+
+  /** Passe la main au suivant dans l'ordre, et le dit à la table. */
+  private async advanceTurnOrder(meta: SessionMeta): Promise<void> {
+    const mode = await this.turnMode();
+    if (mode.value !== "sequential" || mode.order.length === 0) return;
+    const index = (await this.ctx.storage.get<number>("turn_order_index")) ?? 0;
+    await this.ctx.storage.put(
+      "turn_order_index",
+      (index + 1) % mode.order.length,
+    );
+    const suivant = await this.expectedPlayer(mode, await this.roster(meta));
+    if (suivant) this.broadcast("awaiting_player", { name: suivant });
   }
 
   /** L'hôte force la résolution sans attendre les retardataires. */
@@ -880,9 +921,7 @@ export class GameSession extends DurableObject<Env> {
     const actions =
       (await this.ctx.storage.get<PendingAction[]>("pending_actions")) ?? [];
     if (actions.length === 0) return json({ error: "no_pending_action" }, 409);
-    if (await this.ctx.storage.get<number>("turn_lock")) {
-      return json({ error: "turn_locked" }, 409);
-    }
+    if (await this.lockHeld()) return json({ error: "turn_locked" }, 409);
     return this.resolveTurn(meta, { userId: null, characterId: null });
   }
 
@@ -901,8 +940,18 @@ export class GameSession extends DurableObject<Env> {
       characters: actions.map((a) => stateKey(a.characterId)),
     });
 
-    const state = await this.loadState(meta);
-    return this.resolveNow(meta, state, actions, actor);
+    // Entre la pose du verrou et pump() — qui seul sait le lever — il y a des
+    // lectures D1 et une clé d'API qui peut manquer. Toute sortie par ce
+    // chemin doit rendre le verrou, sinon la table est gelée.
+    try {
+      const state = await this.loadState(meta);
+      const res = await this.resolveNow(meta, state, actions, actor);
+      if (!res.ok) await this.releaseLock();
+      return res;
+    } catch (err) {
+      await this.releaseLock();
+      throw err;
+    }
   }
 
   /**
@@ -930,9 +979,12 @@ export class GameSession extends DurableObject<Env> {
         consumed.push(roll);
       }
       submitted.push({
-        // Un seul joueur : pas de nom, le message reste celui d'avant le
+        // À une table, l'action est TOUJOURS nommée — y compris seule, en
+        // tour par tour : sans nom, le MJ ne sait pas qui frappe. En solo il
+        // n'y a personne à distinguer, et le message reste celui d'avant le
         // multi à l'octet près.
-        characterName: actions.length > 1 ? nomDe(action.characterId) : null,
+        characterName:
+          (meta.mode ?? "solo") === "table" ? nomDe(action.characterId) : null,
         text: action.text.trim(),
         rollLine: roll ? buildTurnMessage("", roll) : null,
       });
@@ -965,16 +1017,35 @@ export class GameSession extends DurableObject<Env> {
   }
 
   /**
+   * Une narration est-elle réellement en cours ? Un verrou périmé est purgé et
+   * ne compte pas : sinon une génération interrompue (DO évincé, erreur avant
+   * pump) gèlerait la table définitivement, sans aucun recours.
+   */
+  private async lockHeld(): Promise<boolean> {
+    const posed = await this.ctx.storage.get<number>("turn_lock");
+    if (!posed) return false;
+    if (Date.now() - posed < TURN_LOCK_TTL_MS) return true;
+    console.error("[game-session] verrou de tour périmé, purgé");
+    await this.releaseLock();
+    return false;
+  }
+
+  /**
    * Filet du régime simultané : le délai a expiré, on résout avec ce qu'on a.
    * Personne ne tient de flux SSE ici — la table reçoit tout par WebSocket.
    */
   async alarm(): Promise<void> {
     const meta = await this.ctx.storage.get<SessionMeta>("meta");
     if (!meta || meta.status !== "playing") return;
-    if (await this.ctx.storage.get<number>("turn_lock")) return;
     const actions =
       (await this.ctx.storage.get<PendingAction[]>("pending_actions")) ?? [];
     if (actions.length === 0) return;
+    if (await this.lockHeld()) {
+      // Une narration est en cours : on repasse plus tard plutôt que
+      // d'abandonner ces actions à un réveil qui n'aura jamais lieu.
+      await this.ctx.storage.setAlarm(Date.now() + TURN_WAIT_MS);
+      return;
+    }
 
     const res = await this.resolveTurn(meta, { userId: null, characterId: null });
     // Le flux n'a pas de lecteur : on le draine pour que la génération aille
@@ -1002,6 +1073,9 @@ export class GameSession extends DurableObject<Env> {
     if (meta.status !== "playing") {
       return json({ error: "invalid_status", status: meta.status }, 409);
     }
+    const sansFiche = this.seated(meta, actor);
+    if (sansFiche) return sansFiche;
+
     const { state, me, key } = await this.actorState(meta, actor);
     if (me.last_roll) {
       // Anti-triche : pas de relance tant que le résultat n'est pas joué.
@@ -1734,11 +1808,13 @@ export class GameSession extends DurableObject<Env> {
     // des sockets nus, et c'est la seule façon de savoir qui est au bout.
     server.serializeAttachment({ userId, role, characterId } satisfies SocketInfo);
 
-    const state = (await this.ctx.storage.get<GameState>("state"))!;
+    const state = await this.loadState(meta);
     // Un socket qui arrive — ou qui revient d'une hibernation, d'un écran
     // verrouillé — repart de l'état courant, sans rien rejouer.
     this.sendTo(server, "state", await this.publicState(meta, state));
     this.sendTo(server, "presence", { members: this.presence() });
+    // Un socket qui s'ouvre signale souvent une arrivée à la table.
+    this.forgetRoster();
     this.broadcast("member_joined", { user_id: userId, role }, { exclude: server });
 
     return new Response(null, { status: 101, webSocket: client });
@@ -1938,6 +2014,10 @@ export class GameSession extends DurableObject<Env> {
       // c'est SON Souffle qui se dépense, SES compétences qui progressent.
       const defautKey = actingCharacters[0]?.key
         ?? stateKey(actor.characterId ?? meta.characterId);
+      // Personnages effectivement modifiés par ce tour : eux seuls seront
+      // réécrits à la persistance. Ce qui a bougé ailleurs pendant la
+      // narration (un jet lancé par un autre joueur) doit survivre.
+      const touches = new Set<string>([defautKey]);
       // À une table, le MJ dit de QUI il parle via l'attribut `character`.
       // Sans attribut — cas du solo, et du tour où il n'y a pas d'ambiguïté —
       // la balise revient au personnage qui vient d'agir.
@@ -1959,6 +2039,9 @@ export class GameSession extends DurableObject<Env> {
       // <scene_break/>. On coupe donc sur une rupture narrative choisie par
       // le narrateur, jamais au milieu d'une scène.
       let sceneBreak = false;
+      // Le MJ vient-il de fixer l'ordre ? Si oui, la main ne passe pas au
+      // suivant à la fin de ce tour : le premier nommé n'aurait jamais joué.
+      let ordreVientDEtreFixe = false;
 
       const handle = async (chunk: {
         text: string;
@@ -1969,6 +2052,7 @@ export class GameSession extends DurableObject<Env> {
           switch (event.type) {
             case "roll_request": {
               const pj = cible(event.character);
+              touches.add(cleDe(event.character));
               pj.pending_roll = event.request;
               await send("state_patch", {
                 character_id: cleDe(event.character),
@@ -1978,6 +2062,7 @@ export class GameSession extends DurableObject<Env> {
             }
             case "souffle_delta": {
               const pj = cible(event.character);
+              touches.add(cleDe(event.character));
               pj.souffle = applySouffleDelta(pj.souffle, event.delta);
               await send("state_patch", {
                 character_id: cleDe(event.character),
@@ -1989,10 +2074,15 @@ export class GameSession extends DurableObject<Env> {
               // C'est le MJ qui sait quand un combat commence. Le régime est
               // persisté : il vaut pour les tours suivants, pas seulement
               // celui-ci.
-              await this.ctx.storage.put("turn_mode", {
-                value: event.value,
-                order: event.order,
-              } satisfies TurnMode);
+              ordreVientDEtreFixe = true;
+              await this.ctx.storage.put({
+                turn_mode: {
+                  value: event.value,
+                  order: event.order,
+                } satisfies TurnMode,
+                // Nouvel ordre : on repart de son premier nom.
+                turn_order_index: 0,
+              });
               await send("turn_mode_changed", {
                 value: event.value,
                 order: event.order,
@@ -2013,6 +2103,7 @@ export class GameSession extends DurableObject<Env> {
             case "skill_update": {
               // Mémoire longue : la compétence survit à la fenêtre d'historique.
               const pj = cible(event.character);
+              touches.add(cleDe(event.character));
               pj.skills ??= [];
               if (applySkillUpdate(pj.skills, event.name, event.tier, event.note)) {
                 await send("state_patch", {
@@ -2084,13 +2175,25 @@ export class GameSession extends DurableObject<Env> {
       // passage en 'playing' (scène 1) n'est commité qu'ici, au succès.
       const stored =
         (await this.ctx.storage.get<number>("turn_count_stored")) ?? 0;
-      state.turn_count += 1;
+
+      // Fusion plutôt qu'écrasement. `state` a été chargé AVANT l'appel au
+      // modèle, il y a des dizaines de secondes ; entre-temps un autre joueur
+      // a pu lancer son dé, et réécrire le blob entier annulerait son jet
+      // (il l'aurait vu tomber, puis on le lui redemanderait).
+      const frais = await this.loadState(meta);
+      for (const key of touches) {
+        frais.characters[key] = characterState(state, key);
+      }
+      frais.facts = state.facts;
+      frais.turn_count = (frais.turn_count ?? 0) + 1;
+      state.turn_count = frais.turn_count;
+
       if (becomePlaying) meta.status = "playing";
       await this.ctx.storage.put({
         [turnKey(stored)]: { role: "user", text: storedText } as StoredTurn,
         [turnKey(stored + 1)]: { role: "assistant", text: raw } as StoredTurn,
         turn_count_stored: stored + 2,
-        state,
+        state: frais,
         inventions,
         ...(becomePlaying ? { meta } : {}),
       });
@@ -2101,7 +2204,16 @@ export class GameSession extends DurableObject<Env> {
           .bind(meta.sessionId)
           .run();
       }
-      await this.syncKV(meta, state);
+      await this.syncKV(meta, frais);
+      // Séquentiel : la main passe au suivant maintenant que le tour est joué.
+      if (!ordreVientDEtreFixe) await this.advanceTurnOrder(meta);
+      else {
+        const suivant = await this.expectedPlayer(
+          await this.turnMode(),
+          await this.roster(meta),
+        );
+        if (suivant) this.broadcast("awaiting_player", { name: suivant });
+      }
 
       await send("done", {
         turn: state.turn_count,
@@ -2203,14 +2315,26 @@ export class GameSession extends DurableObject<Env> {
     actor: Actor,
   ): Promise<{ state: GameState; me: CharacterState; key: string }> {
     const state = await this.loadState(meta);
-    // Sans personnage déclaré (solo, ou membre qui n'a pas encore choisi), on
-    // retombe sur celui de la session : c'est le parcours mono-joueur.
+    // Le repli sur le personnage de la session n'a de sens qu'en SOLO, où il
+    // n'y en a qu'un. À une table, il ferait dépenser le Souffle de l'hôte à
+    // un joueur sans fiche, et deux joueurs sans fiche partageraient un même
+    // état — d'où le garde, en amont, dans turn() et roll().
     const characterId = actor.characterId ?? meta.characterId;
     return {
       state,
       me: characterState(state, characterId),
       key: stateKey(characterId),
     };
+  }
+
+  /**
+   * À une table, agir suppose d'incarner quelqu'un. Un membre qui a rejoint la
+   * partie en cours n'a pas encore choisi : il doit le faire avant de jouer.
+   */
+  private seated(meta: SessionMeta, actor: Actor): Response | null {
+    if ((meta.mode ?? "solo") !== "table") return null;
+    if (actor.characterId) return null;
+    return json({ error: "character_required" }, 409);
   }
 
   /**
@@ -2221,6 +2345,10 @@ export class GameSession extends DurableObject<Env> {
   private async roster(
     meta: SessionMeta,
   ): Promise<Array<{ characterId: string | null; name: string | null }>> {
+    // Mémoïsé pour la durée du tour : il était relu deux fois par tour (une
+    // pour assembler les actions, une pour le contexte), y compris en solo où
+    // la réponse tient en une ligne et ne change jamais.
+    if (this.rosterCache) return this.rosterCache;
     const { results } = await this.env.DB.prepare(
       `SELECT sm.character_id, ch.name
        FROM session_members sm
@@ -2229,13 +2357,19 @@ export class GameSession extends DurableObject<Env> {
     )
       .bind(meta.sessionId)
       .all<{ character_id: string | null; name: string | null }>();
-    if (results.length === 0) {
-      return [{ characterId: meta.characterId, name: meta.characterName }];
-    }
-    return results.map((r) => ({
-      characterId: r.character_id,
-      name: r.name,
-    }));
+    this.rosterCache =
+      results.length === 0
+        ? [{ characterId: meta.characterId, name: meta.characterName }]
+        : results.map((r) => ({
+            characterId: r.character_id,
+            name: r.name,
+          }));
+    return this.rosterCache;
+  }
+
+  /** À invalider dès que la composition de la table peut avoir changé. */
+  private forgetRoster(): void {
+    this.rosterCache = null;
   }
 
   /**

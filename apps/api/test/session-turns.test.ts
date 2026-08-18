@@ -5,12 +5,13 @@
 // no-op observable. C'est le parcours quotidien, celui qu'on régresserait sans
 // le voir.
 
-import { env, SELF } from "cloudflare:test";
+import { env, runInDurableObject, SELF } from "cloudflare:test";
 import { afterEach, beforeAll, describe, expect, it } from "vitest";
 import {
   assertAnthropicMockConsumed,
   installAnthropicMock,
   mockAnthropicStream,
+  mockAnthropicText,
 } from "./anthropic-mock";
 
 const BASE = "http://loreforge.test";
@@ -347,5 +348,171 @@ describe("lot 8.5 — régime séquentiel", () => {
       capture.restore();
     }
     expect(capture.get()).not.toContain("je frappe aussi");
+  });
+});
+
+describe("M8 — défauts relevés en relecture", () => {
+  it("fait tourner l'ordre du tour par tour au lieu de bloquer sur le premier", async () => {
+    const { hote, joueur, sessionId } = await table("rotation");
+
+    await post(hote, `/api/sessions/${sessionId}/turn`, {
+      player_input: "j'ouvre le combat",
+    });
+    mockAnthropicStream([
+      'Les lames sortent. <turn_mode value="sequential" order="Kaelen,Mira"/> À toi, Kaelen.',
+    ]);
+    await (
+      await post(joueur, `/api/sessions/${sessionId}/turn`, {
+        player_input: "je dégaine",
+      })
+    ).text();
+
+    // Kaelen joue son tour…
+    mockAnthropicStream(["Kaelen frappe. À Mira."]);
+    const tourKael = await post(hote, `/api/sessions/${sessionId}/turn`, {
+      player_input: "je frappe",
+    });
+    expect(tourKael.status).toBe(200);
+    await tourKael.text();
+
+    // …et la main passe VRAIMENT à Mira. Avant correction, l'ordre ne tournait
+    // jamais et le combat restait bloqué sur le premier nommé — le prompt
+    // demandant au MJ de ne pas réémettre la balise à chaque tour.
+    mockAnthropicStream(["Mira riposte. À Kaelen."]);
+    const tourMira = await post(joueur, `/api/sessions/${sessionId}/turn`, {
+      player_input: "je riposte",
+    });
+    expect(tourMira.status).toBe(200);
+    await tourMira.text();
+
+    // Et Kaelen est de nouveau attendu : l'ordre boucle.
+    const horsTour = await post(joueur, `/api/sessions/${sessionId}/turn`, {
+      player_input: "je rejoue",
+    });
+    expect(horsTour.status).toBe(409);
+    expect(((await horsTour.json()) as { awaiting: string }).awaiting).toBe(
+      "Kaelen",
+    );
+  });
+
+  it("nomme l'action même seule à une table, pour que le MJ sache qui agit", async () => {
+    const { hote, joueur, sessionId } = await table("nomme");
+    await post(hote, `/api/sessions/${sessionId}/turn`, {
+      player_input: "j'ouvre le combat",
+    });
+    mockAnthropicStream([
+      'Le fer sonne. <turn_mode value="sequential" order="Kaelen"/>',
+    ]);
+    await (
+      await post(joueur, `/api/sessions/${sessionId}/turn`, {
+        player_input: "je dégaine",
+      })
+    ).text();
+
+    const capture = captureAnthropicBody();
+    try {
+      mockAnthropicStream(["Kaelen frappe. Et ensuite ?"]);
+      await (
+        await post(hote, `/api/sessions/${sessionId}/turn`, {
+          player_input: "je frappe le garde",
+        })
+      ).text();
+    } finally {
+      capture.restore();
+    }
+    // Une seule action, mais à une table de quatre « je frappe le garde »
+    // sans nom ne dit rien au MJ.
+    expect(capture.get()).toContain("Kaelen : je frappe le garde");
+  });
+
+  it("refuse d'agir sans personnage plutôt que d'emprunter celui de l'hôte", async () => {
+    const { hote, sessionId } = await table("sansfiche");
+    const { code } = (await (
+      await post(hote, `/api/sessions/${sessionId}/invite`)
+    ).json()) as { code: string };
+    const tardif = await login("sansfiche-tardif@example.com");
+    await post(tardif, "/api/sessions/join", { code });
+
+    // Avant correction : il dépensait le Souffle de l'hôte et consommait ses
+    // jets, parce que l'état retombait sur le personnage de la session.
+    const res = await post(tardif, `/api/sessions/${sessionId}/turn`, {
+      player_input: "je surgis",
+    });
+    expect(res.status).toBe(409);
+    expect(((await res.json()) as { error: string }).error).toBe(
+      "character_required",
+    );
+    expect((await post(tardif, `/api/sessions/${sessionId}/roll`)).status).toBe(409);
+  });
+
+  it("laisse un joueur arrivé en cours de partie choisir sa fiche", async () => {
+    const { hote, sessionId } = await table("assis-tard");
+    const bibleId = (
+      (await (
+        await get(hote, `/api/sessions/${sessionId}/state`)
+      ).json()) as { bible_id: string }
+    ).bible_id;
+
+    const { code } = (await (
+      await post(hote, `/api/sessions/${sessionId}/invite`)
+    ).json()) as { code: string };
+    const tardif = await login("assis-tard-nouveau@example.com");
+    await post(tardif, "/api/sessions/join", { code });
+
+    const thea = await character(tardif, bibleId, "Théa");
+    const assis = await put(tardif, `/api/sessions/${sessionId}/members/me`, {
+      character_id: thea,
+    });
+    // La partie est en cours : s'asseoir doit rester possible, sinon on
+    // rejoint une table sans jamais pouvoir y jouer.
+    expect(assis.status).toBe(200);
+
+    // En revanche, changer de fiche une fois assis reste refusé : le Souffle
+    // déjà dépensé resterait sur l'ancienne.
+    const autre = await character(tardif, bibleId, "Autre");
+    const change = await put(tardif, `/api/sessions/${sessionId}/members/me`, {
+      character_id: autre,
+    });
+    expect(change.status).toBe(409);
+  });
+
+  it("ne laisse pas un verrou périmé geler la table pour toujours", async () => {
+    const { hote, joueur, sessionId } = await table("verrou");
+    await post(hote, `/api/sessions/${sessionId}/turn`, {
+      player_input: "je patiente",
+    });
+
+    // Verrou posé il y a longtemps : une génération que personne n'a levée
+    // (DO évincé, erreur avant la narration).
+    await runInDurableObject(
+      env.GAME_SESSIONS.get(env.GAME_SESSIONS.idFromString(sessionId)),
+      async (_i, state) => {
+        await state.storage.put("turn_lock", 1);
+      },
+    );
+
+    mockAnthropicStream(["La table repart. Et maintenant ?"]);
+    const res = await post(joueur, `/api/sessions/${sessionId}/turn`, {
+      player_input: "je reprends",
+    });
+    // Avant correction : 202 « queued » à jamais, sans aucun recours.
+    expect(res.status).toBe(200);
+    expect(await res.text()).toContain("La table repart.");
+  });
+
+  it("réserve la réécriture d'un récit à l'hôte", async () => {
+    const { hote, joueur, sessionId } = await table("recit");
+    mockAnthropicText("# Acte\n\n- fiche de mémoire");
+    await post(hote, `/api/sessions/${sessionId}/acts/close`);
+    mockAnthropicText("Un premier récit.");
+    await post(joueur, `/api/sessions/${sessionId}/acts/0/narrate`);
+
+    // Écrire un récit absent : tout membre. Le réécrire en boucle sur la
+    // bible de quelqu'un d'autre : non.
+    const force = await post(
+      joueur,
+      `/api/sessions/${sessionId}/acts/0/narrate?force=1`,
+    );
+    expect(force.status).toBe(403);
   });
 });

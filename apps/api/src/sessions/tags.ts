@@ -84,8 +84,11 @@ const SOUFFLE =
   /^<souffle(?=\s)(?=[^>]*\bdelta="([+-]?\d+)")(?:[^>]*\bcharacter="([^"]*)")?[^>]*\/>/;
 const SCENE_BREAK = /^<scene_break\s*\/>/;
 // name et tier obligatoires ; note et character optionnels, ordre libre.
+// Tous les attributs sont capturés par lookahead : consommer `note` puis
+// `character` en séquence perdait `character` dès qu'il était écrit en
+// premier — et le MJ écrit ses balises dans l'ordre qui lui chante.
 const SKILL =
-  /^<skill(?=\s)(?=[^>]*\bname="([^"]*)")(?=[^>]*\btier="([^"]*)")(?:[^>]*\bnote="([^"]*)")?(?:[^>]*\bcharacter="([^"]*)")?[^>]*\/>/;
+  /^<skill(?=\s)(?=[^>]*\bname="([^"]*)")(?=[^>]*\btier="([^"]*)")(?=(?:[^>]*\bnote="([^"]*)")?)(?=(?:[^>]*\bcharacter="([^"]*)")?)[^>]*\/>/;
 const FAIT = /^<fait\s+texte="([^"]*)"\s*\/>/;
 // value obligatoire ; order optionnel (séquentiel), ordre libre.
 const TURN_MODE =

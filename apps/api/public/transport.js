@@ -255,8 +255,11 @@ export function openTableSocket(
     });
 
     const onGone = () => {
-      stopHeartbeat();
+      // Le garde vient AVANT l'arrêt du battement : un socket mort qui émet
+      // close puis error effacerait sinon l'intervalle du socket courant, qui
+      // survivrait mais sans keepalive à travers les proxys.
       if (ws !== socket) return; // une reconnexion a déjà pris la main
+      stopHeartbeat();
       ws = null;
       onStatus?.(false);
       scheduleRetry();

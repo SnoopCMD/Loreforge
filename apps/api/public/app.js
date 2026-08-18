@@ -153,10 +153,17 @@ const SCREENS = [
   "screen-setup", "screen-lobby", "screen-join", "screen-session", "screen-end",
 ];
 
+// Écrans qui appartiennent à une partie : la socket de table les traverse.
+// La fermer entre le lobby et la session couperait la table au moment précis
+// où elle commence — mise en place comprise.
+const SESSION_SCREENS = new Set([
+  "screen-lobby", "screen-setup", "screen-session", "screen-end",
+]);
+
 function showScreen(id) {
-  // La socket de table ne survit pas à un changement d'écran : on ne veut ni
-  // recevoir la narration d'une partie qu'on a quittée, ni la laisser ouverte.
-  if (id !== "screen-session" && id !== "screen-lobby") closeTableSocket();
+  // Hors d'une partie, on ne veut ni recevoir la narration d'une table qu'on
+  // a quittée, ni laisser une socket ouverte.
+  if (!SESSION_SCREENS.has(id)) closeTableSocket();
   for (const s of SCREENS) $(s).classList.toggle("hidden", s !== id);
   $("topbar").classList.toggle("hidden", id === "screen-landing");
   clearInterval(pollTimer);
@@ -177,7 +184,14 @@ function showScreen(id) {
 function route() {
   const hash = location.hash.replace(/^#/, "") || "/";
   const parts = hash.split("/").filter(Boolean);
-  if (!authed) return showLanding();
+  if (!authed) {
+    // Un lien d'invitation est presque toujours ouvert par quelqu'un qui n'a
+    // pas encore de compte : c'est le chemin d'entrée principal de la
+    // fonctionnalité. Perdre le code pendant l'inscription reviendrait à
+    // perdre l'invitation.
+    if (parts[0] === "join" && parts[1]) store.set("lf:join", parts[1]);
+    return showLanding();
+  }
   if (parts.length === 0) return showHome();
   if (parts[0] === "play") return showPlay();
   if (parts[0] === "library") return showLibrary();
@@ -207,6 +221,10 @@ async function boot() {
   if (me.ok) {
     try { currentUser = (await me.json()).user; } catch { /* sans gravité */ }
     probeVoice(); // en tâche de fond : décide si le bouton d'écoute existe
+    // Invitation mise de côté avant l'inscription : on y va maintenant.
+    if (store.get("lf:join") && !location.hash.includes("/join/")) {
+      location.hash = pendingJoinHash();
+    }
   }
   route();
 }
@@ -243,8 +261,16 @@ async function credentialsAuth(path) {
   }
   authed = true;
   $("login-msg").textContent = "";
-  location.hash = "#/";
+  location.hash = pendingJoinHash();
   route();
+}
+
+/** Où atterrir après authentification : la table qu'on venait rejoindre. */
+function pendingJoinHash() {
+  const code = store.get("lf:join");
+  if (!code) return "#/";
+  store.set("lf:join", null);
+  return "#/join/" + code;
 }
 
 $("login-form").addEventListener("submit", (e) => {
@@ -3194,7 +3220,15 @@ $("new-session-btn").addEventListener("click", () => {
 
 // La mise en place se joue en deux temps : d'abord le fil rouge, ensuite les
 // zones floues — le serveur ne pose que celles qui touchent à cette intention.
-function showSetup(sessionId) {
+async function showSetup(sessionId) {
+  await loadMembers(sessionId);
+  // La mise en place appartient à l'hôte (fil rouge, zones floues) : y envoyer
+  // un invité, c'est lui montrer un formulaire qui répondra 403. Il attend
+  // dans le lobby, d'où la première narration le fera sortir.
+  if (isTable() && T.role !== "host") {
+    location.hash = "#/session/" + sessionId + "/lobby";
+    return;
+  }
   showScreen("screen-setup");
   $("setup-msg").textContent = "";
   $("setup-msg").className = "msg";
@@ -3202,6 +3236,7 @@ function showSetup(sessionId) {
   $("setup-trame-form").dataset.sessionId = sessionId;
   $("setup-trame-form").classList.remove("hidden");
   $("setup-questions").classList.add("hidden");
+  connectTable(sessionId);
   initSetupPalettes(sessionId);
 }
 
@@ -3973,6 +4008,7 @@ function sendTurn() {
 
 const T = {
   socket: null,
+  socketFor: null, // session à laquelle la socket est attachée
   mode: "solo",
   role: "player",
   members: [], // { user_id, display_name, character_id, character_name, role }
@@ -3991,6 +4027,7 @@ function closeTableSocket() {
     T.socket.close();
     T.socket = null;
   }
+  T.socketFor = null;
 }
 
 /** Nom affichable d'un membre : son personnage, sinon son compte. */
@@ -4145,8 +4182,12 @@ document.addEventListener("click", (e) => {
  * ceux du SSE : c'est le même contrat, servi par l'autre transport.
  */
 function connectTable(sessionId) {
+  // Idempotent : appelé depuis le lobby, la mise en place et la session, il ne
+  // doit pas rouvrir une socket déjà bonne à chaque changement d'écran.
+  if (T.socket && T.socketFor === sessionId) return;
   closeTableSocket();
   if (!isTable()) return;
+  T.socketFor = sessionId;
   T.socket = openTableSocket(
     sessionId,
     {
@@ -4183,8 +4224,15 @@ function connectTable(sessionId) {
         T.awaiting = d.name || null;
         renderTable();
       },
-      // Narration d'un tour joué par quelqu'un d'autre.
-      narration: (d) => remoteNarration(d.text),
+      // Narration d'un tour joué par quelqu'un d'autre. Si l'on attend encore
+      // dans le lobby, c'est le signal que la partie a vraiment commencé.
+      narration: (d) => {
+        if (!$("screen-lobby").classList.contains("hidden")) {
+          location.hash = "#/session/" + sessionId;
+          return;
+        }
+        remoteNarration(d.text);
+      },
       roll: (d) => addRollBlock(d),
       state_patch: (d) => applyStatePatch(d),
       scene_break: () => addSceneSep(),
@@ -4214,13 +4262,31 @@ function connectTable(sessionId) {
   );
 }
 
+/**
+ * Ce que le serveur dit de MOI. Les champs de premier niveau de /state sont
+ * ceux du personnage de la session — celui de l'hôte. Les recopier tels quels
+ * ferait afficher à chaque invité la fiche, le Souffle et le jet en attente de
+ * quelqu'un d'autre, et le bloquerait en saisie dès que l'hôte doit lancer.
+ */
+function myStateFrom(state) {
+  const mien = T.myCharacterId && (state.characters || {})[T.myCharacterId];
+  return mien || {
+    souffle: state.souffle,
+    skills: state.skills,
+    pending_roll: state.pending_roll,
+    last_roll: state.last_roll,
+  };
+}
+
 /** Applique un snapshot serveur : Souffle de chacun, faits, acte courant. */
 function applyTableState(state) {
   if (!state) return;
   T.characters = state.characters || {};
-  S.souffle = state.souffle;
+  const moi = myStateFrom(state);
+  S.souffle = moi.souffle;
   S.facts = state.facts || [];
-  S.skills = state.skills || [];
+  S.skills = moi.skills || [];
+  S.pendingRoll = moi.pending_roll || null;
   S.turnCount = state.turn_count;
   S.actIndex = state.act_index || 0;
   S.actsClosed = state.acts_closed || 0;
@@ -4989,13 +5055,17 @@ async function enterSession(id) {
 
   startSessionScreen(id);
   S.status = state.status;
-  S.souffle = state.souffle;
   S.souffleMax = state.souffle_max || 3;
-  S.pendingRoll = state.pending_roll;
-  S.lastRoll = state.last_roll;
+  T.characters = state.characters || {};
+  // Mon état, pas celui du personnage de la session : à une table, ce sont
+  // deux choses différentes.
+  const moi = myStateFrom(state);
+  S.souffle = moi.souffle;
+  S.pendingRoll = moi.pending_roll;
+  S.lastRoll = moi.last_roll;
+  S.skills = moi.skills || [];
   S.turnCount = state.turn_count;
   S.facts = state.facts || [];
-  S.skills = state.skills || [];
   S.character = state.character;
   S.actIndex = state.act_index || 0;
   S.actsClosed = state.acts_closed || 0;
@@ -5021,7 +5091,6 @@ async function enterSession(id) {
   }
   if (S.pendingRoll) addRollNeeded();
   else renderChoices(lastGmEl, lastGmText);
-  T.characters = state.characters || {};
   updateRail();
   updateActControls();
   renderTable();

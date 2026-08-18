@@ -472,12 +472,20 @@ sessions.post("/:id/start", async (c) => {
 });
 
 // PUT /api/sessions/:id/members/me — je choisis (ou change) mon personnage.
-// Réservé au lobby : changer de fiche en pleine partie casserait l'état de jeu
-// indexé par personnage.
+//
+// Changer de fiche EN COURS de partie est refusé : l'état de jeu est indexé
+// par personnage, et le Souffle déjà dépensé resterait sur l'ancien. Mais
+// s'asseoir quand on n'a encore personne reste possible à tout moment — un
+// joueur invité après le lancement doit pouvoir rejoindre la table, sinon il
+// jouerait sans fiche, ce que le serveur refuse par ailleurs.
 sessions.put("/:id/members/me", async (c) => {
   const found = await access(c);
   if (denied(found)) return found;
-  if (found.row.status !== "lobby" && found.row.status !== "setup") {
+  const enPlace = found.row.status === "lobby" || found.row.status === "setup";
+  if (!enPlace && found.characterId) {
+    return c.json({ error: "character_already_chosen" }, 409);
+  }
+  if (found.row.status === "finished") {
     return c.json({ error: "invalid_status", status: found.row.status }, 409);
   }
 
@@ -557,9 +565,17 @@ sessions.post("/:id/acts/:index/narrate", async (c) => {
   if (denied(found)) return found;
   const row = found.row;
 
+  // Écrire un récit absent : tout membre. Le RÉÉCRIRE : l'hôte seul. Sans
+  // cette borne, n'importe quel invité pourrait boucler des générations
+  // d'une page sur la bible de quelqu'un d'autre.
+  const force = c.req.query("force") === "1";
+  if (force && found.role !== "host") {
+    return c.json({ error: "host_only" }, 403);
+  }
+
   const qs = new URLSearchParams({
     index: c.req.param("index"),
-    ...(c.req.query("force") === "1" ? { force: "1" } : {}),
+    ...(force ? { force: "1" } : {}),
   }).toString();
   return stubFor(c, row.id).fetch(`https://do/act/narrate?${qs}`, {
     method: "POST",
