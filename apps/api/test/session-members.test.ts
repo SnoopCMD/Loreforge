@@ -50,7 +50,11 @@ async function del(cookie: string, path: string): Promise<Response> {
   return SELF.fetch(`${BASE}${path}`, { method: "DELETE", headers: { cookie } });
 }
 
-/** Table créée par un hôte, scène 1 déjà jouée. */
+/**
+ * Table créée par un hôte, scène 1 déjà jouée. Une table naît en lobby : son
+ * hôte doit la lancer avant que la mise en place n'ait lieu. Le solo, lui, va
+ * directement à la mise en place.
+ */
 async function table(
   email: string,
   mode: "solo" | "table" = "table",
@@ -61,14 +65,25 @@ async function table(
   });
   const { id: bibleId } = (await bibleRes.json()) as { id: string };
 
+  const charRes = await post(cookie, "/api/characters", {
+    bible_id: bibleId,
+    name: "Kael",
+    sheet_json: { pouvoir: "marche-faille" },
+  });
+  const { id: characterId } = (await charRes.json()) as { id: string };
+
   const createRes = await post(cookie, "/api/sessions", {
     bible_id: bibleId,
+    character_id: characterId,
     format: "campaign",
     mode,
   });
   expect(createRes.status).toBe(201);
   const { session_id } = (await createRes.json()) as { session_id: string };
 
+  if (mode === "table") {
+    expect((await post(cookie, `/api/sessions/${session_id}/start`)).status).toBe(200);
+  }
   mockAnthropicStream(["La brume s'ouvre. Que fais-tu ?"]);
   await (
     await post(cookie, `/api/sessions/${session_id}/setup`, { answers: [] })
@@ -324,5 +339,164 @@ describe("lot 8.1 — le solo garde son parcours", () => {
     });
     expect(res.status).toBe(400);
     expect(((await res.json()) as { error: string }).error).toBe("invalid_mode");
+  });
+});
+
+describe("lot 8.4 — lobby de pré-session", () => {
+  /** Table fraîchement créée, encore en lobby : rien n'a été lancé. */
+  async function lobby(prefix: string): Promise<{
+    hote: string;
+    sessionId: string;
+    bibleId: string;
+    kael: string;
+  }> {
+    const hote = await login(`${prefix}-hote@example.com`);
+    const bibleRes = await post(hote, "/api/bibles", {
+      markdown: "# Les Mondes Fêlés\n\nLa magie vient des failles.",
+    });
+    const { id: bibleId } = (await bibleRes.json()) as { id: string };
+    const charRes = await post(hote, "/api/characters", {
+      bible_id: bibleId,
+      name: "Kael",
+      sheet_json: { pouvoir: "marche-faille" },
+    });
+    const { id: kael } = (await charRes.json()) as { id: string };
+
+    const createRes = await post(hote, "/api/sessions", {
+      bible_id: bibleId,
+      character_id: kael,
+      format: "campaign",
+      mode: "table",
+    });
+    const { session_id } = (await createRes.json()) as { session_id: string };
+    return { hote, sessionId: session_id, bibleId, kael };
+  }
+
+  it("une table naît en lobby et n'a encore rien coûté", async () => {
+    const { hote, sessionId } = await lobby("naissance");
+
+    const state = (await (
+      await get(hote, `/api/sessions/${sessionId}/state`)
+    ).json()) as Record<string, unknown>;
+    expect(state.status).toBe("lobby");
+    expect(state.mode).toBe("table");
+
+    // Aucune question de mise en place n'a été calculée : le tri des zones
+    // floues attend le lancement. Un lobby ne doit RIEN coûter — sinon on
+    // paierait la mise en place de parties qui ne commenceront jamais.
+    // (assertAnthropicMockConsumed en afterEach garantit qu'aucun appel
+    // mocké n'a été nécessaire jusqu'ici.)
+    const { setup_questions } = (await (
+      await post(hote, `/api/sessions/${sessionId}/start`)
+    ).json()) as { setup_questions: string[] };
+    expect(setup_questions).toEqual([]);
+  });
+
+  it("refuse la mise en place tant que la partie n'est pas lancée", async () => {
+    const { hote, sessionId } = await lobby("avant");
+    const res = await post(hote, `/api/sessions/${sessionId}/setup`, {
+      answers: [],
+    });
+    expect(res.status).toBe(409);
+    expect((await res.json()) as { status: string }).toMatchObject({
+      error: "invalid_status",
+      status: "lobby",
+    });
+  });
+
+  it("un membre sans personnage bloque le lancement, en se nommant", async () => {
+    const { hote, sessionId, bibleId } = await lobby("blocage");
+    const { code } = (await (
+      await post(hote, `/api/sessions/${sessionId}/invite`)
+    ).json()) as { code: string };
+    const joueur = await login("blocage-joueur@example.com");
+    await post(joueur, "/api/sessions/join", { code });
+
+    const refus = await post(hote, `/api/sessions/${sessionId}/start`);
+    expect(refus.status).toBe(409);
+    const body = (await refus.json()) as {
+      error: string;
+      members: Array<{ display_name: string }>;
+    };
+    expect(body.error).toBe("members_without_character");
+    // Le message est exploitable : on sait QUI on attend.
+    expect(body.members[0].display_name).toBe("blocage-joueur@example.com");
+
+    // L'invité s'assoit avec une fiche créée dans l'univers de l'hôte —
+    // sans quoi le lobby serait un cul-de-sac.
+    const charRes = await post(joueur, "/api/characters", {
+      bible_id: bibleId,
+      name: "Mira",
+      sheet_json: { pouvoir: "lecture des vents" },
+    });
+    expect(charRes.status).toBe(201);
+    const { id: mira } = (await charRes.json()) as { id: string };
+    const assis = await SELF.fetch(
+      `${BASE}/api/sessions/${sessionId}/members/me`,
+      {
+        method: "PUT",
+        headers: { "content-type": "application/json", cookie: joueur },
+        body: JSON.stringify({ character_id: mira }),
+      },
+    );
+    expect(assis.status).toBe(200);
+
+    const lance = await post(hote, `/api/sessions/${sessionId}/start`);
+    expect(lance.status).toBe(200);
+    expect(((await lance.json()) as { status: string }).status).toBe("setup");
+  });
+
+  it("réserve le lancement à l'hôte", async () => {
+    const { hote, sessionId } = await lobby("hote-only");
+    const { code } = (await (
+      await post(hote, `/api/sessions/${sessionId}/invite`)
+    ).json()) as { code: string };
+    const joueur = await login("hote-only-joueur@example.com");
+    await post(joueur, "/api/sessions/join", { code });
+
+    const res = await post(joueur, `/api/sessions/${sessionId}/start`);
+    expect(res.status).toBe(403);
+    expect(((await res.json()) as { error: string }).error).toBe("host_only");
+  });
+
+  it("refuse un personnage qui n'est pas le sien ou pas de cet univers", async () => {
+    const { hote, sessionId } = await lobby("fiche");
+    const autre = await login("fiche-autre@example.com");
+    const autreBible = await post(autre, "/api/bibles", {
+      markdown: "# Autre monde\n\nRien à voir.",
+    });
+    const { id: autreBibleId } = (await autreBible.json()) as { id: string };
+    const charRes = await post(autre, "/api/characters", {
+      bible_id: autreBibleId,
+      name: "Étranger",
+      sheet_json: {},
+    });
+    const { id: etranger } = (await charRes.json()) as { id: string };
+
+    const res = await SELF.fetch(
+      `${BASE}/api/sessions/${sessionId}/members/me`,
+      {
+        method: "PUT",
+        headers: { "content-type": "application/json", cookie: hote },
+        body: JSON.stringify({ character_id: etranger }),
+      },
+    );
+    expect(res.status).toBe(404);
+  });
+
+  it("une session solo ne passe jamais par le lobby", async () => {
+    const { cookie, sessionId } = await table("solo-lobby@example.com", "solo");
+    const state = (await (
+      await get(cookie, `/api/sessions/${sessionId}/state`)
+    ).json()) as Record<string, unknown>;
+    expect(state.mode).toBe("solo");
+    expect(state.status).toBe("playing");
+
+    const { status } = (await env.DB.prepare(
+      `SELECT status FROM game_sessions WHERE id = ?`,
+    )
+      .bind(sessionId)
+      .first<{ status: string }>())!;
+    expect(status).toBe("playing");
   });
 });

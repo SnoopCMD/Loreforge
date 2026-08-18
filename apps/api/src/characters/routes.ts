@@ -6,7 +6,7 @@ import { Hono } from "hono";
 import type { Context } from "hono";
 import type { AppEnv } from "../env";
 import { requireAuth } from "../auth/middleware";
-import { findOwnedBible, type BibleRow } from "../bibles/db";
+import { findPlayableBible, type BibleRow } from "../bibles/db";
 import { latestSheetSchema } from "./db";
 import { sanitizeSkills } from "../sessions/rules";
 import {
@@ -74,7 +74,13 @@ async function loadBibleFromBody(
   if (typeof body.bible_id !== "string") {
     return { ok: false, res: c.json({ error: "missing_bible_id" }, 400) };
   }
-  const bible = await findOwnedBible(c.env.DB, body.bible_id, c.get("user").id);
+  // Playable et non « owned » : un joueur invité crée son personnage dans
+  // l'univers de l'hôte. Le canon, lui, reste à son auteur.
+  const bible = await findPlayableBible(
+    c.env.DB,
+    body.bible_id,
+    c.get("user").id,
+  );
   if (!bible) {
     return { ok: false, res: c.json({ error: "bible_not_found" }, 404) };
   }
@@ -212,7 +218,7 @@ characters.get("/", async (c) => {
   if (!bibleId) return c.json({ error: "missing_bible_id" }, 400);
 
   const user = c.get("user");
-  const bible = await findOwnedBible(c.env.DB, bibleId, user.id);
+  const bible = await findPlayableBible(c.env.DB, bibleId, user.id);
   if (!bible) return c.json({ error: "bible_not_found" }, 404);
 
   const { results } = await c.env.DB.prepare(

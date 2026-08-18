@@ -90,36 +90,74 @@ async function openSocket(
   };
 }
 
-/** Table de deux joueurs, scène 1 jouée. */
+async function put(
+  cookie: string,
+  path: string,
+  body: unknown,
+): Promise<Response> {
+  return SELF.fetch(`${BASE}${path}`, {
+    method: "PUT",
+    headers: { "content-type": "application/json", cookie },
+    body: JSON.stringify(body),
+  });
+}
+
+async function createCharacter(
+  cookie: string,
+  bibleId: string,
+  name: string,
+): Promise<string> {
+  const res = await post(cookie, "/api/characters", {
+    bible_id: bibleId,
+    name,
+    sheet_json: { pouvoir: "marche-faille", temperament: "taciturne" },
+  });
+  return ((await res.json()) as { id: string }).id;
+}
+
+/**
+ * Table de deux joueurs, scène 1 jouée. Le parcours complet passe par le
+ * lobby : une table naît en lobby, chacun s'assoit avec sa fiche, l'hôte
+ * lance, et c'est seulement là que le premier appel au modèle a lieu.
+ */
 async function tableOfTwo(prefix: string): Promise<{
   hote: string;
   joueur: string;
   sessionId: string;
+  bibleId: string;
 }> {
   const hote = await login(`${prefix}-hote@example.com`);
   const bibleRes = await post(hote, "/api/bibles", {
     markdown: "# Les Mondes Fêlés\n\nLa magie vient des failles.",
   });
   const { id: bibleId } = (await bibleRes.json()) as { id: string };
+  const kael = await createCharacter(hote, bibleId, `${prefix}-Kael`);
+
   const createRes = await post(hote, "/api/sessions", {
     bible_id: bibleId,
+    character_id: kael,
     format: "campaign",
     mode: "table",
   });
   const { session_id } = (await createRes.json()) as { session_id: string };
-
-  mockAnthropicStream(["La brume s'ouvre. Que fais-tu ?"]);
-  await (
-    await post(hote, `/api/sessions/${session_id}/setup`, { answers: [] })
-  ).text();
 
   const { code } = (await (
     await post(hote, `/api/sessions/${session_id}/invite`)
   ).json()) as { code: string };
   const joueur = await login(`${prefix}-joueur@example.com`);
   await post(joueur, "/api/sessions/join", { code });
+  const mira = await createCharacter(joueur, bibleId, `${prefix}-Mira`);
+  await put(joueur, `/api/sessions/${session_id}/members/me`, {
+    character_id: mira,
+  });
 
-  return { hote, joueur, sessionId: session_id };
+  await post(hote, `/api/sessions/${session_id}/start`);
+  mockAnthropicStream(["La brume s'ouvre. Que faites-vous ?"]);
+  await (
+    await post(hote, `/api/sessions/${session_id}/setup`, { answers: [] })
+  ).text();
+
+  return { hote, joueur, sessionId: session_id, bibleId };
 }
 
 describe("lot 8.2 — l'upgrade est le seul point d'authentification", () => {
@@ -272,7 +310,7 @@ describe("lot 8.2 — diffusion et présence", () => {
 });
 
 describe("lot 8.3 — l'état de jeu appartient à chaque personnage", () => {
-  /** Table où chaque joueur incarne sa propre fiche. */
+  /** Table où chaque joueur incarne sa propre fiche, déjà lancée. */
   async function tableWithCharacters(prefix: string): Promise<{
     hote: string;
     joueur: string;
@@ -280,49 +318,17 @@ describe("lot 8.3 — l'état de jeu appartient à chaque personnage", () => {
     kael: string;
     mira: string;
   }> {
-    const hote = await login(`${prefix}-hote@example.com`);
-    const bibleRes = await post(hote, "/api/bibles", {
-      markdown: "# Les Mondes Fêlés\n\nLa magie vient des failles.",
-    });
-    const { id: bibleId } = (await bibleRes.json()) as { id: string };
-
-    const kaelRes = await post(hote, "/api/characters", {
-      bible_id: bibleId,
-      name: "Kael",
-      sheet_json: { pouvoir: "marche-faille", temperament: "taciturne" },
-    });
-    const { id: kael } = (await kaelRes.json()) as { id: string };
-
-    const createRes = await post(hote, "/api/sessions", {
-      bible_id: bibleId,
-      character_id: kael,
-      format: "campaign",
-      mode: "table",
-    });
-    const { session_id } = (await createRes.json()) as { session_id: string };
-
-    mockAnthropicStream(["La brume s'ouvre. Que faites-vous ?"]);
-    await (
-      await post(hote, `/api/sessions/${session_id}/setup`, { answers: [] })
-    ).text();
-
-    const { code } = (await (
-      await post(hote, `/api/sessions/${session_id}/invite`)
-    ).json()) as { code: string };
-    const joueur = await login(`${prefix}-joueur@example.com`);
-    await post(joueur, "/api/sessions/join", { code });
-
-    // Mira appartient à l'invité et rejoint la table.
-    const miraRes = await post(joueur, "/api/characters", {
-      bible_id: bibleId,
-      name: "Mira",
-      sheet_json: { pouvoir: "lecture des vents", temperament: "curieuse" },
-    });
-    const mira =
-      miraRes.status === 201
-        ? ((await miraRes.json()) as { id: string }).id
-        : "";
-    return { hote, joueur, sessionId: session_id, kael, mira };
+    const t = await tableOfTwo(prefix);
+    const { results } = await env.DB.prepare(
+      `SELECT role, character_id FROM session_members WHERE session_id = ?`,
+    )
+      .bind(t.sessionId)
+      .all<{ role: string; character_id: string }>();
+    return {
+      ...t,
+      kael: results.find((r) => r.role === "host")!.character_id,
+      mira: results.find((r) => r.role === "player")!.character_id,
+    };
   }
 
   it("expose l'état de chaque personnage, sans casser les champs historiques", async () => {
@@ -348,15 +354,6 @@ describe("lot 8.3 — l'état de jeu appartient à chaque personnage", () => {
   it("dépense le Souffle du joueur qui agit, pas celui de la table", async () => {
     const { hote, joueur, sessionId, kael, mira } =
       await tableWithCharacters("souffle");
-    if (!mira) return; // fiche non créée : rien à prouver
-
-    // L'invité s'assoit avec Mira.
-    await env.DB.prepare(
-      `UPDATE session_members SET character_id = ? WHERE session_id = ? AND role = 'player'`,
-    )
-      .bind(mira, sessionId)
-      .run();
-
     mockAnthropicStream([
       "Mira force le passage. ",
       '<souffle delta="-1"/>',
@@ -382,13 +379,6 @@ describe("lot 8.3 — l'état de jeu appartient à chaque personnage", () => {
   it("laisse deux jets en attente coexister sur la même table", async () => {
     const { hote, joueur, sessionId, kael, mira } =
       await tableWithCharacters("jets");
-    if (!mira) return;
-    await env.DB.prepare(
-      `UPDATE session_members SET character_id = ? WHERE session_id = ? AND role = 'player'`,
-    )
-      .bind(mira, sessionId)
-      .run();
-
     mockAnthropicStream([
       'Kael s\'élance. <roll reason="sauter la faille" difficulty="normal" stance="neutral" dice="1" bonuses=""/>',
     ]);
@@ -434,14 +424,7 @@ describe("lot 8.3 — l'état de jeu appartient à chaque personnage", () => {
   });
 
   it("nomme les personnages au MJ dès qu'ils sont plusieurs", async () => {
-    const { hote, sessionId, mira } = await tableWithCharacters("roster");
-    if (!mira) return;
-    await env.DB.prepare(
-      `UPDATE session_members SET character_id = ? WHERE session_id = ? AND role = 'player'`,
-    )
-      .bind(mira, sessionId)
-      .run();
-
+    const { hote, sessionId } = await tableWithCharacters("roster");
     let envoye = "";
     const realFetch = globalThis.fetch;
     globalThis.fetch = (async (input: RequestInfo | URL, init?: RequestInit) => {
@@ -470,8 +453,8 @@ describe("lot 8.3 — l'état de jeu appartient à chaque personnage", () => {
       system: Array<{ text: string }>;
       messages: Array<{ content: unknown }>;
     };
-    expect(payload.system[0].text).not.toContain("Mira");
-    expect(JSON.stringify(payload.messages)).toContain("Kael —");
-    expect(JSON.stringify(payload.messages)).toContain("Mira —");
+    expect(payload.system[0].text).not.toContain("roster-Mira");
+    expect(JSON.stringify(payload.messages)).toContain("roster-Kael —");
+    expect(JSON.stringify(payload.messages)).toContain("roster-Mira —");
   });
 });

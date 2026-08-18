@@ -14,6 +14,7 @@
 //   POST /act/narrate?index=N      → JSON {act} (récit pour le joueur, 7.3)
 //   GET  /act/audio?index=N        → MP3 (récit lu, stocké en R2, 7.3)
 //   GET  /ws                       → upgrade WebSocket (table partagée, 8.2)
+//   POST /start                    → JSON {status} (l'hôte lance, lot 8.4)
 //   POST /destroy                  → JSON {ok} (purge totale, session supprimée)
 
 import { DurableObject } from "cloudflare:workers";
@@ -183,7 +184,14 @@ interface SessionMeta {
   authorFeedback: string[];
   format: string;
   trame: string | null;
-  status: "setup" | "playing" | "finished";
+  /**
+   * "lobby" précède "setup" : les joueurs se retrouvent AVANT que la partie ne
+   * démarre. Une session solo saute ce statut — son parcours ne change pas
+   * d'un pas.
+   */
+  status: "lobby" | "setup" | "playing" | "finished";
+  /** "solo" | "table" — pilote la politique de tour, l'UI et les permissions. */
+  mode: string;
 }
 
 interface StoredTurn {
@@ -237,6 +245,16 @@ interface InitPayload {
   characterId: string | null;
   format: string;
   trame: string | null;
+  mode?: string;
+}
+
+/** Corps JSON facultatif : `null` plutôt qu'une exception s'il est absent. */
+async function readJson(request: Request): Promise<unknown> {
+  try {
+    return await request.json();
+  } catch {
+    return null;
+  }
 }
 
 function json(body: unknown, status = 200): Response {
@@ -333,7 +351,9 @@ export class GameSession extends DurableObject<Env> {
         return await this.turn(meta, await request.json(), actor);
       }
       if (request.method === "POST" && path === "/roll") {
-        return await this.roll(meta, await request.json(), actor);
+        // Un jet demandé par le MJ n'a rien à transmettre : le corps est
+        // facultatif, et une requête sans corps ne doit pas rendre un 500.
+        return await this.roll(meta, await readJson(request), actor);
       }
       if (request.method === "POST" && path === "/finish") {
         return await this.finish(meta);
@@ -349,6 +369,9 @@ export class GameSession extends DurableObject<Env> {
       }
       if (request.method === "GET" && path === "/ws") {
         return await this.acceptSocket(meta, request);
+      }
+      if (request.method === "POST" && path === "/start") {
+        return await this.start(meta);
       }
       return json({ error: "not_found" }, 404);
     } catch (err) {
@@ -461,15 +484,21 @@ export class GameSession extends DurableObject<Env> {
       authorFeedback,
       format: payload.format,
       trame: payload.trame,
-      status: "setup",
+      // Une table naît en lobby ; le solo démarre directement sa mise en place.
+      status: payload.mode === "table" ? "lobby" : "setup",
+      mode: payload.mode === "table" ? "table" : "solo",
     };
     const state = initialGameState(payload.characterId);
     // Arbre de compétences persistant : les acquis repartent avec LE
     // personnage, pas avec la session.
     characterState(state, payload.characterId).skills = characterSkills;
-    // Les lacunes retenues sont conservées telles quelles : chaque réponse du
-    // joueur pourra être reliée à sa zone floue d'origine au /finish.
-    const setupGaps = await this.pickSetupGaps(meta, openGaps);
+
+    // Un lobby ne doit RIEN coûter : tant que l'hôte n'a pas lancé, aucun
+    // appel au modèle n'est fait. Le tri des zones floues attend /start —
+    // sinon on paierait la mise en place de parties qui ne commenceront
+    // jamais, et on la paierait avant même que les joueurs soient arrivés.
+    const setupGaps =
+      meta.status === "lobby" ? [] : await this.pickSetupGaps(meta, openGaps);
     const questions = setupGaps.map(gapQuestion);
 
     this.canonCache = bible.canon_md;
@@ -492,6 +521,52 @@ export class GameSession extends DurableObject<Env> {
     await this.syncKV(meta, state);
 
     return json({ setup_questions: questions });
+  }
+
+  // ── Lancement de la partie (lot 8.4) ──────────────────────────────────
+
+  /**
+   * L'hôte lance (ou relance) la table. Trois cas, un seul geste :
+   * - depuis le lobby : c'est ICI que le tri des zones floues a lieu, donc le
+   *   premier appel au modèle de toute la session ;
+   * - depuis une partie en cours : rien à calculer, on rassemble simplement
+   *   la table autour de l'écran de jeu ;
+   * - une fois terminée : il n'y a plus rien à lancer.
+   */
+  private async start(meta: SessionMeta): Promise<Response> {
+    if (meta.status === "finished") {
+      return json({ error: "invalid_status", status: meta.status }, 409);
+    }
+
+    if (meta.status === "lobby") {
+      const openGaps =
+        (await this.ctx.storage.get<RichnessGap[]>("open_gaps")) ?? [];
+      const setupGaps = await this.pickSetupGaps(meta, openGaps);
+      const questions = setupGaps.map(gapQuestion);
+      meta.status = "setup";
+      await this.ctx.storage.put({
+        meta,
+        setup_gaps: setupGaps,
+        setup_questions: questions,
+      });
+      await this.env.DB.prepare(
+        `UPDATE game_sessions SET status = 'setup' WHERE id = ?`,
+      )
+        .bind(meta.sessionId)
+        .run();
+      await this.syncKV(meta, await this.loadState(meta));
+      this.broadcast("session_started", {
+        status: meta.status,
+        setup_questions: questions,
+      });
+      return json({ status: meta.status, setup_questions: questions });
+    }
+
+    // Reprise : la table se rassemble, rien ne change côté serveur.
+    this.broadcast("session_started", { status: meta.status });
+    const questions =
+      (await this.ctx.storage.get<string[]>("setup_questions")) ?? [];
+    return json({ status: meta.status, setup_questions: questions });
   }
 
   // ── Fil rouge → questions recentrées ──────────────────────────────────
@@ -660,7 +735,7 @@ export class GameSession extends DurableObject<Env> {
     // Les conditions du jet viennent du MJ (état serveur) : le client ne peut
     // pas se choisir une difficulté ni un avantage. Sa `reason` ne sert que
     // pour un jet libre, hors demande du MJ.
-    const bodyReason = (body as { reason?: unknown }).reason;
+    const bodyReason = (body as { reason?: unknown } | null)?.reason;
     const request: RollRequest = me.pending_roll
       ? normalizeRollRequest(me.pending_roll)
       : normalizeRollRequest(
@@ -769,6 +844,7 @@ export class GameSession extends DurableObject<Env> {
     return {
       session_id: meta.sessionId,
       status: meta.status,
+      mode: meta.mode ?? "solo",
       format: meta.format,
       trame: meta.trame,
       character: meta.characterName

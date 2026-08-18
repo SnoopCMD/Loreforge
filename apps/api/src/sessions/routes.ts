@@ -116,7 +116,7 @@ sessions.post("/", async (c) => {
     c.env.DB.prepare(
       `INSERT INTO game_sessions
          (id, bible_id, user_id, character_id, format, trame, status, created_at, palette_json, mode)
-       VALUES (?, ?, ?, ?, ?, ?, 'setup', ?, ?, ?)`,
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
     ).bind(
       sessionId,
       bible.id,
@@ -124,6 +124,9 @@ sessions.post("/", async (c) => {
       characterId,
       body.format,
       trame,
+      // Une table se retrouve d'abord dans un lobby ; le solo attaque
+      // directement sa mise en place.
+      mode === "table" ? "lobby" : "setup",
       now,
       paletteJson,
       mode,
@@ -146,6 +149,7 @@ sessions.post("/", async (c) => {
       characterId,
       format: body.format,
       trame,
+      mode,
     }),
   });
   if (!res.ok) {
@@ -439,6 +443,72 @@ sessions.get("/:id/ws", async (c) => {
   return stubFor(c, found.row.id).fetch(
     new Request("https://do/ws", { method: "GET", headers }),
   );
+});
+
+// POST /api/sessions/:id/start (hôte) — lance la partie depuis le lobby, ou
+// rassemble la table sur une partie déjà en cours.
+sessions.post("/:id/start", async (c) => {
+  const found = await access(c, { host: true });
+  if (denied(found)) return found;
+
+  // Un membre sans personnage bloque le lancement, avec de quoi agir : dire
+  // « il manque quelqu'un » sans dire qui ne sert à rien.
+  const members = await listMembers(c.env.DB, found.row.id);
+  const sansFiche = members.filter((m) => !m.character_id);
+  if (sansFiche.length > 0) {
+    return c.json(
+      {
+        error: "members_without_character",
+        members: sansFiche.map((m) => ({
+          user_id: m.user_id,
+          display_name: m.display_name ?? m.email,
+        })),
+      },
+      409,
+    );
+  }
+
+  return stubFor(c, found.row.id).fetch("https://do/start", { method: "POST" });
+});
+
+// PUT /api/sessions/:id/members/me — je choisis (ou change) mon personnage.
+// Réservé au lobby : changer de fiche en pleine partie casserait l'état de jeu
+// indexé par personnage.
+sessions.put("/:id/members/me", async (c) => {
+  const found = await access(c);
+  if (denied(found)) return found;
+  if (found.row.status !== "lobby" && found.row.status !== "setup") {
+    return c.json({ error: "invalid_status", status: found.row.status }, 409);
+  }
+
+  let body: { character_id?: unknown };
+  try {
+    body = await c.req.json();
+  } catch {
+    return c.json({ error: "invalid_json" }, 400);
+  }
+  const characterId = body.character_id;
+  if (typeof characterId !== "string") {
+    return c.json({ error: "invalid_character_id" }, 400);
+  }
+
+  // La fiche doit appartenir au joueur ET à l'univers joué : on ne s'assoit
+  // pas à une table avec le personnage d'un autre monde.
+  const character = await c.env.DB.prepare(
+    `SELECT id FROM characters WHERE id = ? AND user_id = ? AND bible_id = ?`,
+  )
+    .bind(characterId, c.get("user").id, found.row.bible_id)
+    .first();
+  if (!character) return c.json({ error: "character_not_found" }, 404);
+
+  await c.env.DB.prepare(
+    `UPDATE session_members SET character_id = ?
+     WHERE session_id = ? AND user_id = ?`,
+  )
+    .bind(characterId, found.row.id, c.get("user").id)
+    .run();
+
+  return c.json({ ok: true, character_id: characterId });
 });
 
 sessions.post("/:id/trame", proxy("/trame", { host: true }));
