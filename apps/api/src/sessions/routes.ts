@@ -234,10 +234,25 @@ function proxy(path: string, opts: { host?: boolean } = {}) {
     const found = await access(c, opts);
     if (denied(found)) return found;
 
+    // Le DO a besoin de savoir QUI agit : la narration part en SSE à l'auteur
+    // du tour et en WebSocket au reste de la table, et l'auteur ne doit pas
+    // recevoir les deux. Ces en-têtes sont posés par le Worker, seul à pouvoir
+    // joindre le DO — ils ne viennent jamais du client.
+    const headers = new Headers(c.req.raw.headers);
+    headers.set("x-lf-user-id", c.get("user").id);
+    headers.set("x-lf-role", found.role);
+    headers.set("x-lf-character-id", found.characterId ?? "");
+
     const stub = c.env.GAME_SESSIONS.get(
       c.env.GAME_SESSIONS.idFromString(found.row.id),
     );
-    return stub.fetch(new Request(`https://do${path}`, c.req.raw));
+    return stub.fetch(
+      new Request(`https://do${path}`, {
+        method: c.req.method,
+        headers,
+        body: c.req.raw.body,
+      }),
+    );
   };
 }
 
@@ -401,6 +416,29 @@ sessions.delete("/:id/members/:userId", async (c) => {
     .run();
   if (!res.meta.changes) return c.json({ error: "not_a_member" }, 404);
   return c.json({ ok: true });
+});
+
+// GET /api/sessions/:id/ws — la table en direct.
+//
+// L'authentification se fait ICI, sur la requête d'upgrade : c'est une requête
+// HTTP same-origin normale, le cookie y est présent, requireAuth s'y applique
+// tel quel. On ne fait donc JAMAIS confiance à un identifiant envoyé dans un
+// message WebSocket ensuite — l'identité est figée au moment de l'upgrade.
+sessions.get("/:id/ws", async (c) => {
+  if (c.req.header("upgrade")?.toLowerCase() !== "websocket") {
+    return c.json({ error: "expected_websocket" }, 426);
+  }
+  const found = await access(c);
+  if (denied(found)) return found;
+
+  const headers = new Headers(c.req.raw.headers);
+  headers.set("x-lf-user-id", c.get("user").id);
+  headers.set("x-lf-role", found.role);
+  headers.set("x-lf-character-id", found.characterId ?? "");
+
+  return stubFor(c, found.row.id).fetch(
+    new Request("https://do/ws", { method: "GET", headers }),
+  );
 });
 
 sessions.post("/:id/trame", proxy("/trame", { host: true }));

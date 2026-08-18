@@ -13,6 +13,7 @@
 //   POST /act/close                → JSON {act} (clôt l'acte courant, lot 7.1)
 //   POST /act/narrate?index=N      → JSON {act} (récit pour le joueur, 7.3)
 //   GET  /act/audio?index=N        → MP3 (récit lu, stocké en R2, 7.3)
+//   GET  /ws                       → upgrade WebSocket (table partagée, 8.2)
 //   POST /destroy                  → JSON {ok} (purge totale, session supprimée)
 
 import { DurableObject } from "cloudflare:workers";
@@ -192,6 +193,16 @@ interface StoredTurn {
  */
 type ClosedAct = ClosedActSummary;
 
+/**
+ * Ce qu'un socket sait de lui-même. Sérialisé sur le socket (et non gardé en
+ * mémoire) pour survivre à l'hibernation du Durable Object.
+ */
+interface SocketInfo {
+  userId: string;
+  role: string;
+  characterId: string | null;
+}
+
 /** Entrée de cache d'une fiche lore : la fiche + l'empreinte de ses sources. */
 interface LoreCacheEntry {
   signature: string;
@@ -286,6 +297,10 @@ export class GameSession extends DurableObject<Env> {
       const meta = await this.ctx.storage.get<SessionMeta>("meta");
       if (!meta) return json({ error: "session_not_initialized" }, 409);
 
+      // Qui agit. Posé par le Worker après vérification du cookie ET de
+      // l'appartenance ; jamais lu depuis le corps de la requête.
+      const actor = request.headers.get("x-lf-user-id");
+
       if (request.method === "GET" && path === "/lore") {
         return await this.lore(meta, new URL(request.url));
       }
@@ -293,13 +308,13 @@ export class GameSession extends DurableObject<Env> {
         return await this.setTrame(meta, await request.json());
       }
       if (request.method === "POST" && path === "/setup") {
-        return await this.setup(meta, await request.json());
+        return await this.setup(meta, await request.json(), actor);
       }
       if (request.method === "POST" && path === "/turn") {
-        return await this.turn(meta, await request.json());
+        return await this.turn(meta, await request.json(), actor);
       }
       if (request.method === "POST" && path === "/roll") {
-        return await this.roll(meta, await request.json());
+        return await this.roll(meta, await request.json(), actor);
       }
       if (request.method === "POST" && path === "/finish") {
         return await this.finish(meta);
@@ -312,6 +327,9 @@ export class GameSession extends DurableObject<Env> {
       }
       if (request.method === "GET" && path === "/act/audio") {
         return await this.actAudio(meta, new URL(request.url));
+      }
+      if (request.method === "GET" && path === "/ws") {
+        return await this.acceptSocket(meta, request);
       }
       return json({ error: "not_found" }, 404);
     } catch (err) {
@@ -494,7 +512,11 @@ export class GameSession extends DurableObject<Env> {
 
   // ── Mise en place → scène 1 ───────────────────────────────────────────
 
-  private async setup(meta: SessionMeta, body: unknown): Promise<Response> {
+  private async setup(
+    meta: SessionMeta,
+    body: unknown,
+    actor: string | null = null,
+  ): Promise<Response> {
     if (meta.status !== "setup") {
       return json({ error: "invalid_status", status: meta.status }, 409);
     }
@@ -549,13 +571,17 @@ export class GameSession extends DurableObject<Env> {
       state,
       { stored, sent: await this.withTurnContext(meta, state, stored) },
       null,
-      { becomePlaying: true },
+      { becomePlaying: true, authorUserId: actor },
     );
   }
 
   // ── Tour de jeu ───────────────────────────────────────────────────────
 
-  private async turn(meta: SessionMeta, body: unknown): Promise<Response> {
+  private async turn(
+    meta: SessionMeta,
+    body: unknown,
+    actor: string | null = null,
+  ): Promise<Response> {
     if (meta.status !== "playing") {
       return json({ error: "invalid_status", status: meta.status }, 409);
     }
@@ -588,12 +614,17 @@ export class GameSession extends DurableObject<Env> {
       state,
       { stored, sent: await this.withTurnContext(meta, state, stored) },
       consumedRoll,
+      { authorUserId: actor },
     );
   }
 
   // ── Jet de d6 serveur ─────────────────────────────────────────────────
 
-  private async roll(meta: SessionMeta, body: unknown): Promise<Response> {
+  private async roll(
+    meta: SessionMeta,
+    body: unknown,
+    actor: string | null = null,
+  ): Promise<Response> {
     if (meta.status !== "playing") {
       return json({ error: "invalid_status", status: meta.status }, 409);
     }
@@ -623,6 +654,9 @@ export class GameSession extends DurableObject<Env> {
 
     await this.ctx.storage.put("state", state);
     await this.syncKV(meta, state);
+    // Un jet se regarde à plusieurs : le lanceur reçoit le résultat dans sa
+    // réponse, la table le voit tomber en direct.
+    this.broadcast("roll", result, { excludeUser: actor });
     return json(result);
   }
 
@@ -991,6 +1025,9 @@ export class GameSession extends DurableObject<Env> {
     console.log(
       `[game-session] acte ${actIndex} clos (${reason}) ${meta.sessionId} : tours ${turnStart}-${turnEnd}`,
     );
+    // Clôture manuelle : la table l'apprend par le socket. En clôture forcée,
+    // pump() diffuse déjà l'event sur le flux du tour — d'où l'exclusion.
+    if (reason === "manual") this.broadcast("act_closed", { act, forced: false });
     return json({ act, closed: true, reason });
   }
 
@@ -1262,6 +1299,152 @@ export class GameSession extends DurableObject<Env> {
     }
   }
 
+  // ── Table partagée : WebSocket, hibernation, présence (lot 8.2) ────────
+  //
+  // Une session de JDR reste ouverte des heures, avec de longues pauses. Sans
+  // l'API d'hibernation, le DO resterait facturé pendant tout ce temps et
+  // perdrait ses sockets à chaque réveil. On n'installe donc AUCUN handler
+  // d'événement en mémoire : c'est la runtime qui rappelle webSocketMessage /
+  // webSocketClose / webSocketError, y compris après une hibernation.
+
+  /**
+   * Upgrade WebSocket. L'identité vient des en-têtes posés par le Worker, qui
+   * a déjà vérifié le cookie ET l'appartenance : rien de ce qui transite
+   * ensuite dans les messages ne peut changer qui l'on est.
+   */
+  private async acceptSocket(
+    meta: SessionMeta,
+    request: Request,
+  ): Promise<Response> {
+    if (request.headers.get("upgrade")?.toLowerCase() !== "websocket") {
+      return json({ error: "expected_websocket" }, 426);
+    }
+    const userId = request.headers.get("x-lf-user-id");
+    const role = request.headers.get("x-lf-role") === "host" ? "host" : "player";
+    const characterId = request.headers.get("x-lf-character-id") || null;
+    if (!userId) return json({ error: "unauthenticated_socket" }, 401);
+
+    const pair = new WebSocketPair();
+    const [client, server] = Object.values(pair);
+
+    // Les tags sont interrogeables sans réveiller l'attachement ; ils servent
+    // à cibler ou exclure les sockets d'un utilisateur donné.
+    this.ctx.acceptWebSocket(server, [`user:${userId}`, `role:${role}`]);
+    // L'attachement, lui, survit à l'hibernation : au réveil, la runtime rend
+    // des sockets nus, et c'est la seule façon de savoir qui est au bout.
+    server.serializeAttachment({ userId, role, characterId } satisfies SocketInfo);
+
+    const state = (await this.ctx.storage.get<GameState>("state"))!;
+    // Un socket qui arrive — ou qui revient d'une hibernation, d'un écran
+    // verrouillé — repart de l'état courant, sans rien rejouer.
+    this.sendTo(server, "state", await this.publicState(meta, state));
+    this.sendTo(server, "presence", { members: this.presence() });
+    this.broadcast("member_joined", { user_id: userId, role }, { exclude: server });
+
+    return new Response(null, { status: 101, webSocket: client });
+  }
+
+  /** Identité attachée à un socket, relue après hibernation. */
+  private socketInfo(ws: WebSocket): SocketInfo | null {
+    try {
+      return (ws.deserializeAttachment() as SocketInfo) ?? null;
+    } catch {
+      return null;
+    }
+  }
+
+  /** Membres actuellement connectés, dédupliqués (un joueur, plusieurs onglets). */
+  private presence(): Array<{ user_id: string; role: string }> {
+    const seen = new Map<string, { user_id: string; role: string }>();
+    for (const ws of this.ctx.getWebSockets()) {
+      const info = this.socketInfo(ws);
+      if (info) seen.set(info.userId, { user_id: info.userId, role: info.role });
+    }
+    return [...seen.values()];
+  }
+
+  private sendTo(ws: WebSocket, event: string, data: unknown): void {
+    try {
+      ws.send(JSON.stringify({ event, data }));
+    } catch (err) {
+      // Socket mort : jamais fatal, et surtout jamais propagé à l'appelant.
+      console.error(`[game-session] envoi WS :`, err);
+    }
+  }
+
+  /**
+   * Diffuse un event à toute la table. Une exception d'envoi sur un client ne
+   * doit JAMAIS interrompre la narration des autres — d'où le try/catch par
+   * socket plutôt qu'un Promise.all qui échouerait en bloc.
+   *
+   * `excludeUser` sert au chemin SSE : l'auteur du tour reçoit déjà tout par
+   * son flux, il ne doit pas voir chaque event en double.
+   */
+  private broadcast(
+    event: string,
+    data: unknown,
+    opts: { exclude?: WebSocket; excludeUser?: string | null } = {},
+  ): void {
+    const payload = JSON.stringify({ event, data });
+    for (const ws of this.ctx.getWebSockets()) {
+      if (ws === opts.exclude) continue;
+      if (opts.excludeUser && this.socketInfo(ws)?.userId === opts.excludeUser) {
+        continue;
+      }
+      try {
+        ws.send(payload);
+      } catch (err) {
+        console.error("[game-session] diffusion WS :", err);
+      }
+    }
+  }
+
+  // Handlers d'hibernation : rappelés par la runtime, y compris au réveil.
+
+  async webSocketMessage(ws: WebSocket, message: string | ArrayBuffer): Promise<void> {
+    // Le seul message accepté est un battement de cœur. Aucune identité, aucun
+    // ordre de jeu ne transite par ici : l'authentification s'est faite à
+    // l'upgrade, et un message WS n'est pas une requête authentifiée.
+    if (typeof message !== "string") return;
+    try {
+      if ((JSON.parse(message) as { type?: string }).type === "ping") {
+        this.sendTo(ws, "pong", {});
+      }
+    } catch {
+      /* message illisible : ignoré */
+    }
+  }
+
+  async webSocketClose(ws: WebSocket): Promise<void> {
+    this.onSocketGone(ws);
+  }
+
+  async webSocketError(ws: WebSocket): Promise<void> {
+    this.onSocketGone(ws);
+  }
+
+  private onSocketGone(ws: WebSocket): void {
+    const info = this.socketInfo(ws);
+    if (!info) return;
+    // Le socket qui part est encore listé par getWebSockets() : on l'exclut
+    // pour ne pas annoncer présent quelqu'un qui vient de fermer son onglet.
+    const others = this.ctx
+      .getWebSockets()
+      .filter((other) => other !== ws)
+      .map((other) => this.socketInfo(other))
+      .filter((i): i is SocketInfo => i !== null);
+    const stillHere = others.some((i) => i.userId === info.userId);
+
+    // Plusieurs onglets pour un même joueur : il n'est parti que quand le
+    // dernier se ferme.
+    if (!stillHere) {
+      this.broadcast("member_left", { user_id: info.userId }, { exclude: ws });
+    }
+    const seen = new Map<string, { user_id: string; role: string }>();
+    for (const i of others) seen.set(i.userId, { user_id: i.userId, role: i.role });
+    this.broadcast("presence", { members: [...seen.values()] }, { exclude: ws });
+  }
+
   // ── Génération streamée (setup et turn) ───────────────────────────────
 
   private async generate(
@@ -1271,7 +1454,7 @@ export class GameSession extends DurableObject<Env> {
     // seule, persistée dans l'historique (préfixe stable → cache de prompt).
     text: { sent: string; stored: string },
     consumedRoll: RollResult | null = null,
-    opts: { becomePlaying?: boolean } = {},
+    opts: { becomePlaying?: boolean; authorUserId?: string | null } = {},
   ): Promise<Response> {
     if (!this.env.ANTHROPIC_API_KEY) {
       return json({ error: "narrator_not_configured" }, 503);
@@ -1290,6 +1473,7 @@ export class GameSession extends DurableObject<Env> {
       messages,
       consumedRoll,
       Boolean(opts.becomePlaying),
+      opts.authorUserId ?? null,
     );
 
     return new Response(readable, {
@@ -1310,13 +1494,20 @@ export class GameSession extends DurableObject<Env> {
     messages: Anthropic.MessageParam[],
     consumedRoll: RollResult | null,
     becomePlaying: boolean,
+    authorUserId: string | null,
   ): Promise<void> {
     const writer = writable.getWriter();
     const encoder = new TextEncoder();
-    const send = (event: string, data: unknown) =>
-      writer.write(
+    // Un seul geste, deux transports : le SSE pour l'auteur du tour (qui tient
+    // la requête ouverte) et le WebSocket pour le reste de la table. L'auteur
+    // est exclu de la diffusion, sinon il verrait tout en double s'il a aussi
+    // un socket ouvert.
+    const send = (event: string, data: unknown) => {
+      this.broadcast(event, data, { excludeUser: authorUserId });
+      return writer.write(
         encoder.encode(`event: ${event}\ndata: ${JSON.stringify(data)}\n\n`),
       );
+    };
 
     try {
       if (consumedRoll) await send("roll", consumedRoll);
