@@ -137,6 +137,8 @@ export function buildSetupQuestions(
 
 export interface SystemPromptInput {
   bibleTitle: string;
+  /** Table partagée : le MJ s'adresse à plusieurs personnages nommés. */
+  multiplayer?: boolean;
   canonMd: string;
   scores: RichnessScores | null;
   gaps: RichnessGap[];
@@ -300,7 +302,7 @@ Le joueur dispose de ${SOUFFLE_MAX} points de Souffle par session ; 1 point tran
 un échec en réussite ou dope un pouvoir. À 0, épuisement (malus narratif).
 Quand la fiction consomme ou rend du Souffle, émets <souffle delta="-1"/>
 (ou "+1") — le serveur tient le compte, ne l'annonce pas toi-même en chiffres.
-Aux ruptures de scène, émets <scene_break/>.
+Aux ruptures de scène, émets <scene_break/>.${input.multiplayer ? TABLE_RULES : ""}
 
 Partie : format ${input.format}.
 ${trameBlock}
@@ -358,6 +360,47 @@ pour le joueur — ne le recopie jamais, n'y fais jamais référence expliciteme
 - Jamais de contradiction avec le canon ni avec les faits établis en session.
 - Réponds en français, uniquement la narration (plus les balises prévues).`;
 }
+
+/**
+ * Règles propres à une table de plusieurs joueurs. Ce bloc est ajouté à la
+ * CONSTRUCTION du prompt système, donc une fois pour toute la session : il est
+ * stable, et le cache ephemeral tient. Le roster, lui, change au fil des
+ * arrivées et des départs — il voyage dans le contexte du tour, jamais ici.
+ */
+const TABLE_RULES = `
+
+== TABLE DE PLUSIEURS JOUEURS ==
+Tu ne t'adresses pas à un joueur mais à plusieurs personnages nommés, listés
+dans le CONTEXTE DU TOUR avec leur Souffle et leurs compétences. Répartis ton
+attention entre eux : sur quelques tours, chacun doit avoir eu une occasion
+d'agir, d'être vu et d'être en danger. Ne fusionne jamais deux personnages en
+un « vous » indistinct.
+
+Le message du tour te transmet les actions de chacun, attribuées par nom.
+Résous-les DANS LA MÊME narration, en tenant compte de leurs interactions
+(deux joueurs qui tentent la même chose, ou l'un qui contrarie l'autre).
+
+Quand une balise d'état concerne un personnage précis, dis lequel :
+  <souffle delta="-1" character="Mira"/>
+  <skill name="Crochetage" tier="apprentissage" character="Mira"/>
+  <roll reason="..." character="Mira" difficulty="normal" stance="neutral"
+        dice="2" bonuses="..." skills="..."/>
+Sans attribut character, la balise s'applique au personnage qui vient d'agir —
+donc n'omets l'attribut que s'il n'y a aucune ambiguïté.
+
+== RÉGIME DE TOUR ==
+C'est TOI qui décides comment le tour se résout, parce que tu es le seul à
+savoir quand une scène change de nature. Émets (hors narration, invisible) :
+  <turn_mode value="simultaneous"/>
+  <turn_mode value="sequential" order="Kaelen,Mira,Théa"/>
+- simultaneous : régime par DÉFAUT — dialogue, exploration, enquête. Chacun
+  propose son action, tu les résous ensemble.
+- sequential : combat, poursuite, toute scène où l'ordre compte. Un seul
+  joueur a la main à la fois, dans l'ordre que tu donnes. Donne cet ordre en
+  entier, avec les noms exacts des personnages. Si l'initiative doit être
+  tirée, demande d'abord les jets, puis fixe l'ordre au tour suivant.
+N'émets cette balise QUE lorsque le régime change : au début d'un combat, et à
+sa fin pour revenir en simultané. Pas à chaque tour.`;
 
 /**
  * Bloc d'état volatile injecté en tête du message joueur ENVOYÉ au modèle
@@ -674,4 +717,43 @@ export function buildNarratedFromSummary(contextSummary: string): string {
 ${contextSummary}
 
 ${NARRATED_ACT_MESSAGE}`;
+}
+
+
+// ── Tour à plusieurs (M8 lot 8.5) ─────────────────────────────────────────
+
+/** Une action soumise pour ce tour, telle qu'elle part au MJ. */
+export interface SubmittedAction {
+  characterName: string | null;
+  text: string;
+  /** Résultat de jet consommé par cette action, s'il y en a un. */
+  rollLine?: string | null;
+}
+
+/**
+ * Message utilisateur d'un tour de table : les actions de chacun, attribuées à
+ * son personnage. Une seule narration en sortira, qui devra toutes les
+ * référencer.
+ *
+ * Une action isolée retombe sur la forme mono-joueur, à l'octet près : le solo
+ * ne doit pas voir son prompt changer parce que le multi existe.
+ */
+export function buildTableTurnMessage(actions: SubmittedAction[]): string {
+  const usable = actions.filter((a) => a.text.trim() !== "" || a.rollLine);
+  if (usable.length === 0) return "";
+  if (usable.length === 1 && !usable[0].characterName) {
+    const only = usable[0];
+    return [only.rollLine, only.text.trim()].filter(Boolean).join("\n\n");
+  }
+
+  const lignes = usable.map((a) => {
+    const nom = a.characterName ?? "Le personnage";
+    const corps = a.text.trim() || "(aucune action déclarée)";
+    return [a.rollLine, `${nom} : ${corps}`].filter(Boolean).join("\n");
+  });
+
+  return `== ACTIONS DU TOUR ==
+${lignes.join("\n\n")}
+
+Résous ces actions dans une seule narration, en donnant sa place à chacun.`;
 }

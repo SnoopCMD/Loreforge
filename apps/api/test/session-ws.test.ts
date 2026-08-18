@@ -241,24 +241,32 @@ describe("lot 8.2 — diffusion et présence", () => {
     socketHote.events.length = 0;
     socketJoueur.events.length = 0;
 
-    mockAnthropicStream(["La porte cède. ", "Que faites-vous ?"]);
-    const sse = await post(hote, `/api/sessions/${sessionId}/turn`, {
+    // Régime simultané : tant que tous les connectés n'ont pas soumis, le
+    // tour attend. C'est la dernière soumission qui déclenche la narration.
+    const attente = await post(hote, `/api/sessions/${sessionId}/turn`, {
       player_input: "je pousse la porte",
+    });
+    expect(attente.status).toBe(202);
+    expect(((await attente.json()) as { status: string }).status).toBe("waiting");
+
+    mockAnthropicStream(["La porte cède. ", "Que faites-vous ?"]);
+    const sse = await post(joueur, `/api/sessions/${sessionId}/turn`, {
+      player_input: "je couvre ses arrières",
     });
     const texte = await sse.text();
     expect(texte).toContain("La porte cède.");
 
-    // Le joueur qui n'a pas agi reçoit tout par le socket…
-    await socketJoueur.waitFor("done");
-    const recu = socketJoueur.events
+    // L'hôte, qui ne tient aucun flux SSE, reçoit tout par le socket…
+    await socketHote.waitFor("done");
+    const recu = socketHote.events
       .filter((e) => e.event === "narration")
       .map((e) => e.data.text as string)
       .join("");
     expect(recu).toBe("La porte cède. Que faites-vous ?");
 
-    // …et l'auteur du tour, qui tient déjà le flux SSE, ne le reçoit pas en
-    // double sur son propre socket.
-    expect(socketHote.events.filter((e) => e.event === "narration")).toHaveLength(0);
+    // …et l'auteur de la dernière soumission, qui tient le flux SSE, ne le
+    // reçoit pas en double sur son propre socket.
+    expect(socketJoueur.events.filter((e) => e.event === "narration")).toHaveLength(0);
 
     socketHote.close();
     socketJoueur.close();
@@ -266,7 +274,11 @@ describe("lot 8.2 — diffusion et présence", () => {
 
   it("un socket mort n'interrompt pas la narration des autres", async () => {
     const { hote, joueur, sessionId } = await tableOfTwo("mort");
-    const vivant = await openSocket(joueur, sessionId);
+    // L'observateur est l'hôte : c'est lui qui doit continuer à tout recevoir.
+    const vivant = await openSocket(hote, sessionId);
+    // Le joueur garde un onglet valide en plus de celui qui va mourir : sans
+    // lui, il sortirait de la présence et le tour partirait tout seul.
+    const secondOnglet = await openSocket(joueur, sessionId);
     const mourant = await openSocket(joueur, sessionId);
     await vivant.waitFor("presence");
 
@@ -275,15 +287,20 @@ describe("lot 8.2 — diffusion et présence", () => {
     // qui ne doit pas emporter la narration des autres.
     mourant.ws.close(1000, "coupure");
 
-    mockAnthropicStream(["La suite arrive. Que faites-vous ?"]);
-    const sse = await post(hote, `/api/sessions/${sessionId}/turn`, {
+    await post(hote, `/api/sessions/${sessionId}/turn`, {
       player_input: "j'avance",
     });
-    expect((await sse.text())).toContain("La suite arrive.");
+    mockAnthropicStream(["La suite arrive. Que faites-vous ?"]);
+    const sse = await post(joueur, `/api/sessions/${sessionId}/turn`, {
+      player_input: "je suis",
+    });
+    expect(await sse.text()).toContain("La suite arrive.");
 
+    // Le socket resté valide a bien tout reçu, malgré le mort à côté.
     const done = await vivant.waitFor("done");
     expect(done.data.turn).toBe(2);
     vivant.close();
+    secondOnglet.close();
   });
 
   it("le SSE reste intact : une session solo ne voit rien changer", async () => {
@@ -354,9 +371,14 @@ describe("lot 8.3 — l'état de jeu appartient à chaque personnage", () => {
   it("dépense le Souffle du joueur qui agit, pas celui de la table", async () => {
     const { hote, joueur, sessionId, kael, mira } =
       await tableWithCharacters("souffle");
+    // Les deux soumettent : en régime simultané, c'est la dernière action qui
+    // déclenche la narration. Le MJ dit explicitement de qui il parle.
+    await post(hote, `/api/sessions/${sessionId}/turn`, {
+      player_input: "je regarde faire",
+    });
     mockAnthropicStream([
       "Mira force le passage. ",
-      '<souffle delta="-1"/>',
+      '<souffle delta="-1" character="souffle-Mira"/>',
       " Et toi, Kael ?",
     ]);
     await (
@@ -379,17 +401,14 @@ describe("lot 8.3 — l'état de jeu appartient à chaque personnage", () => {
   it("laisse deux jets en attente coexister sur la même table", async () => {
     const { hote, joueur, sessionId, kael, mira } =
       await tableWithCharacters("jets");
+    // Une seule narration, deux demandes de jet, une par personnage : c'est
+    // précisément ce qu'un état plat au niveau session rendait impossible.
+    await post(hote, `/api/sessions/${sessionId}/turn`, {
+      player_input: "je saute",
+    });
     mockAnthropicStream([
-      'Kael s\'élance. <roll reason="sauter la faille" difficulty="normal" stance="neutral" dice="1" bonuses=""/>',
-    ]);
-    await (
-      await post(hote, `/api/sessions/${sessionId}/turn`, {
-        player_input: "je saute",
-      })
-    ).text();
-
-    mockAnthropicStream([
-      'Mira tend l\'oreille. <roll reason="écouter le couloir" difficulty="easy" stance="neutral" dice="1" bonuses=""/>',
+      'Kael s\'élance. <roll reason="sauter la faille" character="jets-Kael" difficulty="normal" stance="neutral" dice="1" bonuses=""/>',
+      ' Mira tend l\'oreille. <roll reason="écouter le couloir" character="jets-Mira" difficulty="easy" stance="neutral" dice="1" bonuses=""/>',
     ]);
     await (
       await post(joueur, `/api/sessions/${sessionId}/turn`, {
@@ -424,7 +443,7 @@ describe("lot 8.3 — l'état de jeu appartient à chaque personnage", () => {
   });
 
   it("nomme les personnages au MJ dès qu'ils sont plusieurs", async () => {
-    const { hote, sessionId } = await tableWithCharacters("roster");
+    const { hote, joueur, sessionId } = await tableWithCharacters("roster");
     let envoye = "";
     const realFetch = globalThis.fetch;
     globalThis.fetch = (async (input: RequestInfo | URL, init?: RequestInit) => {
@@ -436,10 +455,13 @@ describe("lot 8.3 — l'état de jeu appartient à chaque personnage", () => {
     }) as typeof fetch;
 
     try {
+      await post(hote, `/api/sessions/${sessionId}/turn`, {
+        player_input: "j'observe",
+      });
       mockAnthropicStream(["La suite. Que faites-vous ?"]);
       await (
-        await post(hote, `/api/sessions/${sessionId}/turn`, {
-          player_input: "j'observe",
+        await post(joueur, `/api/sessions/${sessionId}/turn`, {
+          player_input: "je guette",
         })
       ).text();
     } finally {

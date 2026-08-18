@@ -514,6 +514,8 @@ sessions.put("/:id/members/me", async (c) => {
 sessions.post("/:id/trame", proxy("/trame", { host: true }));
 sessions.post("/:id/setup", proxy("/setup", { host: true }));
 sessions.post("/:id/turn", proxy("/turn"));
+// L'hôte force la résolution sans attendre les retardataires (M8 lot 8.5).
+sessions.post("/:id/turn/resolve", proxy("/turn/resolve", { host: true }));
 sessions.post("/:id/roll", proxy("/roll"));
 sessions.post("/:id/finish", proxy("/finish", { host: true }));
 // Clôture d'acte (M7) : l'historique de l'acte est remplacé par son résumé et

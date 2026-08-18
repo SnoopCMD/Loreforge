@@ -13,8 +13,13 @@
 //         bonuses="temperament: ... ; ability: ..." skills="..."/>
 //       demande de jet serveur, avec ses conditions (§6). La poignée se
 //       calcule depuis bonuses, jamais depuis le nombre annoncé dans dice.
-//   <souffle delta="-1"/>                  dépense/regain de Souffle
+//   <souffle delta="-1" character="Mira"/> dépense/regain de Souffle. À une
+//       table, `character` dit DE QUI ; en solo il est inutile et absent.
 //   <scene_break/>                         rupture de scène (event SSE)
+//   <turn_mode value="simultaneous"/> ou
+//   <turn_mode value="sequential" order="Kaelen,Mira,Théa"/>
+//       régime de résolution du tour (M8) : c'est le MJ qui sait quand un
+//       combat commence, pas le joueur.
 //   <skill name="..." tier="..." note="..."/>  acquis/progression d'une
 //       compétence du personnage (note optionnelle), invisible pour le joueur
 //   <fait texte="..."/>                    fait établi à mémoriser (invisible)
@@ -43,11 +48,18 @@ export function wrapLore(term: string, kind: string, visible: string): string {
 
 export type GmTagEvent =
   | { type: "invention"; axis: string; content: string }
-  | { type: "roll_request"; request: RollRequest }
-  | { type: "souffle_delta"; delta: number }
+  | { type: "roll_request"; request: RollRequest; character?: string }
+  | { type: "souffle_delta"; delta: number; character?: string }
   | { type: "scene_break" }
-  | { type: "skill_update"; name: string; tier: string; note?: string }
-  | { type: "fact"; text: string };
+  | {
+      type: "skill_update";
+      name: string;
+      tier: string;
+      note?: string;
+      character?: string;
+    }
+  | { type: "fact"; text: string }
+  | { type: "turn_mode"; value: "simultaneous" | "sequential"; order: string[] };
 
 export interface ParsedChunk {
   /** Narration visible par le joueur (balises retirées). */
@@ -67,16 +79,30 @@ const OPEN_LORE =
 // difficulty, stance, dice, skills. Tout attribut inconnu est ignoré.
 const ROLL = /^<roll(?=\s)([^>]*?)\/>/;
 const ATTR = /(\w+)="([^"]*)"/g;
-const SOUFFLE = /^<souffle\s+delta="([+-]?\d+)"\s*\/>/;
+// delta obligatoire ; character optionnel (table), dans n'importe quel ordre.
+const SOUFFLE =
+  /^<souffle(?=\s)(?=[^>]*\bdelta="([+-]?\d+)")(?:[^>]*\bcharacter="([^"]*)")?[^>]*\/>/;
 const SCENE_BREAK = /^<scene_break\s*\/>/;
-// name et tier obligatoires ; note optionnelle, attributs dans n'importe quel ordre.
+// name et tier obligatoires ; note et character optionnels, ordre libre.
 const SKILL =
-  /^<skill(?=\s)(?=[^>]*\bname="([^"]*)")(?=[^>]*\btier="([^"]*)")(?:[^>]*\bnote="([^"]*)")?[^>]*\/>/;
+  /^<skill(?=\s)(?=[^>]*\bname="([^"]*)")(?=[^>]*\btier="([^"]*)")(?:[^>]*\bnote="([^"]*)")?(?:[^>]*\bcharacter="([^"]*)")?[^>]*\/>/;
 const FAIT = /^<fait\s+texte="([^"]*)"\s*\/>/;
+// value obligatoire ; order optionnel (séquentiel), ordre libre.
+const TURN_MODE =
+  /^<turn_mode(?=\s)(?=[^>]*\bvalue="([^"]*)")(?:[^>]*\border="([^"]*)")?[^>]*\/>/;
 const CLOSE_INVENTION = "</invention>";
 const CLOSE_LORE = "</lore>";
 
-const TAG_NAMES = ["invention", "lore", "roll", "souffle", "scene_break", "skill", "fait"];
+const TAG_NAMES = [
+  "invention",
+  "lore",
+  "roll",
+  "souffle",
+  "scene_break",
+  "skill",
+  "fait",
+  "turn_mode",
+];
 
 /** Le début de buffer (commençant par '<') peut-il encore devenir une balise ? */
 function couldBeTag(buf: string): boolean {
@@ -120,6 +146,7 @@ function matchTag(buf: string): TagMatch | "incomplete" | null {
       length: m[0].length,
       event: {
         type: "roll_request",
+        ...(attrs.character ? { character: attrs.character } : {}),
         request: normalizeRollRequest({
           reason: attrs.reason,
           difficulty: attrs.difficulty,
@@ -134,7 +161,11 @@ function matchTag(buf: string): TagMatch | "incomplete" | null {
   if ((m = buf.match(SOUFFLE))) {
     return {
       length: m[0].length,
-      event: { type: "souffle_delta", delta: Number(m[1]) },
+      event: {
+        type: "souffle_delta",
+        delta: Number(m[1]),
+        ...(m[2] ? { character: m[2] } : {}),
+      },
     };
   }
   if ((m = buf.match(SCENE_BREAK))) {
@@ -148,11 +179,23 @@ function matchTag(buf: string): TagMatch | "incomplete" | null {
         name: m[1],
         tier: m[2],
         ...(m[3] !== undefined ? { note: m[3] } : {}),
+        ...(m[4] ? { character: m[4] } : {}),
       },
     };
   }
   if ((m = buf.match(FAIT))) {
     return { length: m[0].length, event: { type: "fact", text: m[1] } };
+  }
+  if ((m = buf.match(TURN_MODE))) {
+    // Tout ce qui n'est pas explicitement séquentiel est simultané : c'est le
+    // régime par défaut (dialogue, exploration), et une valeur inconnue ne
+    // doit pas bloquer la table dans un tour par tour dont personne n'a voulu.
+    const value = m[1] === "sequential" ? "sequential" : "simultaneous";
+    const order = (m[2] ?? "")
+      .split(/\s*,\s*/)
+      .map((n) => n.trim())
+      .filter(Boolean);
+    return { length: m[0].length, event: { type: "turn_mode", value, order } };
   }
   if (buf.length <= MAX_TAG_LEN && couldBeTag(buf)) return "incomplete";
   return null;

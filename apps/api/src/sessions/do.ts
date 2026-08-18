@@ -15,6 +15,7 @@
 //   GET  /act/audio?index=N        → MP3 (récit lu, stocké en R2, 7.3)
 //   GET  /ws                       → upgrade WebSocket (table partagée, 8.2)
 //   POST /start                    → JSON {status} (l'hôte lance, lot 8.4)
+//   POST /turn/resolve             → SSE (l'hôte force la résolution, 8.5)
 //   POST /destroy                  → JSON {ok} (purge totale, session supprimée)
 
 import { DurableObject } from "cloudflare:workers";
@@ -65,6 +66,7 @@ import {
   buildActsBlock,
   buildNarratedFromSummary,
   buildSetupMessage,
+  buildTableTurnMessage,
   buildSystemPrompt,
   buildTurnContext,
   buildTurnMessage,
@@ -78,6 +80,7 @@ import {
   turnEndsOpen,
   type ClosedActSummary,
   type SetupContext,
+  type SubmittedAction,
 } from "./prompt";
 import { canonizeGapAnswers, type GapAnswer } from "../richness/suggest";
 import {
@@ -131,6 +134,10 @@ const MAX_ACT_SUMMARY_TOKENS = 1024;
 // client (20 s côté transport) : sans lui, le flux serait coupé en plein
 // résumé et l'event de clôture n'arriverait jamais.
 const ACT_CLOSING_HEARTBEAT_MS = 5000;
+// Tour simultané : au-delà de ce délai sans que tout le monde ait soumis, on
+// résout avec ce qu'on a. Un joueur parti chercher un café ne doit pas geler
+// la table — et l'hôte peut toujours forcer avant.
+const TURN_WAIT_MS = 90_000;
 // Récit narré : une page de prose, plus généreux que la fiche de mémoire —
 // il n'est ni relu à chaque tour ni facturé plus d'une fois.
 const MAX_NARRATED_ACT_TOKENS = 1600;
@@ -216,6 +223,21 @@ interface Actor {
   characterId: string | null;
 }
 
+/** Une action soumise, en attente de résolution. */
+interface PendingAction {
+  userId: string;
+  characterId: string | null;
+  text: string;
+  at: number;
+}
+
+/** Régime de résolution en cours, fixé par le MJ via <turn_mode/>. */
+interface TurnMode {
+  value: "simultaneous" | "sequential";
+  /** Noms de personnages, dans l'ordre de jeu (séquentiel uniquement). */
+  order: string[];
+}
+
 /**
  * Ce qu'un socket sait de lui-même. Sérialisé sur le socket (et non gardé en
  * mémoire) pour survivre à l'hibernation du Durable Object.
@@ -246,6 +268,21 @@ interface InitPayload {
   format: string;
   trame: string | null;
   mode?: string;
+}
+
+/**
+ * Deux noms de personnage désignent-ils la même personne ? Le MJ écrit l'ordre
+ * de tour à la main : accents, casse et espaces ne doivent pas faire refuser
+ * l'action d'un joueur dont c'est pourtant le tour.
+ */
+function sameName(a: string, b: string): boolean {
+  const norme = (s: string) =>
+    s
+      .normalize("NFD")
+      .replace(/[\u0300-\u036f]/g, "")
+      .toLowerCase()
+      .trim();
+  return norme(a) === norme(b);
 }
 
 /** Corps JSON facultatif : `null` plutôt qu'une exception s'il est absent. */
@@ -372,6 +409,9 @@ export class GameSession extends DurableObject<Env> {
       }
       if (request.method === "POST" && path === "/start") {
         return await this.start(meta);
+      }
+      if (request.method === "POST" && path === "/turn/resolve") {
+        return await this.forceResolve(meta);
       }
       return json({ error: "not_found" }, 404);
     } catch (err) {
@@ -697,22 +737,258 @@ export class GameSession extends DurableObject<Env> {
       );
     }
 
-    // Le résultat du dernier jet est consommé par ce tour. Une saisie vide
-    // n'est valide que pour lui : c'est le tour de continuation post-jet,
+    // Une saisie vide n'est valide que pour le tour de continuation post-jet,
     // où le MJ reprend la narration là où il l'avait suspendue.
-    const consumedRoll = me.last_roll;
-    if (input.trim() === "" && !consumedRoll) {
+    if (input.trim() === "" && !me.last_roll) {
       return json({ error: "invalid_player_input" }, 400);
     }
-    me.last_roll = null;
 
-    const stored = buildTurnMessage(input.trim(), consumedRoll);
+    // ── Solo : résolution immédiate, aucun détour ────────────────────────
+    //
+    // Le verrou et la file existent pour une table. En solo ils doivent être
+    // un no-op OBSERVABLE : pas un aller-retour de storage de plus, pas une
+    // milliseconde de latence ajoutée. C'est le parcours quotidien, celui
+    // qu'on régresserait sans le voir.
+    if ((meta.mode ?? "solo") !== "table") {
+      return this.resolveNow(meta, state, [
+        { userId: actor.userId ?? "", characterId: actor.characterId, text: input, at: 0 },
+      ], actor);
+    }
+
+    const mode = await this.turnMode();
+    const roster = await this.roster(meta);
+
+    // ── Séquentiel : un seul joueur a la main ────────────────────────────
+    //
+    // Une action hors tour est REFUSÉE, jamais mise en file : la jouer plus
+    // tard la sortirait de son contexte, et le joueur croirait l'avoir perdue.
+    if (mode.value === "sequential") {
+      const attendu = this.expectedPlayer(mode, roster);
+      const monNom = roster.find(
+        (r) => stateKey(r.characterId) === stateKey(actor.characterId),
+      )?.name;
+      if (attendu && monNom && !sameName(attendu, monNom)) {
+        return json(
+          { error: "not_your_turn", awaiting: attendu, order: mode.order },
+          409,
+        );
+      }
+      return this.submitAndMaybeResolve(meta, actor, input, { resolveNow: true });
+    }
+
+    // ── Simultané : on attend que tout le monde ait soumis ───────────────
+    return this.submitAndMaybeResolve(meta, actor, input, { resolveNow: false });
+  }
+
+  /**
+   * Enregistre l'action et décide si le tour part maintenant.
+   *
+   * Le verrou est explicite et persisté : on ne se repose PAS sur le modèle
+   * mono-requête du Durable Object. turn() est un long await sur le streaming
+   * Anthropic — pendant ce temps la porte reste ouverte et deux requêtes
+   * s'entrelacent. Sans verrou, deux joueurs qui postent en même temps
+   * produiraient deux générations concurrentes.
+   */
+  private async submitAndMaybeResolve(
+    meta: SessionMeta,
+    actor: Actor,
+    input: string,
+    opts: { resolveNow: boolean },
+  ): Promise<Response> {
+    const pending =
+      (await this.ctx.storage.get<PendingAction[]>("pending_actions")) ?? [];
+    // Une nouvelle action du même joueur remplace la précédente : tant que le
+    // tour n'est pas parti, il a le droit de changer d'avis.
+    const actions = pending.filter((a) => a.userId !== actor.userId);
+    actions.push({
+      userId: actor.userId ?? "",
+      characterId: actor.characterId,
+      text: input,
+      at: Date.now(),
+    });
+    await this.ctx.storage.put("pending_actions", actions);
+
+    const locked = await this.ctx.storage.get<number>("turn_lock");
+    if (locked) {
+      // Une narration est en cours : l'action attend le tour suivant. Elle
+      // n'est jamais perdue, et c'est tout ce qu'on promet au joueur.
+      this.broadcast("turn_waiting", {
+        submitted: actions.map((a) => stateKey(a.characterId)),
+        queued: true,
+      });
+      return json({ status: "queued", submitted: actions.length }, 202);
+    }
+
+    if (!opts.resolveNow && !(await this.everyoneSubmitted(meta, actions))) {
+      this.broadcast("turn_waiting", {
+        submitted: actions.map((a) => stateKey(a.characterId)),
+        queued: false,
+      });
+      // Filet : si quelqu'un ne revient pas, le tour part quand même.
+      await this.ctx.storage.setAlarm(Date.now() + TURN_WAIT_MS);
+      return json({ status: "waiting", submitted: actions.length }, 202);
+    }
+
+    return this.resolveTurn(meta, actor);
+  }
+
+  /**
+   * Tous les joueurs attendus ont-ils soumis ?
+   *
+   * La présence WebSocket fait foi : un joueur déconnecté ne doit pas geler la
+   * table. Mais tant qu'AUCUN socket n'est ouvert, on n'a aucune information
+   * de présence — on retombe alors sur la liste des membres, sinon la première
+   * action résoudrait le tour toute seule et les autres n'agiraient jamais.
+   * Le délai et le forçage de l'hôte restent là pour débloquer.
+   */
+  private async everyoneSubmitted(
+    meta: SessionMeta,
+    actions: PendingAction[],
+  ): Promise<boolean> {
+    let attendus = new Set(this.presence().map((p) => p.user_id));
+    if (attendus.size === 0) {
+      const { results } = await this.env.DB.prepare(
+        `SELECT user_id FROM session_members WHERE session_id = ?`,
+      )
+        .bind(meta.sessionId)
+        .all<{ user_id: string }>();
+      attendus = new Set(results.map((r) => r.user_id));
+    }
+    const soumis = new Set(actions.map((a) => a.userId));
+    for (const userId of attendus) {
+      if (!soumis.has(userId)) return false;
+    }
+    return true;
+  }
+
+  /** Prochain joueur attendu en séquentiel : le premier de l'ordre du MJ. */
+  private expectedPlayer(
+    mode: TurnMode,
+    roster: Array<{ characterId: string | null; name: string | null }>,
+  ): string | null {
+    if (mode.order.length === 0) return null;
+    const tour = mode.order[0];
+    // Un nom qui ne correspond à personne à la table ne doit bloquer personne.
+    return roster.some((r) => r.name && sameName(r.name, tour)) ? tour : null;
+  }
+
+  /** L'hôte force la résolution sans attendre les retardataires. */
+  private async forceResolve(meta: SessionMeta): Promise<Response> {
+    if (meta.status !== "playing") {
+      return json({ error: "invalid_status", status: meta.status }, 409);
+    }
+    const actions =
+      (await this.ctx.storage.get<PendingAction[]>("pending_actions")) ?? [];
+    if (actions.length === 0) return json({ error: "no_pending_action" }, 409);
+    if (await this.ctx.storage.get<number>("turn_lock")) {
+      return json({ error: "turn_locked" }, 409);
+    }
+    return this.resolveTurn(meta, { userId: null, characterId: null });
+  }
+
+  /**
+   * Résout le tour : prend les actions en attente, pose le verrou, génère UNE
+   * narration. Le verrou est levé par pump(), au succès comme à l'échec.
+   */
+  private async resolveTurn(meta: SessionMeta, actor: Actor): Promise<Response> {
+    const actions =
+      (await this.ctx.storage.get<PendingAction[]>("pending_actions")) ?? [];
+    if (actions.length === 0) return json({ error: "no_pending_action" }, 409);
+
+    await this.ctx.storage.put({ turn_lock: Date.now(), pending_actions: [] });
+    await this.ctx.storage.deleteAlarm();
+    this.broadcast("turn_locked", {
+      characters: actions.map((a) => stateKey(a.characterId)),
+    });
+
+    const state = await this.loadState(meta);
+    return this.resolveNow(meta, state, actions, actor);
+  }
+
+  /**
+   * Assemble les actions en un seul message et lance la génération. Chemin
+   * commun au solo (une action, aucun verrou) et à la table.
+   */
+  private async resolveNow(
+    meta: SessionMeta,
+    state: GameState,
+    actions: PendingAction[],
+    actor: Actor,
+  ): Promise<Response> {
+    const roster = await this.roster(meta);
+    const nomDe = (characterId: string | null): string | null =>
+      roster.find((r) => stateKey(r.characterId) === stateKey(characterId))
+        ?.name ?? null;
+
+    const submitted: SubmittedAction[] = [];
+    const consumed: RollResult[] = [];
+    for (const action of actions) {
+      const cs = characterState(state, action.characterId ?? meta.characterId);
+      const roll = cs.last_roll;
+      if (roll) {
+        cs.last_roll = null;
+        consumed.push(roll);
+      }
+      submitted.push({
+        // Un seul joueur : pas de nom, le message reste celui d'avant le
+        // multi à l'octet près.
+        characterName: actions.length > 1 ? nomDe(action.characterId) : null,
+        text: action.text.trim(),
+        rollLine: roll ? buildTurnMessage("", roll) : null,
+      });
+    }
+
+    const stored = buildTableTurnMessage(submitted);
+    if (stored === "") {
+      await this.releaseLock();
+      return json({ error: "invalid_player_input" }, 400);
+    }
+
     return this.generate(
       meta,
       state,
       { stored, sent: await this.withTurnContext(meta, state, stored) },
-      consumedRoll,
-      { actor },
+      consumed[0] ?? null,
+      {
+        actor,
+        actingCharacters: actions.map((a) => ({
+          key: stateKey(a.characterId ?? meta.characterId),
+          name: nomDe(a.characterId),
+        })),
+      },
+    );
+  }
+
+  /** Lève le verrou de tour. Idempotent : appelé sur tous les chemins de fin. */
+  private async releaseLock(): Promise<void> {
+    await this.ctx.storage.delete("turn_lock");
+  }
+
+  /**
+   * Filet du régime simultané : le délai a expiré, on résout avec ce qu'on a.
+   * Personne ne tient de flux SSE ici — la table reçoit tout par WebSocket.
+   */
+  async alarm(): Promise<void> {
+    const meta = await this.ctx.storage.get<SessionMeta>("meta");
+    if (!meta || meta.status !== "playing") return;
+    if (await this.ctx.storage.get<number>("turn_lock")) return;
+    const actions =
+      (await this.ctx.storage.get<PendingAction[]>("pending_actions")) ?? [];
+    if (actions.length === 0) return;
+
+    const res = await this.resolveTurn(meta, { userId: null, characterId: null });
+    // Le flux n'a pas de lecteur : on le draine pour que la génération aille
+    // jusqu'au bout et que le verrou soit bien levé.
+    void res.body?.pipeTo(new WritableStream());
+  }
+
+  /** Régime de tour courant ; simultané tant que le MJ n'a rien dit. */
+  private async turnMode(): Promise<TurnMode> {
+    return (
+      (await this.ctx.storage.get<TurnMode>("turn_mode")) ?? {
+        value: "simultaneous",
+        order: [],
+      }
     );
   }
 
@@ -1575,7 +1851,12 @@ export class GameSession extends DurableObject<Env> {
     // seule, persistée dans l'historique (préfixe stable → cache de prompt).
     text: { sent: string; stored: string },
     consumedRoll: RollResult | null = null,
-    opts: { becomePlaying?: boolean; actor?: Actor } = {},
+    opts: {
+      becomePlaying?: boolean;
+      actor?: Actor;
+      /** Personnages ayant agi ce tour : les balises d'état s'y rapportent. */
+      actingCharacters?: Array<{ key: string; name: string | null }>;
+    } = {},
   ): Promise<Response> {
     if (!this.env.ANTHROPIC_API_KEY) {
       return json({ error: "narrator_not_configured" }, 503);
@@ -1595,6 +1876,7 @@ export class GameSession extends DurableObject<Env> {
       consumedRoll,
       Boolean(opts.becomePlaying),
       opts.actor ?? { userId: null, characterId: null },
+      opts.actingCharacters ?? [],
     );
 
     return new Response(readable, {
@@ -1616,6 +1898,7 @@ export class GameSession extends DurableObject<Env> {
     consumedRoll: RollResult | null,
     becomePlaying: boolean,
     actor: Actor,
+    actingCharacters: Array<{ key: string; name: string | null }>,
   ): Promise<void> {
     const writer = writable.getWriter();
     const encoder = new TextEncoder();
@@ -1631,6 +1914,9 @@ export class GameSession extends DurableObject<Env> {
     };
 
     try {
+      this.broadcast("turn_resolving", {
+        characters: actingCharacters.map((c) => c.key),
+      });
       if (consumedRoll) await send("roll", consumedRoll);
 
       const client = new Anthropic({
@@ -1647,8 +1933,22 @@ export class GameSession extends DurableObject<Env> {
       const parser = new GmStreamParser();
       // Les balises d'état du MJ portent sur le personnage qui vient d'agir :
       // c'est SON Souffle qui se dépense, SES compétences qui progressent.
-      const meKey = stateKey(actor.characterId ?? meta.characterId);
-      const me = characterState(state, actor.characterId ?? meta.characterId);
+      const defautKey = actingCharacters[0]?.key
+        ?? stateKey(actor.characterId ?? meta.characterId);
+      // À une table, le MJ dit de QUI il parle via l'attribut `character`.
+      // Sans attribut — cas du solo, et du tour où il n'y a pas d'ambiguïté —
+      // la balise revient au personnage qui vient d'agir.
+      const cible = (nom?: string): CharacterState => {
+        const trouve = nom
+          ? actingCharacters.find((c) => c.name && sameName(c.name, nom))
+          : undefined;
+        return characterState(state, trouve?.key ?? defautKey);
+      };
+      const cleDe = (nom?: string): string =>
+        (nom
+          ? actingCharacters.find((c) => c.name && sameName(c.name, nom))?.key
+          : undefined) ?? defautKey;
+      const me = characterState(state, defautKey);
       const inventions =
         (await this.ctx.storage.get<Invention[]>("inventions")) ?? [];
       let raw = "";
@@ -1664,18 +1964,35 @@ export class GameSession extends DurableObject<Env> {
         if (chunk.text) await send("narration", { text: chunk.text });
         for (const event of chunk.events) {
           switch (event.type) {
-            case "roll_request":
-              me.pending_roll = event.request;
+            case "roll_request": {
+              const pj = cible(event.character);
+              pj.pending_roll = event.request;
               await send("state_patch", {
-                character_id: meKey,
+                character_id: cleDe(event.character),
                 pending_roll: event.request,
               });
               break;
-            case "souffle_delta":
-              me.souffle = applySouffleDelta(me.souffle, event.delta);
+            }
+            case "souffle_delta": {
+              const pj = cible(event.character);
+              pj.souffle = applySouffleDelta(pj.souffle, event.delta);
               await send("state_patch", {
-                character_id: meKey,
-                souffle: me.souffle,
+                character_id: cleDe(event.character),
+                souffle: pj.souffle,
+              });
+              break;
+            }
+            case "turn_mode":
+              // C'est le MJ qui sait quand un combat commence. Le régime est
+              // persisté : il vaut pour les tours suivants, pas seulement
+              // celui-ci.
+              await this.ctx.storage.put("turn_mode", {
+                value: event.value,
+                order: event.order,
+              } satisfies TurnMode);
+              await send("turn_mode_changed", {
+                value: event.value,
+                order: event.order,
               });
               break;
             case "scene_break":
@@ -1690,16 +2007,18 @@ export class GameSession extends DurableObject<Env> {
                 turn: state.turn_count + 1,
               });
               break;
-            case "skill_update":
+            case "skill_update": {
               // Mémoire longue : la compétence survit à la fenêtre d'historique.
-              me.skills ??= [];
-              if (applySkillUpdate(me.skills, event.name, event.tier, event.note)) {
+              const pj = cible(event.character);
+              pj.skills ??= [];
+              if (applySkillUpdate(pj.skills, event.name, event.tier, event.note)) {
                 await send("state_patch", {
-                  character_id: meKey,
-                  skills: me.skills,
+                  character_id: cleDe(event.character),
+                  skills: pj.skills,
                 });
               }
               break;
+            }
             case "fact":
               // Les faits sont collectifs : ils n'appartiennent à personne.
               if (addFact(state.facts, event.text)) {
@@ -1784,7 +2103,7 @@ export class GameSession extends DurableObject<Env> {
       await send("done", {
         turn: state.turn_count,
         souffle: me.souffle,
-        character_id: meKey,
+        character_id: defautKey,
       });
 
       // Bornes d'acte, APRÈS le `done` : le tour est validé et lisible pour le
@@ -1825,12 +2144,42 @@ export class GameSession extends DurableObject<Env> {
         // flux déjà fermé côté client
       }
     } finally {
+      // Le verrou tombe au succès comme à l'échec : une génération ratée ne
+      // doit pas geler la table pour toujours.
+      await this.releaseLock();
       try {
         await writer.close();
       } catch {
         // idem
       }
+      // Actions arrivées pendant la narration : elles n'ont jamais été
+      // perdues, elles composent le tour suivant.
+      await this.drainQueuedActions(meta);
     }
+  }
+
+  /**
+   * Relance un tour si des actions se sont accumulées pendant la narration.
+   * Personne ne tient de flux ici : la table reçoit tout par WebSocket.
+   */
+  private async drainQueuedActions(meta: SessionMeta): Promise<void> {
+    if ((meta.mode ?? "solo") !== "table") return;
+    const actions =
+      (await this.ctx.storage.get<PendingAction[]>("pending_actions")) ?? [];
+    if (actions.length === 0) return;
+    if (!(await this.everyoneSubmitted(meta, actions))) {
+      this.broadcast("turn_waiting", {
+        submitted: actions.map((a) => stateKey(a.characterId)),
+        queued: false,
+      });
+      await this.ctx.storage.setAlarm(Date.now() + TURN_WAIT_MS);
+      return;
+    }
+    const res = await this.resolveTurn(meta, {
+      userId: null,
+      characterId: null,
+    });
+    void res.body?.pipeTo(new WritableStream());
   }
 
   // ── Helpers ───────────────────────────────────────────────────────────
@@ -2066,6 +2415,9 @@ export class GameSession extends DurableObject<Env> {
         type: "text",
         text: buildSystemPrompt({
           bibleTitle: meta.bibleTitle,
+          // Fixé à l'init et jamais recalculé : cette partie du prompt est en
+          // cache ephemeral et doit rester identique à l'octet près.
+          multiplayer: (meta.mode ?? "solo") === "table",
           canonMd: canon,
           scores: meta.scores,
           gaps: meta.gaps,
