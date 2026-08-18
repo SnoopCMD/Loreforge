@@ -5,11 +5,12 @@
 import {
   AXES, AXIS_LABELS, DEFAULT_PALETTE_COLORS, DIFFICULTY_LABELS, FORMAT_LABELS,
   GENERIC_FIELDS, OUTCOME_LABELS, PALETTE_KEYS, PALETTE_LABELS, STANCE_LABELS,
-  STATUS_LABELS, createSseParser,
+  STATUS_LABELS,
   createSpeechSegmenter, esc, extractActionChips, labelFor, mdInline,
   mdToHtml, normalizeRoll, paletteCssVars, paletteVar, rollBonusText,
   rollPoolSize, stripLore,
 } from "/core.js";
+import { openSseStream } from "/transport.js";
 
 const $ = (id) => document.getElementById(id);
 const api = (path, opts = {}) => fetch("/api" + path, opts);
@@ -47,59 +48,13 @@ const frDate = (ts) =>
     day: "numeric", month: "short", hour: "2-digit", minute: "2-digit",
   });
 
-// ── Client SSE (EventSource ne fait pas de POST) ─────────────────────────
+// ── Client SSE ───────────────────────────────────────────────────────────
 
-// idleTimeoutMs : un stream sans nouveau chunk au-delà de ce délai est
-// considéré comme figé (réseau qui traîne) et coupé → traité comme une
-// interruption par l'appelant (bouton Régénérer).
-async function sse(path, body, handlers, { idleTimeoutMs = 20000 } = {}) {
-  const opts = jsonPost(body);
-  opts.headers.accept = "text/event-stream";
-  const controller = new AbortController();
-  opts.signal = controller.signal;
-  let timedOut = false;
-  let timer = null;
-  const arm = () => {
-    clearTimeout(timer);
-    timer = setTimeout(() => { timedOut = true; controller.abort(); }, idleTimeoutMs);
-  };
-
-  const res = await api(path, opts);
-  const type = res.headers.get("content-type") || "";
-  if (!res.ok || !type.includes("text/event-stream")) {
-    let payload = {};
-    try { payload = await res.json(); } catch { /* pas du JSON */ }
-    const err = new Error(payload.error || "http_" + res.status);
-    err.status = res.status;
-    err.payload = payload;
-    throw err;
-  }
-  const reader = res.body.getReader();
-  const decoder = new TextDecoder();
-  const parser = createSseParser((event, data) => {
-    if (handlers[event]) handlers[event](data);
-  });
-  arm();
-  try {
-    for (;;) {
-      const { done, value } = await reader.read();
-      if (done) break;
-      arm(); // un chunk est arrivé : on repousse le timeout
-      parser.push(decoder.decode(value, { stream: true }));
-    }
-  } catch (err) {
-    if (timedOut) {
-      const e = new Error("stream_timeout");
-      e.interrupted = true;
-      throw e;
-    }
-    // Coupure réseau en plein flux (fetch abort inattendu, connexion perdue).
-    err.interrupted = true;
-    throw err;
-  } finally {
-    clearTimeout(timer);
-  }
-}
+// La mécanique (POST + ReadableStream, timeout d'inactivité, distinction
+// coupure / erreur serveur) vit dans transport.js : sans DOM, elle est
+// partageable avec une future app native et avec le futur client WebSocket.
+const sse = (path, body, handlers, options) =>
+  openSseStream(path, body, handlers, options);
 
 // ── Radar (partagé détail + mini-cartes de la bibliothèque) ──────────────
 
