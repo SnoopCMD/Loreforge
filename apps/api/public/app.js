@@ -1468,6 +1468,397 @@ function flashGapsForAxis(axis) {
   }
 }
 
+// ── Session d'écriture assistée ──────────────────────────────────────────
+//
+// Un atelier avec l'IA, ouvert depuis la bible : on y jette ses idées en vrac,
+// la discussion les creuse, puis « Intégrer » relit le fil et en tire des blocs
+// que l'auteur valide — édités et réaffectés à la volée — avant qu'ils ne
+// rejoignent les sections (c'est le serveur qui écrit, jamais ce fichier).
+
+const WRITE = {
+  sessions: [],   // fils de la bible courante
+  id: null,       // fil ouvert
+  messages: [],   // { role, content }
+  drafts: null,   // entrées proposées par /integrate, en attente de verdict
+  busy: false,
+};
+
+function writingOpen() {
+  return !$("writing-modal").classList.contains("hidden");
+}
+
+function closeWritingModal() {
+  $("writing-modal").classList.add("hidden");
+}
+
+async function openWritingModal() {
+  if (!currentBible) return;
+  $("writing-modal").classList.remove("hidden");
+  $("writing-msg").textContent = "";
+  $("writing-integrate-msg").textContent = "";
+  await loadWritingSessions();
+  $("writing-input").focus();
+}
+
+/** Liste les fils de la bible et ouvre le plus récent (ou en crée un). */
+async function loadWritingSessions({ keep = null } = {}) {
+  const res = await api("/bibles/" + currentBible.id + "/writing");
+  if (!res.ok) {
+    $("writing-msg").textContent = "Fils indisponibles — rechargez la page.";
+    $("writing-msg").className = "msg error";
+    return;
+  }
+  WRITE.sessions = (await res.json()).sessions || [];
+  if (WRITE.sessions.length === 0) {
+    await newWritingSession();
+    return;
+  }
+  renderWritingSelect();
+  const target = WRITE.sessions.find((s) => s.id === keep)
+    ? keep
+    : WRITE.sessions[0].id;
+  await selectWritingSession(target);
+}
+
+function renderWritingSelect() {
+  const sel = $("writing-select");
+  sel.innerHTML = "";
+  for (const s of WRITE.sessions) {
+    const opt = document.createElement("option");
+    opt.value = s.id;
+    opt.textContent = s.title + " · " + frDate(s.updated_at);
+    sel.appendChild(opt);
+  }
+  sel.value = WRITE.id || "";
+  $("writing-del").disabled = WRITE.sessions.length === 0;
+}
+
+async function newWritingSession() {
+  const res = await api("/bibles/" + currentBible.id + "/writing", jsonPost({}));
+  if (!res.ok) {
+    const body = await res.json().catch(() => ({}));
+    $("writing-msg").textContent =
+      body.error === "too_many_sessions"
+        ? "Trop de fils ouverts sur cette bible — supprimez-en un."
+        : "Impossible d'ouvrir un fil.";
+    $("writing-msg").className = "msg error";
+    return;
+  }
+  const { session } = await res.json();
+  WRITE.sessions.unshift(session);
+  WRITE.id = session.id;
+  WRITE.messages = [];
+  WRITE.drafts = null;
+  renderWritingSelect();
+  renderWritingFeed();
+  renderWritingDrafts();
+}
+
+async function selectWritingSession(id) {
+  WRITE.id = id;
+  WRITE.drafts = null;
+  renderWritingDrafts();
+  $("writing-feed").innerHTML = '<p class="msg">' + spin("Chargement du fil…") + "</p>";
+  const res = await api("/bibles/" + currentBible.id + "/writing/" + id);
+  if (!res.ok) {
+    $("writing-feed").innerHTML = '<p class="msg error">Fil introuvable.</p>';
+    return;
+  }
+  const body = await res.json();
+  WRITE.messages = body.messages || [];
+  renderWritingSelect();
+  renderWritingFeed();
+}
+
+/** Bulle d'un tour ; renvoie l'élément de corps (rempli au fil du stream). */
+function writingBubble(role, html) {
+  const wrap = document.createElement("div");
+  wrap.className = "wr-msg wr-" + role;
+  const who = document.createElement("span");
+  who.className = "wr-who";
+  who.textContent = role === "user" ? "Vous" : "Partenaire d'écriture";
+  const bodyEl = document.createElement("div");
+  bodyEl.className = "wr-body";
+  bodyEl.innerHTML = html;
+  wrap.append(who, bodyEl);
+  $("writing-feed").appendChild(wrap);
+  return bodyEl;
+}
+
+function renderWritingFeed() {
+  const feed = $("writing-feed");
+  feed.innerHTML = "";
+  if (WRITE.messages.length === 0) {
+    feed.innerHTML =
+      '<p class="msg wr-empty">Fil vierge. Commencez par ce que vous avez en tête — même mal formulé, même contradictoire.</p>';
+    return;
+  }
+  for (const m of WRITE.messages) {
+    writingBubble(m.role, m.role === "user" ? esc(m.content) : mdToHtml(m.content));
+  }
+  scrollWritingFeed();
+}
+
+function scrollWritingFeed() {
+  const feed = $("writing-feed");
+  feed.scrollTop = feed.scrollHeight;
+}
+
+function lockWriting(locked) {
+  WRITE.busy = locked;
+  $("writing-send").disabled = locked;
+  $("writing-input").disabled = locked;
+  $("writing-integrate-btn").disabled = locked;
+  $("writing-new").disabled = locked;
+  $("writing-select").disabled = locked;
+}
+
+async function sendWritingMessage() {
+  const text = $("writing-input").value.trim();
+  if (!text || WRITE.busy || !WRITE.id) return;
+  $("writing-input").value = "";
+  $("writing-msg").textContent = "";
+  $("writing-msg").className = "msg";
+  if (WRITE.messages.length === 0) $("writing-feed").innerHTML = "";
+
+  writingBubble("user", esc(text));
+  const bodyEl = writingBubble("assistant", spin("…"));
+  scrollWritingFeed();
+  lockWriting(true);
+
+  let reply = "";
+  let failed = null;
+  try {
+    await sse(
+      "/bibles/" + currentBible.id + "/writing/" + WRITE.id + "/message",
+      { text },
+      {
+        delta: (d) => {
+          reply += d.text;
+          bodyEl.innerHTML = mdToHtml(reply);
+          scrollWritingFeed();
+        },
+        done: (d) => {
+          const s = WRITE.sessions.find((x) => x.id === WRITE.id);
+          if (s) { s.title = d.title; s.updated_at = Date.now(); }
+          renderWritingSelect();
+        },
+        error: (d) => { failed = d.error; },
+      },
+      { idleTimeoutMs: 45000 },
+    );
+  } catch (err) {
+    failed = err.payload?.error || err.message;
+  }
+  lockWriting(false);
+
+  if (failed && !reply) {
+    bodyEl.remove();
+    $("writing-msg").textContent =
+      failed === "not_configured"
+        ? "Le partenaire d'écriture n'est pas configuré (clé API absente)."
+        : failed === "session_full"
+          ? "Ce fil est plein — ouvrez-en un nouveau."
+          : "La réponse s'est interrompue. Réessayez.";
+    $("writing-msg").className = "msg error";
+    // Le tour n'a pas été persisté côté serveur : on rend sa saisie à l'auteur.
+    $("writing-feed").lastElementChild?.remove();
+    $("writing-input").value = text;
+    if (WRITE.messages.length === 0) renderWritingFeed();
+    return;
+  }
+  WRITE.messages.push({ role: "user", content: text });
+  WRITE.messages.push({ role: "assistant", content: reply });
+  $("writing-input").focus();
+}
+
+// ── Intégration : le fil devient des blocs à valider ──────────────────────
+
+async function integrateWriting() {
+  if (!WRITE.id || WRITE.busy) return;
+  if (WRITE.messages.length === 0) {
+    $("writing-integrate-msg").textContent = "Le fil est vide.";
+    $("writing-integrate-msg").className = "msg error";
+    return;
+  }
+  lockWriting(true);
+  $("writing-integrate-msg").innerHTML = spin("Relecture du fil…");
+  $("writing-integrate-msg").className = "msg";
+
+  const res = await api(
+    "/bibles/" + currentBible.id + "/writing/" + WRITE.id + "/integrate",
+    jsonPost({}),
+  );
+  lockWriting(false);
+  if (!res.ok) {
+    const body = await res.json().catch(() => ({}));
+    $("writing-integrate-msg").textContent =
+      body.error === "not_configured"
+        ? "Intégration indisponible (clé API absente)."
+        : "L'intégration a échoué. Réessayez.";
+    $("writing-integrate-msg").className = "msg error";
+    return;
+  }
+  const body = await res.json();
+  WRITE.drafts = (body.entries || []).map((e) => ({
+    section_id: e.section_id || "",
+    title: e.title || "Notes d'atelier",
+    content_md: e.content_md,
+  }));
+  $("writing-integrate-msg").textContent = body.summary || "";
+  $("writing-integrate-msg").className = "msg";
+  renderWritingDrafts();
+}
+
+/** Sections où un bloc peut atterrir (les dossiers n'ont pas vocation à recevoir). */
+function writingTargets() {
+  return WS.sections.filter((s) => s.kind !== "folder");
+}
+
+function renderWritingDrafts() {
+  const host = $("writing-drafts");
+  host.innerHTML = "";
+  if (!WRITE.drafts) return;
+  if (WRITE.drafts.length === 0) {
+    host.innerHTML =
+      '<p class="msg">Rien à intégrer pour l\'instant — le fil n\'a pas encore de décision arrêtée.</p>';
+    return;
+  }
+
+  const head = document.createElement("p");
+  head.className = "msg";
+  head.textContent =
+    "Relisez, corrigez, choisissez la section — puis ajoutez. Rien n'est écrit avant votre validation.";
+  host.appendChild(head);
+
+  WRITE.drafts.forEach((entry, i) => {
+    const card = document.createElement("div");
+    card.className = "wr-draft";
+
+    const bar = document.createElement("div");
+    bar.className = "row spread wr-draft-bar";
+
+    const sel = document.createElement("select");
+    sel.setAttribute("aria-label", "Section de destination");
+    for (const s of writingTargets()) {
+      const opt = document.createElement("option");
+      opt.value = s.id;
+      opt.textContent = s.title;
+      sel.appendChild(opt);
+    }
+    const fresh = document.createElement("option");
+    fresh.value = "";
+    fresh.textContent = "＋ Nouvelle section « " + entry.title + " »";
+    sel.appendChild(fresh);
+    sel.value = entry.section_id;
+    sel.addEventListener("change", () => { entry.section_id = sel.value; });
+
+    const drop = document.createElement("button");
+    drop.className = "ghost";
+    drop.textContent = "Retirer";
+    drop.addEventListener("click", () => {
+      WRITE.drafts.splice(i, 1);
+      renderWritingDrafts();
+    });
+
+    bar.append(sel, drop);
+
+    const ta = document.createElement("textarea");
+    ta.className = "ws-editor wr-draft-body";
+    ta.value = entry.content_md;
+    ta.addEventListener("input", () => { entry.content_md = ta.value; });
+
+    card.append(bar, ta);
+    host.appendChild(card);
+  });
+
+  const actions = document.createElement("div");
+  actions.className = "row wr-draft-actions";
+  const apply = document.createElement("button");
+  apply.id = "writing-apply";
+  apply.textContent =
+    "Ajouter " + WRITE.drafts.length + (WRITE.drafts.length > 1 ? " blocs" : " bloc") + " à la bible";
+  apply.addEventListener("click", applyWritingDrafts);
+  const msg = document.createElement("span");
+  msg.className = "msg";
+  msg.id = "writing-apply-msg";
+  actions.append(apply, msg);
+  host.appendChild(actions);
+}
+
+async function applyWritingDrafts() {
+  if (!WRITE.drafts || WRITE.drafts.length === 0) return;
+  const entries = WRITE.drafts
+    .map((e) => ({
+      section_id: e.section_id,
+      title: e.title,
+      content_md: e.content_md.trim(),
+    }))
+    .filter((e) => e.content_md !== "");
+  if (entries.length === 0) return;
+
+  $("writing-apply").disabled = true;
+  $("writing-apply-msg").innerHTML = spin("Ajout à la bible…");
+  const res = await api(
+    "/bibles/" + currentBible.id + "/writing/" + WRITE.id + "/apply",
+    jsonPost({ entries }),
+  );
+  if (!res.ok) {
+    $("writing-apply-msg").textContent = "L'ajout a échoué.";
+    $("writing-apply-msg").className = "msg error";
+    $("writing-apply").disabled = false;
+    return;
+  }
+  const body = await res.json();
+  WRITE.drafts = null;
+  renderWritingDrafts();
+  $("writing-integrate-msg").textContent =
+    body.applied + " bloc(s) intégré(s) — la bible est à jour.";
+  $("writing-integrate-msg").className = "msg";
+  await loadWorkspace(); // l'éditeur reflète les sections enrichies
+}
+
+$("writing-btn").addEventListener("click", openWritingModal);
+$("writing-close").addEventListener("click", closeWritingModal);
+$("writing-modal").addEventListener("click", (e) => {
+  if (e.target === $("writing-modal")) closeWritingModal();
+});
+$("writing-new").addEventListener("click", () => newWritingSession());
+$("writing-select").addEventListener("change", (e) =>
+  selectWritingSession(e.target.value),
+);
+$("writing-del").addEventListener("click", async () => {
+  if (!WRITE.id) return;
+  const btn = $("writing-del");
+  if (btn.dataset.armed !== "1") {
+    btn.dataset.armed = "1";
+    btn.textContent = "Confirmer ?";
+    setTimeout(() => {
+      btn.dataset.armed = "";
+      btn.textContent = "Supprimer le fil";
+    }, 4000);
+    return;
+  }
+  btn.dataset.armed = "";
+  btn.textContent = "Supprimer le fil";
+  await api("/bibles/" + currentBible.id + "/writing/" + WRITE.id, {
+    method: "DELETE",
+  });
+  WRITE.id = null;
+  await loadWritingSessions();
+});
+$("writing-send").addEventListener("click", sendWritingMessage);
+$("writing-input").addEventListener("keydown", (e) => {
+  if (e.key === "Enter" && (e.metaKey || e.ctrlKey)) {
+    e.preventDefault();
+    sendWritingMessage();
+  }
+});
+$("writing-integrate-btn").addEventListener("click", integrateWriting);
+document.addEventListener("keydown", (e) => {
+  if (e.key === "Escape" && writingOpen() && !WRITE.busy) closeWritingModal();
+});
+
 // ── Propositions de canon (boucle M5) ────────────────────────────────────
 
 const PROPOSAL_SOURCE_LABELS = { auto: "session", gap: "lacune", comment: "retour" };

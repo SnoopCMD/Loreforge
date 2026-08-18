@@ -87,6 +87,29 @@ npx wrangler secret put ANTHROPIC_API_KEY   # production
 
 L'interface (servie sur `/`) affiche le radar 5 axes et les zones floues.
 
+### Session d'écriture assistée
+
+Depuis le détail d'une bible, le bouton **✍️ Session d'écriture** ouvre un
+atelier : une discussion avec l'IA où jeter ses idées en vrac. Le partenaire
+d'écriture reformule, questionne et relie au canon ; il n'écrit jamais dans la
+bible de lui-même.
+
+```sh
+POST   /api/bibles/<id>/writing                     # ouvre un fil
+GET    /api/bibles/<id>/writing                     # liste les fils
+GET    /api/bibles/<id>/writing/<wid>               # le fil complet
+DELETE /api/bibles/<id>/writing/<wid>
+POST   /api/bibles/<id>/writing/<wid>/message       # { text } → SSE (delta/done/error)
+POST   /api/bibles/<id>/writing/<wid>/integrate     # relit le fil → { summary, entries[] }
+POST   /api/bibles/<id>/writing/<wid>/apply         # { entries } → écrit dans les sections
+```
+
+`integrate` n'écrit rien : il propose des blocs (`section_id`, `title`,
+`content_md`) que l'auteur relit, corrige et réaffecte dans la modale. `apply`
+les ajoute **à la fin** des sections visées (jamais d'écrasement ; une
+`section_id` vide crée une section), régénère `canon_md` et relance
+l'indexation RAG — même chemin que l'éditeur et la boucle canon.
+
 ## Qualité
 
 ```sh

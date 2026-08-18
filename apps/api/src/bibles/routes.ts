@@ -244,6 +244,11 @@ bibles.delete("/:id", async (c) => {
 
   // Enfants d'abord (canon_proposals référence aussi game_sessions).
   await c.env.DB.batch([
+    c.env.DB.prepare(
+      `DELETE FROM writing_messages WHERE writing_id IN
+         (SELECT id FROM writing_sessions WHERE bible_id = ?)`,
+    ).bind(id),
+    c.env.DB.prepare(`DELETE FROM writing_sessions WHERE bible_id = ?`).bind(id),
     c.env.DB.prepare(`DELETE FROM moodboard_images WHERE bible_id = ?`).bind(id),
     c.env.DB.prepare(`DELETE FROM bible_moodboards WHERE bible_id = ?`).bind(id),
     c.env.DB.prepare(`DELETE FROM canon_proposals WHERE bible_id = ?`).bind(id),

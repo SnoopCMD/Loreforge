@@ -194,6 +194,7 @@
   <div class="row spread">
     <h2 id="detail-title"></h2>
     <span class="row bible-actions">
+      <button id="writing-btn" title="Brainstormer avec l'IA, puis intégrer à la bible">✍️ Session d'écriture</button>
       <button class="ghost" id="rename-btn">Renommer</button>
       <button class="danger" id="delete-btn">Supprimer</button>
       <a class="msg" href="#/library">← Bibliothèque</a>
@@ -519,6 +520,37 @@
       <button class="ghost" id="gap-goto">Ouvrir la section</button>
       <button id="gap-insert">Ajouter à la bible</button>
     </div>
+  </div>
+</div>
+
+<!-- Atelier d'écriture : discussion avec l'IA, puis intégration dans la bible. -->
+<div id="writing-modal" class="modal-backdrop hidden">
+  <div class="modal writing-panel" role="dialog" aria-modal="true" aria-labelledby="writing-modal-title">
+    <button type="button" class="modal-close" id="writing-close" aria-label="Fermer">✕</button>
+    <div class="writing-head">
+      <h3 id="writing-modal-title">Session d'écriture</h3>
+      <span class="row writing-head-actions">
+        <select id="writing-select" aria-label="Fil de discussion"></select>
+        <button type="button" class="ghost" id="writing-new">Nouveau fil</button>
+        <button type="button" class="ghost writing-del" id="writing-del">Supprimer le fil</button>
+      </span>
+    </div>
+    <p class="msg">Jetez vos idées en vrac : l'IA les creuse, les relie à votre canon et les reformule. Quand le fil a donné ce qu'il fallait, « Intégrer » en tire des blocs à valider section par section.</p>
+
+    <div class="writing-feed" id="writing-feed" aria-live="polite"></div>
+
+    <div class="writing-compose">
+      <textarea id="writing-input" rows="2" aria-label="Votre message"
+        placeholder="Ex. : j'ai une idée de guilde de cartographes qui vend des routes qui n'existent pas encore…"></textarea>
+      <button id="writing-send">Envoyer</button>
+    </div>
+    <p id="writing-msg" class="msg"></p>
+
+    <div class="row writing-integrate-row">
+      <button class="ghost" id="writing-integrate-btn">✨ Intégrer à la bible</button>
+      <span class="msg" id="writing-integrate-msg"></span>
+    </div>
+    <div id="writing-drafts" class="writing-drafts"></div>
   </div>
 </div>
 
