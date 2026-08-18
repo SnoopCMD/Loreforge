@@ -1,9 +1,13 @@
 import { describe, expect, it } from "vitest";
 import {
-  defineFromCanon,
-  defineFromInventions,
+  buildFiche,
+  buildLoreUserMessage,
+  collectCanonSources,
+  collectLoreSources,
+  collectSessionSources,
+  loreSignature,
   normalizeKind,
-  resolveLore,
+  toProse,
   type SessionInvention,
 } from "../src/sessions/lore";
 
@@ -18,65 +22,151 @@ portent le sel-de-lune. Elle répond au Commandant Aurélio Kass.
 
 ## Karnos
 
-Karnos est une cité-pont bâtie au-dessus de la plus grande faille connue.`;
+Karnos est une cité-pont bâtie au-dessus de la plus grande faille connue.
 
-describe("defineFromCanon (§7)", () => {
+## Casting secondaire
+
+| Nom | Masque | Statut |
+|---|---|---|
+| **Russell** | Lézard | À développer. |
+| *(Lynx)* | Lynx | Slot réservé — personnage à créer. |`;
+
+describe("collectCanonSources (§7) — matière première, pas la fiche", () => {
   it("préfère la section dont le titre porte le terme", () => {
-    const def = defineFromCanon(CANON, "Garde Blanche");
-    expect(def).toContain("ordre militaire qui scelle les failles");
-    expect(def).not.toContain("cité-pont"); // pas la section Karnos
+    const sources = collectCanonSources(CANON, "Garde Blanche");
+    expect(sources.join(" ")).toContain("ordre militaire qui scelle les failles");
+    expect(sources.join(" ")).not.toContain("cité-pont");
   });
 
-  it("retombe sur le 1er paragraphe mentionnant le terme", () => {
-    const def = defineFromCanon(CANON, "Aurélio Kass");
-    expect(def).toContain("Aurélio Kass");
+  it("remonte le paragraphe mentionnant un terme sans section dédiée", () => {
+    expect(collectCanonSources(CANON, "Aurélio Kass").join(" ")).toContain(
+      "Aurélio Kass",
+    );
   });
 
-  it("null quand le terme est absent du canon", () => {
-    expect(defineFromCanon(CANON, "les Ombres Grises")).toBeNull();
+  it("remonte une ligne de tableau avec son en-tête de colonnes", () => {
+    const sources = collectCanonSources(CANON, "Russell");
+    expect(sources).toHaveLength(1);
+    expect(sources[0]).toContain("| Nom | Masque | Statut |");
+    expect(sources[0]).toContain("Russell");
+    // La ligne du Lynx (autre slot) ne pollue pas la fiche de Russell.
+    expect(sources[0]).not.toContain("Lynx");
+  });
+
+  it("vide quand le terme est absent du canon", () => {
+    expect(collectCanonSources(CANON, "les Ombres Grises")).toEqual([]);
   });
 });
 
-describe("defineFromInventions", () => {
+describe("collectSessionSources", () => {
   const inventions: SessionInvention[] = [
     { axis: "geography", content: "Le village de Karnos borde la faille.", turn: 1 },
     { axis: "characters", content: "Vieil Orin, cartographe aveugle de la cité.", turn: 3 },
   ];
 
-  it("trouve l'invention la plus récente mentionnant le terme", () => {
-    expect(defineFromInventions(inventions, "Orin")).toContain("cartographe aveugle");
+  it("remonte la narration la plus récente citant le terme", () => {
+    const narration = [
+      "Rien d'utile ici.",
+      "Le Fossoyeur traverse la place. Sa pelle racle les pavés. Nul ne le regarde.",
+    ];
+    const sources = collectSessionSources([], narration, "Fossoyeur");
+    expect(sources[0]).toContain("Sa pelle racle les pavés");
   });
 
-  it("null quand aucune invention ne matche", () => {
-    expect(defineFromInventions(inventions, "la Source")).toBeNull();
+  it("remonte aussi les inventions loggées", () => {
+    expect(collectSessionSources(inventions, [], "Orin").join(" ")).toContain(
+      "cartographe aveugle",
+    );
+  });
+
+  it("vide quand rien ne matche", () => {
+    expect(collectSessionSources(inventions, ["nuit calme"], "la Source")).toEqual([]);
   });
 });
 
-describe("resolveLore — jamais de terme mort", () => {
-  it("canon d'abord (in_canon = true)", () => {
-    const fiche = resolveLore(CANON, [], "Karnos", "lieu");
-    expect(fiche.in_canon).toBe(true);
-    expect(fiche.kind).toBe("lieu");
-    expect(fiche.definition).toContain("cité-pont");
+describe("loreSignature — fraîcheur du cache", () => {
+  it("change dès qu'un nouveau tour parle du terme", () => {
+    const before = collectLoreSources(CANON, [], ["Une ombre passe."], "Fossoyeur");
+    const after = collectLoreSources(
+      CANON,
+      [],
+      ["Une ombre passe.", "Le Fossoyeur relève la tête."],
+      "Fossoyeur",
+    );
+    expect(loreSignature(before)).not.toBe(loreSignature(after));
   });
 
-  it("repli inventions de session (in_canon = false)", () => {
-    const inv: SessionInvention[] = [
-      { axis: "characters", content: "Nyra, la contrebandière des brumes.", turn: 2 },
-    ];
-    const fiche = resolveLore(CANON, inv, "Nyra", "personnage");
-    expect(fiche.in_canon).toBe(false);
-    expect(fiche.definition).toContain("contrebandière");
+  it("stable tant que rien ne bouge", () => {
+    const a = collectLoreSources(CANON, [], ["Karnos dort."], "Karnos");
+    const b = collectLoreSources(CANON, [], ["Karnos dort."], "Karnos");
+    expect(loreSignature(a)).toBe(loreSignature(b));
+  });
+});
+
+describe("buildLoreUserMessage", () => {
+  it("porte le terme, le canon et la narration de session", () => {
+    const sources = collectLoreSources(
+      CANON,
+      [],
+      ["Le Fossoyeur traverse la place."],
+      "Fossoyeur",
+    );
+    const msg = buildLoreUserMessage({
+      term: "Fossoyeur",
+      kind: "personnage",
+      sources,
+      bibleTitle: "Les Mondes Fêlés",
+      characterName: "Ilyara",
+    });
+    expect(msg).toContain("Terme : Fossoyeur");
+    expect(msg).toContain("Ilyara");
+    expect(msg).toContain("traverse la place");
+    expect(msg).toContain("(rien)"); // canon muet sur ce terme
+  });
+});
+
+describe("toProse — aucun contenu brut n'atteint le popup", () => {
+  it("aplatit une ligne de tableau markdown", () => {
+    const out = toProse("||**Russell**|Lézard|À développer.||");
+    expect(out).not.toContain("|");
+    expect(out).not.toContain("**");
+    expect(out).toContain("Russell");
   });
 
-  it("repli générique quand rien n'est connu", () => {
-    const fiche = resolveLore(CANON, [], "Le Chœur Muet", "concept");
-    expect(fiche.in_canon).toBe(false);
-    expect(fiche.definition).toContain("Le Chœur Muet");
-    expect(fiche.definition).toContain("au fil de cette session");
+  it("retire titres, puces et emphase", () => {
+    const out = toProse("## Karnos\n\n- *cité-pont*\n- au-dessus de la faille");
+    expect(out).toBe("Karnos cité-pont au-dessus de la faille");
   });
 
-  it("normalise le kind vers 'concept' par défaut", () => {
+  it("laisse la prose intacte", () => {
+    const prose =
+      "Le Fossoyeur arpente la place, pelle à l'épaule. Personne ne croise son regard.";
+    expect(toProse(prose)).toBe(prose);
+  });
+});
+
+describe("buildFiche", () => {
+  it("marque in_canon selon la présence de sources de bible", () => {
+    const withCanon = buildFiche(
+      "Karnos",
+      "lieu",
+      collectLoreSources(CANON, [], [], "Karnos"),
+      "Karnos est une cité suspendue au-dessus du vide.",
+    );
+    expect(withCanon.in_canon).toBe(true);
+    expect(withCanon.kind).toBe("lieu");
+
+    const invented = buildFiche(
+      "Fossoyeur",
+      null,
+      collectLoreSources(CANON, [], ["Le Fossoyeur passe."], "Fossoyeur"),
+      "Une silhouette voûtée, pelle à l'épaule.",
+    );
+    expect(invented.in_canon).toBe(false);
+    expect(invented.kind).toBe("concept");
+  });
+
+  it("normalise le kind", () => {
     expect(normalizeKind("PERSONNAGE")).toBe("personnage");
     expect(normalizeKind("machin")).toBe("concept");
     expect(normalizeKind(null)).toBe("concept");

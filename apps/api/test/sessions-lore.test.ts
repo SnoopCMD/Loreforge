@@ -112,11 +112,13 @@ describe("glossaire lore (§7)", () => {
     expect(narration).toContain("Garde Blanche");
     expect(narration).toContain("Que fais-tu ?");
 
-    // Résolution de la fiche.
-    const res = await get(
-      cookie,
-      `/api/sessions/${sessionId}/lore?term=${encodeURIComponent("Garde Blanche")}&kind=faction`,
+    // Résolution de la fiche : toujours rédigée par l'IA, jamais l'extrait brut.
+    const loreUrl = `/api/sessions/${sessionId}/lore?term=${encodeURIComponent("Garde Blanche")}&kind=faction`;
+    mockAnthropicText(
+      "La Garde Blanche est l'ordre qui veille sur les failles du monde. " +
+        "Ses chevaliers patrouillent les ponts, reconnaissables à leur sel-de-lune.",
     );
+    const res = await get(cookie, loreUrl);
     expect(res.status).toBe(200);
     const fiche = (await res.json()) as {
       term: string;
@@ -127,11 +129,57 @@ describe("glossaire lore (§7)", () => {
     };
     expect(fiche.in_canon).toBe(true);
     expect(fiche.kind).toBe("faction");
-    expect(fiche.definition).toContain("scelle les failles");
+    expect(fiche.definition).toContain("veille sur les failles");
     expect(fiche.bible_id).toBe(bibleId);
+
+    // Re-clic sans nouveau tour : servi depuis le cache (aucun appel IA — un
+    // appel non mocké ferait échouer le test).
+    const again = (await (await get(cookie, loreUrl)).json()) as { definition: string };
+    expect(again.definition).toBe(fiche.definition);
 
     // term manquant → 400.
     expect((await get(cookie, `/api/sessions/${sessionId}/lore`)).status).toBe(400);
+  });
+
+  it("un terme inventé en scène est rédigé depuis la narration, et régénéré quand la session en dit plus", async () => {
+    const cookie = await login("fossoyeur@example.com");
+    const bibleId = await analyzedBible(cookie);
+    const sessionId = await newSession(cookie, bibleId);
+
+    // Le terme n'existe pas dans le canon : il apparaît en pleine scène.
+    mockAnthropicStream([
+      'Un <lore term="Fossoyeur" kind="personnage">Fossoyeur</lore> traverse la place, ',
+      "pelle à l'épaule, sans un regard pour toi. Que fais-tu ?",
+    ]);
+    await readSse(await post(cookie, `/api/sessions/${sessionId}/setup`, { answers: [] }));
+
+    const loreUrl = `/api/sessions/${sessionId}/lore?term=Fossoyeur&kind=personnage`;
+    mockAnthropicText(
+      "Une silhouette voûtée qui traverse la place, pelle à l'épaule, sans un regard pour toi.",
+    );
+    const first = (await (await get(cookie, loreUrl)).json()) as {
+      definition: string;
+      in_canon: boolean;
+    };
+    expect(first.in_canon).toBe(false);
+    expect(first.definition).toContain("pelle à l'épaule");
+    // Plus de repli générique : aucune formule creuse ne sort du popup.
+    expect(first.definition).not.toContain("se précisera en jouant");
+    expect(first.definition).not.toContain("au fil de cette session");
+
+    // Un nouveau tour développe le terme → le cache est invalidé, on régénère.
+    mockAnthropicStream([
+      "Le Fossoyeur s'arrête et pose sur toi deux yeux blancs. Que fais-tu ?",
+    ]);
+    await readSse(
+      await post(cookie, `/api/sessions/${sessionId}/turn`, { player_input: "Je le suis." }),
+    );
+    mockAnthropicText(
+      "Il s'arrête devant toi et lève deux yeux blancs, aveugles, qui semblent pourtant te voir.",
+    );
+    const second = (await (await get(cookie, loreUrl)).json()) as { definition: string };
+    expect(second.definition).toContain("yeux blancs");
+    expect(second.definition).not.toBe(first.definition);
   });
 
   it("un tour qui retombe fermé déclenche une relance serveur invisible", async () => {

@@ -32,7 +32,15 @@ import {
   type SkillEntry,
 } from "./rules";
 import { GmStreamParser, stripGmTags, type GmTagEvent } from "./tags";
-import { resolveLore } from "./lore";
+import {
+  buildFiche,
+  buildLoreUserMessage,
+  collectLoreSources,
+  loreSignature,
+  LORE_SYSTEM_PROMPT,
+  normalizeKind,
+  type LoreFiche,
+} from "./lore";
 import { retrieveCanonExcerpts } from "../rag/store";
 import { loadMoodboardAnnex } from "../bibles/moodboard-context";
 import {
@@ -64,8 +72,12 @@ const CACHE_CONTROL = { type: "ephemeral", ttl: "1h" } as const;
 const LOG_TURNS = 20;
 // Relance de fin de tour (§7) : court, sans retry (filet best-effort).
 const MAX_RELANCE_TOKENS = 256;
-// Cache des fiches lore résolues (une semaine).
+// Cache des fiches lore rédigées (une semaine). L'entrée porte la signature
+// des sources : elle est ignorée dès que la session en a dit plus sur le terme.
 const LORE_TTL_SECONDS = 60 * 60 * 24 * 7;
+// Fiche lore : 2-4 phrases, un appel court et non streamé.
+export const LORE_MODEL = "claude-sonnet-5";
+const MAX_LORE_TOKENS = 400;
 
 export function sessionKvKey(sessionId: string): string {
   return `session:${sessionId}:state`;
@@ -103,6 +115,12 @@ interface SessionMeta {
 interface StoredTurn {
   role: "user" | "assistant";
   text: string;
+}
+
+/** Entrée de cache d'une fiche lore : la fiche + l'empreinte de ses sources. */
+interface LoreCacheEntry {
+  signature: string;
+  fiche: LoreFiche & { bible_id: string };
 }
 
 interface Invention {
@@ -930,41 +948,86 @@ export class GameSession extends DurableObject<Env> {
     return this.canonCache;
   }
 
-  // ── Fiche lore (§7) : résolue une fois par session, cachée en KV ──────────
+  // ── Fiche lore (§7) : un seul chemin, toujours rédigé par l'IA ────────────
+  //
+  // Canon riche, canon pauvre ou pur terme inventé en session : même appel de
+  // résumé, jamais d'extrait de bible brut ni de texte de repli générique. Le
+  // résultat est caché par session ; la signature des sources sert de clé de
+  // fraîcheur — si de nouveaux tours ont développé le terme, on régénère.
 
   private async lore(meta: SessionMeta, url: URL): Promise<Response> {
     const term = (url.searchParams.get("term") ?? "").trim().slice(0, 120);
     if (!term) return json({ error: "missing_term" }, 400);
-
-    const key = loreKvKey(meta.sessionId, term);
-    const cached = await this.env.CACHE.get(key);
-    if (cached) {
-      return new Response(cached, {
-        status: 200,
-        headers: { "content-type": "application/json" },
-      });
-    }
+    const kind = normalizeKind(url.searchParams.get("kind"));
 
     const canon = await this.ensureCanon(meta.bibleId);
     const inventions =
       (await this.ctx.storage.get<Invention[]>("inventions")) ?? [];
-    const fiche = resolveLore(
-      canon,
-      inventions,
-      term,
-      url.searchParams.get("kind"),
-    );
-    const payload = JSON.stringify({ ...fiche, bible_id: meta.bibleId });
+    const narration = (await this.listTurns(CONTEXT_TURNS))
+      .filter((t) => t.role === "assistant")
+      .map((t) => stripGmTags(t.text).trim());
+    const sources = collectLoreSources(canon, inventions, narration, term);
+    const signature = loreSignature(sources);
+
+    const key = loreKvKey(meta.sessionId, term);
+    const cached = safeParse(await this.env.CACHE.get(key)) as
+      | (LoreCacheEntry | null)
+      | string;
+    if (
+      cached &&
+      typeof cached === "object" &&
+      cached.signature === signature &&
+      cached.fiche?.kind === kind
+    ) {
+      return json(cached.fiche);
+    }
+
+    let generated: string;
+    try {
+      const client = new Anthropic({ apiKey: this.env.ANTHROPIC_API_KEY });
+      const response = await client.messages.create({
+        model: LORE_MODEL,
+        max_tokens: MAX_LORE_TOKENS,
+        system: LORE_SYSTEM_PROMPT,
+        messages: [
+          {
+            role: "user",
+            content: buildLoreUserMessage({
+              term,
+              kind,
+              sources,
+              bibleTitle: meta.bibleTitle,
+              characterName: meta.characterName,
+            }),
+          },
+        ],
+      });
+      generated = response.content
+        .filter((b) => b.type === "text")
+        .map((b) => b.text)
+        .join("");
+    } catch (err) {
+      console.error(`[game-session] fiche lore ${meta.sessionId} :`, err);
+      return json({ error: "lore_unavailable" }, 503);
+    }
+
+    const fiche = {
+      ...buildFiche(term, kind, sources, generated),
+      bible_id: meta.bibleId,
+    };
+    if (!fiche.definition) return json({ error: "lore_unavailable" }, 503);
+
     // Best-effort : un échec de cache ne doit pas priver le joueur de la fiche.
     try {
-      await this.env.CACHE.put(key, payload, { expirationTtl: LORE_TTL_SECONDS });
+      await this.env.CACHE.put(
+        key,
+        JSON.stringify({ signature, fiche } satisfies LoreCacheEntry),
+        { expirationTtl: LORE_TTL_SECONDS },
+      );
     } catch (err) {
       console.error(`[game-session] cache lore ${meta.sessionId} :`, err);
     }
-    return new Response(payload, {
-      status: 200,
-      headers: { "content-type": "application/json" },
-    });
+    return json(fiche);
   }
 
   /**

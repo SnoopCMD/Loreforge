@@ -4119,7 +4119,10 @@ const LORE_KIND_LABELS = {
   lieu: "Lieu",
   concept: "Concept",
 };
-const loreCache = new Map(); // term (minuscule) → fiche, une résolution / session
+// term@tour → fiche : une fiche rédigée reste servie tant que la session n'a
+// rien ajouté ; dès qu'un tour passe, on redemande (le serveur ne régénère
+// que si ce tour a vraiment parlé du terme).
+const loreCache = new Map();
 let lorePopoverEl = null;
 
 function closeLorePopover() {
@@ -4135,7 +4138,7 @@ function onLoreOutside(e) {
 function onLoreKey(e) { if (e.key === "Escape") closeLorePopover(); }
 
 async function fetchLore(term, kind) {
-  const key = term.toLowerCase();
+  const key = term.toLowerCase() + "@" + S.turnCount;
   if (loreCache.has(key)) return loreCache.get(key);
   try {
     const res = await api(
@@ -4147,8 +4150,8 @@ async function fetchLore(term, kind) {
       loreCache.set(key, fiche);
       return fiche;
     }
-  } catch { /* réseau : fiche de repli */ }
-  return { term, kind, definition: "Définition indisponible pour le moment.", in_canon: false };
+  } catch { /* réseau : message d'échec honnête, jamais de fiche bidon */ }
+  return { term, kind, definition: "", in_canon: false, failed: true };
 }
 
 function positionLorePopover(pop, btn) {
@@ -4174,7 +4177,7 @@ async function openLorePopover(btn) {
     '<button type="button" class="lore-close" aria-label="Fermer">✕</button>' +
     '<div class="lore-head"><span class="lore-term"></span>' +
     '<span class="lore-kind"></span></div>' +
-    '<div class="lore-def">' + spin("Recherche dans la bible…") + "</div>";
+    '<div class="lore-def">' + spin("Rédaction de la fiche…") + "</div>";
   pop.querySelector(".lore-term").textContent = term;
   pop.querySelector(".lore-close").addEventListener("click", closeLorePopover);
   document.body.appendChild(pop);
@@ -4192,7 +4195,8 @@ async function openLorePopover(btn) {
   pop.querySelector(".lore-kind").textContent =
     LORE_KIND_LABELS[fiche.kind] || "";
   pop.querySelector(".lore-def").textContent =
-    fiche.definition || "Définition indisponible.";
+    fiche.definition ||
+    "Fiche indisponible pour le moment — réessaie dans un instant.";
   if (fiche.in_canon) {
     const info = sessionBibleInfo(S.id);
     const bibleId = fiche.bible_id || (info && info.id);
