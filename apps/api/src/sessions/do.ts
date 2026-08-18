@@ -1121,6 +1121,9 @@ export class GameSession extends DurableObject<Env> {
       session_id: meta.sessionId,
       status: meta.status,
       mode: meta.mode ?? "solo",
+      // Le front en a besoin dès le lobby, pour proposer les personnages de
+      // cet univers sans un aller-retour de plus.
+      bible_id: meta.bibleId,
       format: meta.format,
       trame: meta.trame,
       character: meta.characterName

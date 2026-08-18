@@ -10,7 +10,7 @@ import {
   mdToHtml, normalizeRoll, paletteCssVars, paletteVar, rollBonusText,
   rollPoolSize, stripLore,
 } from "/core.js";
-import { openSseStream } from "/transport.js";
+import { openSseStream, openTableSocket } from "/transport.js";
 
 const $ = (id) => document.getElementById(id);
 const api = (path, opts = {}) => fetch("/api" + path, opts);
@@ -150,10 +150,13 @@ function ficheHtml(name, sheet, { compact = false, sub = "", skills = null } = {
 const SCREENS = [
   "screen-landing", "screen-home", "screen-play", "screen-library",
   "screen-bible", "screen-embark", "screen-quiz", "screen-forge",
-  "screen-setup", "screen-session", "screen-end",
+  "screen-setup", "screen-lobby", "screen-join", "screen-session", "screen-end",
 ];
 
 function showScreen(id) {
+  // La socket de table ne survit pas à un changement d'écran : on ne veut ni
+  // recevoir la narration d'une partie qu'on a quittée, ni la laisser ouverte.
+  if (id !== "screen-session" && id !== "screen-lobby") closeTableSocket();
   for (const s of SCREENS) $(s).classList.toggle("hidden", s !== id);
   $("topbar").classList.toggle("hidden", id === "screen-landing");
   clearInterval(pollTimer);
@@ -184,8 +187,10 @@ function route() {
     if (parts[2] === "forge") return showForge(parts[1]);
     return showBible(parts[1]);
   }
+  if (parts[0] === "join") return showJoin(parts[1] || "");
   if (parts[0] === "session" && parts[1]) {
     if (parts[2] === "setup") return showSetup(parts[1]);
+    if (parts[2] === "lobby") return showLobby(parts[1]);
     if (parts[2] === "end") return showEnd(parts[1]);
     return enterSession(parts[1]);
   }
@@ -3334,6 +3339,13 @@ function startSessionScreen(id, { fresh = false } = {}) {
   vtoggle.textContent = voice.enabled ? "🔊 Voix activée" : "🔊 Voix du MJ";
   renderFollowToggle();
 
+  // Table : tout repart caché ; /state et /members rallumeront ce qu'il faut.
+  T.submitted = new Set();
+  T.awaiting = null;
+  T.turnMode = "simultaneous";
+  closePlayerSheet();
+  renderTable();
+
   // Actes : les deux boutons repartent cachés, /state les rallumera.
   S.actIndex = 0;
   S.actsClosed = 0;
@@ -3953,6 +3965,538 @@ function sendTurn() {
   runGeneration(S.id, "/sessions/" + S.id + "/turn", { player_input: text }, text);
 }
 
+// ── Table partagée (M8) ──────────────────────────────────────────────────
+//
+// Un seul moteur, une table d'un joueur en solo : ce bloc ne fait qu'ajouter
+// ce qui n'a de sens qu'à plusieurs — présence, attente des autres, invitation
+// — et reste entièrement inerte en solo.
+
+const T = {
+  socket: null,
+  mode: "solo",
+  role: "player",
+  members: [], // { user_id, display_name, character_id, character_name, role }
+  present: new Set(),
+  submitted: new Set(), // character_id ayant soumis ce tour
+  characters: {}, // character_id → { souffle, skills, pending_roll, last_roll }
+  myCharacterId: null,
+  turnMode: "simultaneous",
+  awaiting: null, // nom du joueur attendu en séquentiel
+};
+
+const isTable = () => T.mode === "table";
+
+function closeTableSocket() {
+  if (T.socket) {
+    T.socket.close();
+    T.socket = null;
+  }
+}
+
+/** Nom affichable d'un membre : son personnage, sinon son compte. */
+const memberLabel = (m) =>
+  m.character_name || m.display_name || (m.email || "").split("@")[0] || "Joueur";
+
+async function loadMembers(sessionId) {
+  const res = await api("/sessions/" + sessionId + "/members");
+  if (!res.ok) return;
+  const body = await res.json();
+  T.members = body.members || [];
+  T.mode = body.mode || "solo";
+  T.role = body.role || "player";
+  const me = T.members.find((m) => currentUser && m.user_id === currentUser.id);
+  T.myCharacterId = me ? me.character_id : null;
+}
+
+/** Trois orbes de Souffle, comme le rail principal (--ember, cf. SPEC §8.1). */
+function souffleOrbs(value) {
+  let html = '<span class="mini-orbs">';
+  for (let i = 0; i < (S.souffleMax || 3); i++) {
+    html += '<span class="orb' + (i < value ? " on" : "") + '"></span>';
+  }
+  return html + "</span>";
+}
+
+function renderTableRail() {
+  const rail = $("table-rail");
+  rail.classList.toggle("hidden", !isTable());
+  $("invite-toggle").classList.toggle("hidden", !isTable() || T.role !== "host");
+  if (!isTable()) return;
+
+  rail.innerHTML = T.members
+    .map((m) => {
+      const cs = T.characters[m.character_id] || {};
+      const souffle = typeof cs.souffle === "number" ? cs.souffle : S.souffleMax;
+      const moi = m.character_id && m.character_id === T.myCharacterId;
+      const classes = [
+        "player-chip",
+        T.present.has(m.user_id) ? "online" : "offline",
+        T.submitted.has(m.character_id) ? "ready" : "",
+        moi ? "me" : "",
+        T.awaiting && m.character_name && sameLabel(T.awaiting, m.character_name)
+          ? "playing"
+          : "",
+      ]
+        .filter(Boolean)
+        .join(" ");
+      return (
+        '<button type="button" class="' + classes + '" data-character="' +
+        esc(m.character_id || "") + '" title="' + esc(memberLabel(m)) + '">' +
+        '<span class="dot" aria-hidden="true"></span>' +
+        '<span class="who">' + esc(memberLabel(m)) + "</span>" +
+        souffleOrbs(souffle) +
+        "</button>"
+      );
+    })
+    .join("");
+}
+
+/** Comparaison de noms tolérante aux accents et à la casse (comme le serveur). */
+function sameLabel(a, b) {
+  const norme = (x) =>
+    String(x).normalize("NFD").replace(/[\u0300-\u036f]/g, "").toLowerCase().trim();
+  return norme(a) === norme(b);
+}
+
+function renderTableStatus() {
+  const el = $("table-status");
+  if (!isTable()) {
+    el.classList.add("hidden");
+    return;
+  }
+  let texte = "";
+  if (T.turnMode === "sequential" && T.awaiting) {
+    texte = "Au tour de " + T.awaiting;
+  } else if (T.submitted.size > 0) {
+    const attendus = T.members.filter(
+      (m) => T.present.has(m.user_id) && !T.submitted.has(m.character_id),
+    );
+    texte = attendus.length
+      ? "En attente de " + attendus.map(memberLabel).join(", ")
+      : "Résolution du tour…";
+  }
+  el.textContent = texte;
+  el.classList.toggle("hidden", texte === "");
+}
+
+const renderTable = () => {
+  renderTableRail();
+  renderTableStatus();
+};
+
+/**
+ * Redessine ce qui dépend de la table, quel que soit l'écran affiché. Le rail
+ * et le lobby montrent les mêmes faits sous deux formes ; un event ne sait pas
+ * où l'on se trouve.
+ */
+function refreshTableViews() {
+  renderTable();
+  if (!$("screen-lobby").classList.contains("hidden")) renderLobbyPlayers();
+}
+
+/**
+ * Fiche d'un autre joueur, consultable au tap sur sa pastille (§8.3). La
+ * sienne reste dans le rail (bottom sheet sur mobile) : on ne remplace jamais
+ * ce qu'on regarde en permanence par ce qu'on consulte au passage.
+ */
+function closePlayerSheet() {
+  document.getElementById("player-sheet")?.remove();
+}
+
+function showPlayerSheet(chip, member) {
+  closePlayerSheet();
+  const cs = T.characters[member.character_id] || {};
+  const skills = (cs.skills || [])
+    .map((sk) => "<li>" + esc(sk.name) + " — " + esc(sk.tier) + "</li>")
+    .join("");
+  const box = document.createElement("div");
+  box.id = "player-sheet";
+  box.className = "player-sheet";
+  box.innerHTML =
+    '<button type="button" class="modal-close" aria-label="Fermer">✕</button>' +
+    "<h4>" + esc(memberLabel(member)) + "</h4>" +
+    "<p>Souffle : " + (cs.souffle ?? S.souffleMax) + "/" + S.souffleMax + "</p>" +
+    (skills
+      ? "<ul>" + skills + "</ul>"
+      : '<p class="msg">Aucune compétence acquise.</p>');
+  document.body.appendChild(box);
+
+  const rect = chip.getBoundingClientRect();
+  box.style.top = Math.round(rect.bottom + 8) + "px";
+  box.style.left =
+    Math.round(Math.min(rect.left, window.innerWidth - box.offsetWidth - 12)) + "px";
+  box.querySelector(".modal-close").addEventListener("click", closePlayerSheet);
+}
+
+$("table-rail").addEventListener("click", (e) => {
+  const chip = e.target.closest(".player-chip");
+  if (!chip) return;
+  const m = T.members.find((x) => x.character_id === chip.dataset.character);
+  if (m) showPlayerSheet(chip, m);
+});
+document.addEventListener("click", (e) => {
+  if (!e.target.closest("#player-sheet") && !e.target.closest(".player-chip")) {
+    closePlayerSheet();
+  }
+});
+
+/**
+ * Branche la table sur le direct. Les events de narration sont exactement
+ * ceux du SSE : c'est le même contrat, servi par l'autre transport.
+ */
+function connectTable(sessionId) {
+  closeTableSocket();
+  if (!isTable()) return;
+  T.socket = openTableSocket(
+    sessionId,
+    {
+      // Rattrapage : servi à l'ouverture et à chaque retour de coupure.
+      state: (d) => applyTableState(d),
+      presence: (d) => {
+        T.present = new Set((d.members || []).map((m) => m.user_id));
+        refreshTableViews();
+      },
+      // Quelqu'un arrive ou part : la liste des membres a changé, pas
+      // seulement la présence — il faut la relire.
+      member_joined: () => loadMembers(sessionId).then(refreshTableViews),
+      member_left: () => loadMembers(sessionId).then(refreshTableViews),
+      session_started: () => {
+        if (location.hash.includes("/lobby")) {
+          location.hash = "#/session/" + sessionId;
+        }
+      },
+      turn_mode_changed: (d) => {
+        T.turnMode = d.value;
+        T.awaiting = (d.order || [])[0] || null;
+        renderTable();
+      },
+      turn_waiting: (d) => {
+        T.submitted = new Set(d.submitted || []);
+        renderTable();
+      },
+      turn_locked: () => {
+        T.submitted = new Set();
+        renderTable();
+      },
+      turn_resolving: () => renderTable(),
+      awaiting_player: (d) => {
+        T.awaiting = d.name || null;
+        renderTable();
+      },
+      // Narration d'un tour joué par quelqu'un d'autre.
+      narration: (d) => remoteNarration(d.text),
+      roll: (d) => addRollBlock(d),
+      state_patch: (d) => applyStatePatch(d),
+      scene_break: () => addSceneSep(),
+      done: (d) => {
+        endRemoteNarration();
+        S.turnCount = d.turn;
+        T.submitted = new Set();
+        renderTable();
+        lockInput(false);
+      },
+      act_closing: () => showActClosing(true),
+      act_closed: (d) => {
+        showActClosing(false);
+        onActClosed(d.act);
+      },
+      act_close_suggested: () => {
+        S.actCloseSuggested = true;
+        updateActControls();
+      },
+    },
+    {
+      // Une coupure (écran verrouillé, réseau) a pu faire manquer des events :
+      // ils ne sont jamais rejoués, on recharge donc l'état courant.
+      onReconnect: () => resyncSession(sessionId),
+      onStatus: (open) => $("table-rail").classList.toggle("stale", !open),
+    },
+  );
+}
+
+/** Applique un snapshot serveur : Souffle de chacun, faits, acte courant. */
+function applyTableState(state) {
+  if (!state) return;
+  T.characters = state.characters || {};
+  S.souffle = state.souffle;
+  S.facts = state.facts || [];
+  S.skills = state.skills || [];
+  S.turnCount = state.turn_count;
+  S.actIndex = state.act_index || 0;
+  S.actsClosed = state.acts_closed || 0;
+  S.actCloseSuggested = Boolean(state.act_close_suggested);
+  updateRail();
+  updateActControls();
+  renderTable();
+}
+
+function applyStatePatch(d) {
+  if (d.character_id) {
+    const cs = (T.characters[d.character_id] ??= {});
+    if (typeof d.souffle === "number") cs.souffle = d.souffle;
+    if (Array.isArray(d.skills)) cs.skills = d.skills;
+    if ("pending_roll" in d) cs.pending_roll = d.pending_roll;
+  }
+  // Ce qui me concerne alimente aussi le rail principal.
+  if (!d.character_id || d.character_id === T.myCharacterId) {
+    if (typeof d.souffle === "number") S.souffle = d.souffle;
+    if ("pending_roll" in d) S.pendingRoll = d.pending_roll;
+    if (Array.isArray(d.skills)) S.skills = d.skills;
+  }
+  if (Array.isArray(d.facts)) S.facts = d.facts;
+  updateRail();
+  renderTable();
+}
+
+// Narration reçue par socket : on réutilise le même écrivain que le SSE, pour
+// que le rendu (et la voix) soient identiques quel que soit l'auteur du tour.
+let remoteWriter = null;
+function remoteNarration(text) {
+  if (!remoteWriter) {
+    stopVoice();
+    lockInput(true);
+    remoteWriter = newGmWriter();
+  }
+  remoteWriter.write(text);
+  if (voice.enabled) feedVoice(text);
+}
+function endRemoteNarration() {
+  if (!remoteWriter) return;
+  if (voice.enabled) flushVoice();
+  remoteWriter.end();
+  remoteWriter = null;
+}
+
+/** Recharge l'état après une coupure : les events manqués ne sont pas rejoués. */
+async function resyncSession(sessionId) {
+  const res = await api("/sessions/" + sessionId + "/state");
+  if (!res.ok) return;
+  applyTableState(await res.json());
+}
+
+// — Invitation —
+
+async function createInvite(sessionId, target) {
+  target.innerHTML = spin("Création du code…");
+  const res = await api("/sessions/" + sessionId + "/invite", jsonPost({}));
+  if (!res.ok) {
+    target.innerHTML = '<p class="msg">Impossible de créer un code.</p>';
+    return;
+  }
+  const { code } = await res.json();
+  const lien = location.origin + "/#/join/" + code;
+  target.innerHTML =
+    '<div class="invite-code">' + esc(code) + "</div>" +
+    '<div class="row"><button type="button" class="ghost copy-code">Copier le code</button>' +
+    '<button type="button" class="ghost copy-link">Copier le lien</button></div>';
+  const copie = async (texte, btn) => {
+    try {
+      await navigator.clipboard.writeText(texte);
+      const avant = btn.textContent;
+      btn.textContent = "Copié";
+      setTimeout(() => { btn.textContent = avant; }, 1500);
+    } catch { /* presse-papier refusé : le code reste lisible à l'écran */ }
+  };
+  target.querySelector(".copy-code").addEventListener("click", (e) =>
+    copie(code, e.currentTarget));
+  target.querySelector(".copy-link").addEventListener("click", (e) =>
+    copie(lien, e.currentTarget));
+}
+
+$("invite-toggle").addEventListener("click", () => {
+  $("invite-msg").textContent = "";
+  $("invite-modal").classList.remove("hidden");
+  createInvite(S.id, $("invite-box"));
+});
+$("invite-close").addEventListener("click", () =>
+  $("invite-modal").classList.add("hidden"));
+$("invite-modal").addEventListener("click", (e) => {
+  if (e.target === $("invite-modal")) $("invite-modal").classList.add("hidden");
+});
+
+// — Rejoindre une table —
+
+function showJoin(code) {
+  showScreen("screen-join");
+  $("join-code").value = (code || "").toUpperCase();
+  $("join-msg").textContent = "";
+  if (code) joinTable();
+}
+
+async function joinTable() {
+  const code = $("join-code").value.trim();
+  if (!code) return;
+  const msg = $("join-msg");
+  msg.innerHTML = spin("On vous cherche une place…");
+  const res = await api("/sessions/join", jsonPost({ code }));
+  if (res.ok) {
+    const { session_id } = await res.json();
+    location.hash = "#/session/" + session_id + "/lobby";
+    return;
+  }
+  const body = await res.json().catch(() => ({}));
+  msg.textContent =
+    res.status === 410
+      ? "Ce code a expiré ou a déjà servi au maximum."
+      : res.status === 409
+        ? "Cette partie est terminée."
+        : body.error === "invalid_code"
+          ? "Ce code ne ressemble à rien de connu."
+          : "Code introuvable.";
+}
+
+$("join-btn").addEventListener("click", joinTable);
+$("join-code").addEventListener("keydown", (e) => {
+  if (e.key === "Enter") joinTable();
+});
+
+// — Lobby —
+
+async function showLobby(sessionId) {
+  showScreen("screen-lobby");
+  S.id = sessionId;
+  $("lobby-msg").textContent = "";
+  await loadMembers(sessionId);
+
+  const res = await api("/sessions/" + sessionId + "/state");
+  const state = res.ok ? await res.json() : {};
+  const enCours = state.status === "playing";
+  $("lobby-title").textContent = enCours ? "On reprend" : "La table se réunit";
+  $("lobby-sub").textContent = enCours
+    ? "La partie est en cours : l\u2019hôte relance quand tout le monde est là."
+    : "Chacun choisit son personnage, puis l\u2019hôte lance la partie.";
+
+  renderLobbyPlayers();
+  await renderLobbyMine(sessionId, state.bible_id || null);
+  // Le code d'invitation est un geste d'hôte : le demander en tant que joueur
+  // prendrait un 403, et surtout ce n'est pas à lui d'ouvrir la table.
+  if (T.role === "host") {
+    createInvite(sessionId, $("lobby-invite"));
+  } else {
+    $("lobby-invite").innerHTML =
+      '<p class="msg">Seul l\u2019hôte peut inviter d\u2019autres joueurs.</p>';
+  }
+  renderLastAct(sessionId, state.acts_closed || 0);
+
+  const start = $("lobby-start");
+  start.classList.toggle("hidden", T.role !== "host");
+  start.textContent = enCours ? "Reprendre la partie" : "Lancer la partie";
+
+  connectTable(sessionId);
+}
+
+function renderLobbyPlayers() {
+  $("lobby-players").innerHTML = T.members
+    .map((m) => {
+      const pret = Boolean(m.character_id);
+      return (
+        '<div class="lobby-player' + (pret ? " ready" : "") + '">' +
+        '<span class="dot' + (T.present.has(m.user_id) ? " online" : "") + '"></span>' +
+        "<strong>" + esc(m.display_name || m.email) + "</strong>" +
+        (m.role === "host" ? '<span class="badge">hôte</span>' : "") +
+        '<span class="who">' +
+        (m.character_name ? esc(m.character_name) : "choisit son personnage…") +
+        "</span></div>"
+      );
+    })
+    .join("");
+}
+
+/** Mon choix de personnage : les fiches de cet univers, ou en créer une. */
+async function renderLobbyMine(sessionId, bibleId) {
+  const box = $("lobby-mine");
+  if (!bibleId) {
+    const list = await api("/sessions?");
+    if (list.ok) {
+      const { sessions } = await list.json();
+      const mine = (sessions || []).find((x) => x.id === sessionId);
+      bibleId = mine ? mine.bible_id : null;
+    }
+  }
+  if (!bibleId) { box.innerHTML = ""; return; }
+
+  const res = await api("/characters?bible_id=" + encodeURIComponent(bibleId));
+  if (!res.ok) { box.innerHTML = ""; return; }
+  const { characters } = await res.json();
+
+  box.innerHTML =
+    "<h3>Mon personnage</h3>" +
+    (characters.length
+      ? '<div class="char-choices">' +
+        characters
+          .map(
+            (c) =>
+              '<button type="button" class="ghost pick-char' +
+              (c.id === T.myCharacterId ? " on" : "") +
+              '" data-id="' + esc(c.id) + '">' + esc(c.name) + "</button>",
+          )
+          .join("") +
+        "</div>"
+      : '<p class="msg">Aucune fiche dans cet univers pour l\u2019instant.</p>') +
+    '<div class="row"><a class="ghost" href="#/bible/' + esc(bibleId) +
+    '/embark">Créer un personnage</a></div>';
+
+  box.querySelectorAll(".pick-char").forEach((btn) =>
+    btn.addEventListener("click", async () => {
+      const res2 = await api("/sessions/" + sessionId + "/members/me", {
+        method: "PUT",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ character_id: btn.dataset.id }),
+      });
+      if (res2.ok) {
+        await loadMembers(sessionId);
+        renderLobbyPlayers();
+        await renderLobbyMine(sessionId, bibleId);
+      }
+    }),
+  );
+}
+
+/** Le récit du dernier acte : de quoi se remettre en tête où on en était. */
+async function renderLastAct(sessionId, actsClosed) {
+  const box = $("lobby-last-act");
+  box.innerHTML = "";
+  if (!actsClosed) return;
+  const res = await api("/sessions/" + sessionId + "/acts");
+  if (!res.ok) return;
+  const { acts } = await res.json();
+  const dernier = acts[acts.length - 1];
+  if (!dernier) return;
+  box.innerHTML =
+    "<h3>Précédemment</h3>" +
+    (dernier.narrated_summary_md
+      ? '<div class="act-story">' + mdToHtml(dernier.narrated_summary_md) + "</div>"
+      : '<p class="msg">Le récit de l\u2019acte ' + (dernier.act_index + 1) +
+        " n\u2019a pas encore été écrit.</p>");
+}
+
+$("lobby-start").addEventListener("click", async () => {
+  const btn = $("lobby-start");
+  btn.disabled = true;
+  const res = await api("/sessions/" + S.id + "/start", jsonPost({}));
+  btn.disabled = false;
+  if (res.ok) {
+    const { status } = await res.json();
+    location.hash =
+      status === "setup" ? "#/session/" + S.id + "/setup" : "#/session/" + S.id;
+    return;
+  }
+  const body = await res.json().catch(() => ({}));
+  $("lobby-msg").textContent =
+    body.error === "members_without_character"
+      ? "On attend encore : " +
+        (body.members || []).map((m) => m.display_name).join(", ")
+      : "Le lancement a échoué.";
+});
+
+$("lobby-leave").addEventListener("click", async () => {
+  if (!currentUser) return;
+  await api("/sessions/" + S.id + "/members/" + currentUser.id, {
+    method: "DELETE",
+  });
+  location.hash = "#/play";
+});
+
 // — Actes (M7) : clôture manuelle et relecture —
 //
 // Un acte borne la mémoire narrative de la partie : à sa clôture, l'historique
@@ -4135,7 +4679,11 @@ function runGeneration(sessionId, path, body, retryText = null) {
   let gmText = "";
   let gotDone = false; // un event `done` = tour validé côté serveur
   let redirected = false;
+  let deferred = false; // tour accepté mais pas encore résolu (table)
 
+  // À une table, le tour ne part pas forcément tout de suite : le serveur
+  // répond 202 tant que tout le monde n'a pas soumis. Ce n'est ni une erreur
+  // ni une coupure — la narration arrivera par la socket.
   sse(path, body, {
     narration: (d) => {
       gmText += d.text;
@@ -4176,7 +4724,23 @@ function runGeneration(sessionId, path, body, retryText = null) {
     error: () => {},
   })
     .catch((err) => {
-      if (err.status === 409 && err.payload && err.payload.error === "roll_required") {
+      if (err.status === 202 || (err.payload && err.payload.status)) {
+        // Action enregistrée, résolution différée : on rend la main sans rien
+        // annoncer d'alarmant, et le rail dit qui l'on attend.
+        gotDone = true;
+        deferred = true;
+        T.submitted.add(T.myCharacterId);
+        renderTable();
+      } else if (err.status === 409 && err.payload && err.payload.error === "not_your_turn") {
+        // Tour par tour : l'action est refusée, pas mise en file. Le joueur
+        // doit pouvoir la resoumettre telle quelle quand viendra son tour.
+        gotDone = true;
+        deferred = true;
+        T.awaiting = err.payload.awaiting || null;
+        T.turnMode = "sequential";
+        renderTable();
+        if (retryText) $("player-input").value = retryText;
+      } else if (err.status === 409 && err.payload && err.payload.error === "roll_required") {
         // Flux de jeu normal (pas une coupure) : un jet est requis avant ce tour.
         gotDone = true;
         S.pendingRoll = err.payload.request || err.payload.reason || "action risquée";
@@ -4196,6 +4760,8 @@ function runGeneration(sessionId, path, body, retryText = null) {
       // prose (le segmenteur les a déjà exclues de la lecture, de toute façon).
       if (voice.enabled) flushVoice();
       writer.end();
+      // Tour différé : rien n'a été narré, le bloc vide n'a pas lieu d'être.
+      if (deferred && gmText === "" && writer.el) writer.el.remove();
       S.streaming = false;
       S.lastRoll = null;
       if (redirected) { updateRail(); return; }
@@ -4413,8 +4979,13 @@ async function enterSession(id) {
   const res = await api("/sessions/" + id + "/state");
   if (!res.ok) { location.hash = "#/"; return; }
   const state = await res.json();
+  if (state.status === "lobby") { location.hash = "#/session/" + id + "/lobby"; return; }
   if (state.status === "setup") { location.hash = "#/session/" + id + "/setup"; return; }
   if (state.status === "finished") { location.hash = "#/session/" + id + "/end"; return; }
+
+  // Qui est à la table, et à quel titre. En solo, la réponse tient en une
+  // ligne et tout le bloc « table » reste inerte.
+  await loadMembers(id);
 
   startSessionScreen(id);
   S.status = state.status;
@@ -4450,8 +5021,11 @@ async function enterSession(id) {
   }
   if (S.pendingRoll) addRollNeeded();
   else renderChoices(lastGmEl, lastGmText);
+  T.characters = state.characters || {};
   updateRail();
   updateActControls();
+  renderTable();
+  connectTable(id);
   lockInput(false);
   scrollFeed(true);
   // Jet lancé mais jamais raconté (refresh entre le dé et la suite) :

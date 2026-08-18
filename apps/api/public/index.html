@@ -429,6 +429,8 @@
     <span class="row">
       <button class="ghost hidden" id="voice-toggle" aria-pressed="false"
         title="Lire chaque tour du MJ à voix haute">🔊 Voix du MJ</button>
+      <button class="ghost hidden" id="invite-toggle"
+        title="Inviter un joueur à cette table">＋ Inviter</button>
       <button class="ghost hidden" id="acts-toggle"
         title="Relire les actes déjà joués">📜 Actes précédents</button>
       <button class="ghost hidden" id="act-close-btn"
@@ -440,6 +442,9 @@
       <button class="ghost" id="rail-toggle">Fiche &amp; Souffle</button>
     </span>
   </div>
+  <!-- Table : présence et Souffle de chacun, masqué en solo (§8.3). -->
+  <div class="table-rail hidden" id="table-rail" aria-label="Joueurs à la table"></div>
+  <p class="table-status hidden" id="table-status" aria-live="polite"></p>
   <div class="session-screen" id="session-layout">
     <div class="narration" id="feed" aria-live="polite"></div>
     <aside class="session-rail">
@@ -467,6 +472,48 @@
       <textarea id="player-input" rows="1" placeholder="Que fais-tu ?" aria-label="Votre action"></textarea>
       <button id="send-btn">Agir</button>
     </div>
+  </div>
+</section>
+
+<!-- ── Lobby : on s'installe avant que la partie ne commence (M8) ──────── -->
+<section id="screen-lobby" class="hidden">
+  <div class="app">
+    <h1 class="lobby-title" id="lobby-title">La table se réunit</h1>
+    <p class="msg" id="lobby-sub"></p>
+
+    <div class="lobby-grid">
+      <div>
+        <h2>Joueurs</h2>
+        <div id="lobby-players"></div>
+        <div id="lobby-mine"></div>
+      </div>
+      <div>
+        <h2>Inviter</h2>
+        <p class="msg">Donnez ce code, ou envoyez le lien.</p>
+        <div class="invite-box" id="lobby-invite"></div>
+        <div id="lobby-last-act"></div>
+      </div>
+    </div>
+
+    <div class="row lobby-actions">
+      <button id="lobby-start" class="hidden">Lancer la partie</button>
+      <button class="ghost" id="lobby-leave">Quitter la table</button>
+    </div>
+    <p class="msg" id="lobby-msg"></p>
+  </div>
+</section>
+
+<!-- ── Rejoindre une table par code ────────────────────────────────────── -->
+<section id="screen-join" class="hidden">
+  <div class="app narrow">
+    <h1>Rejoindre une table</h1>
+    <p class="msg">Entrez le code que l'hôte vous a donné.</p>
+    <input id="join-code" maxlength="12" autocomplete="off"
+      placeholder="XXXXXXXX" aria-label="Code d'invitation" />
+    <div class="row">
+      <button id="join-btn">Rejoindre</button>
+    </div>
+    <p class="msg" id="join-msg"></p>
   </div>
 </section>
 
@@ -505,6 +552,17 @@
     <p class="msg">Survolez pour prévisualiser, cliquez pour adopter. Les palettes viennent des tableaux de références de votre bible.</p>
     <div class="palette-choices" id="palette-choices"></div>
     <p class="msg" id="palette-modal-msg"></p>
+  </div>
+</div>
+
+<!-- Invitation à la table : code et lien copiables (M8). -->
+<div id="invite-modal" class="modal-backdrop hidden">
+  <div class="modal" role="dialog" aria-modal="true" aria-labelledby="invite-modal-title">
+    <button type="button" class="modal-close" id="invite-close" aria-label="Fermer">✕</button>
+    <h3 id="invite-modal-title">Inviter à la table</h3>
+    <p class="msg">Le code reste valable une semaine. Les précédents restent bons.</p>
+    <div class="invite-box" id="invite-box"></div>
+    <p class="msg" id="invite-msg"></p>
   </div>
 </div>
 

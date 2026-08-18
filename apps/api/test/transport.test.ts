@@ -5,10 +5,12 @@
 
 import { describe, expect, it, vi } from "vitest";
 import {
+  RECONNECT_BACKOFF_MS,
   SSE_IDLE_TIMEOUT_MS,
   STREAM_EVENTS,
   TransportError,
   openSseStream,
+  openTableSocket,
   // @ts-expect-error — module JS servi tel quel au front, sans types.
 } from "../public/transport.js";
 
@@ -160,5 +162,129 @@ describe("openSseStream", () => {
 
   it("garde le défaut d'inactivité historique de 20 s", () => {
     expect(SSE_IDLE_TIMEOUT_MS).toBe(20000);
+  });
+});
+
+// ── Client WebSocket de table (M8 lot 8.6) ────────────────────────────────
+
+/** Fausse WebSocket : on pilote open/message/close depuis le test. */
+class FakeSocket {
+  static instances: FakeSocket[] = [];
+  readyState = 0;
+  sent: string[] = [];
+  private listeners: Record<string, Array<(e: unknown) => void>> = {};
+
+  constructor(public url: string) {
+    FakeSocket.instances.push(this);
+  }
+  addEventListener(type: string, fn: (e: unknown) => void): void {
+    (this.listeners[type] ??= []).push(fn);
+  }
+  send(data: string): void {
+    if (this.readyState !== 1) throw new Error("socket fermée");
+    this.sent.push(data);
+  }
+  close(): void {
+    this.readyState = 3;
+    this.emit("close", {});
+  }
+  emit(type: string, event: unknown): void {
+    for (const fn of this.listeners[type] ?? []) fn(event);
+  }
+  open(): void {
+    this.readyState = 1;
+    this.emit("open", {});
+  }
+  deliver(event: string, data: unknown): void {
+    this.emit("message", { data: JSON.stringify({ event, data }) });
+  }
+}
+
+const tick = (ms = 0) => new Promise((r) => setTimeout(r, ms));
+
+describe("openTableSocket", () => {
+  it("route les events de table et se ferme sur demande", async () => {
+    FakeSocket.instances = [];
+    const vus: Array<[string, unknown]> = [];
+    const socket = openTableSocket(
+      "sess-1",
+      {
+        narration: (d: unknown) => vus.push(["narration", d]),
+        presence: (d: unknown) => vus.push(["presence", d]),
+      },
+      { factory: (url: string) => new FakeSocket(url) as unknown as WebSocket },
+    );
+
+    const fake = FakeSocket.instances[0];
+    expect(fake.url).toContain("/api/sessions/sess-1/ws");
+    fake.open();
+    expect(socket.isOpen()).toBe(true);
+
+    fake.deliver("presence", { members: [{ user_id: "u1" }] });
+    fake.deliver("narration", { text: "La porte cède." });
+    fake.deliver("inconnu", {}); // event hors contrat : ignoré, jamais fatal
+    expect(vus).toEqual([
+      ["presence", { members: [{ user_id: "u1" }] }],
+      ["narration", { text: "La porte cède." }],
+    ]);
+
+    socket.close();
+    expect(socket.isOpen()).toBe(false);
+  });
+
+  it("se reconnaît coupé et revient, en prévenant qu'il faut resynchroniser", async () => {
+    FakeSocket.instances = [];
+    let reprises = 0;
+    const etats: boolean[] = [];
+    const socket = openTableSocket(
+      "sess-2",
+      {},
+      {
+        onReconnect: () => reprises++,
+        onStatus: (open: boolean) => etats.push(open),
+        factory: (url: string) => new FakeSocket(url) as unknown as WebSocket,
+      },
+    );
+
+    FakeSocket.instances[0].open();
+    // Première connexion : ce n'est pas une reprise, l'appelant vient de
+    // charger son état.
+    expect(reprises).toBe(0);
+
+    // Écran verrouillé sur mobile : la socket se ferme sans prévenir.
+    FakeSocket.instances[0].close();
+    expect(etats).toEqual([true, false]);
+
+    await tick(600); // premier palier de backoff
+    expect(FakeSocket.instances).toHaveLength(2);
+    FakeSocket.instances[1].open();
+
+    // Cette fois c'est un retour : des events ont pu être manqués, l'appelant
+    // doit recharger /state.
+    expect(reprises).toBe(1);
+    socket.close();
+  });
+
+  it("n'ouvre plus rien une fois fermé par l'appelant", async () => {
+    FakeSocket.instances = [];
+    const socket = openTableSocket("sess-3", {}, {
+      factory: (url: string) => new FakeSocket(url) as unknown as WebSocket,
+    });
+    FakeSocket.instances[0].open();
+    socket.close();
+    FakeSocket.instances[0].emit("close", {});
+
+    await tick(700);
+    expect(FakeSocket.instances).toHaveLength(1);
+  });
+
+  it("espace ses tentatives au lieu de marteler le serveur", () => {
+    // Le backoff est croissant et plafonné : une coupure longue ne doit pas
+    // se traduire par des milliers de tentatives.
+    expect(RECONNECT_BACKOFF_MS[0]).toBeLessThan(RECONNECT_BACKOFF_MS.at(-1)!);
+    for (let i = 1; i < RECONNECT_BACKOFF_MS.length; i++) {
+      expect(RECONNECT_BACKOFF_MS[i]).toBeGreaterThan(RECONNECT_BACKOFF_MS[i - 1]);
+    }
+    expect(RECONNECT_BACKOFF_MS.at(-1)).toBeLessThanOrEqual(30000);
   });
 });

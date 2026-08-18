@@ -1577,3 +1577,88 @@ button.palette-card:hover { border-color: var(--arcane); }
   margin: 1.6rem 0 0.4rem;
   color: var(--arcane); font-size: 0.9rem;
 }
+
+/* ── Table partagée (M8) ─────────────────────────────────────────────────
+   La présence et l'attente portent l'identité (--arcane) ; seul le Souffle
+   reste en --ember, comme partout ailleurs. Jamais les deux sur un composant. */
+
+.table-rail {
+  display: flex; gap: 0.5rem; flex-wrap: wrap;
+  padding: 0.5rem 0 0.25rem;
+}
+.table-rail.stale { opacity: 0.55; }
+
+.player-chip {
+  display: inline-flex; align-items: center; gap: 0.45rem;
+  min-height: 44px; padding: 0.35rem 0.75rem;
+  background: transparent; border: 1px solid var(--line); border-radius: 999px;
+  color: var(--parchment-dim); font-size: 0.85rem; cursor: pointer;
+}
+.player-chip.me { border-color: var(--arcane); color: var(--parchment); }
+.player-chip.ready { box-shadow: inset 0 0 0 1px var(--arcane); }
+.player-chip.playing { border-color: var(--arcane); background: rgba(124, 58, 237, 0.16); }
+.player-chip .dot {
+  width: 8px; height: 8px; border-radius: 50%;
+  background: var(--line);
+}
+.player-chip.online .dot { background: var(--arcane); }
+.player-chip.offline { opacity: 0.5; }
+.player-chip .who { max-width: 9rem; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+
+.table-status {
+  margin: 0.1rem 0 0.4rem;
+  color: var(--arcane); font-size: 0.85rem;
+}
+
+.player-sheet {
+  position: fixed; z-index: 60;
+  min-width: 12rem; max-width: 18rem;
+  background: var(--void); border: 1px solid var(--line); border-radius: 12px;
+  padding: 0.9rem 1rem;
+}
+.player-sheet h4 { margin: 0 0 0.4rem; font-family: Cinzel, serif; color: var(--arcane); }
+.player-sheet ul { margin: 0.3rem 0 0; padding-left: 1.1rem; }
+
+/* Lobby */
+.lobby-title { font-family: Cinzel, serif; }
+.lobby-grid { display: grid; gap: 2rem; grid-template-columns: 1fr 1fr; margin-top: 1.5rem; }
+.lobby-grid h2 { font-size: 0.95rem; }
+.lobby-player {
+  display: flex; align-items: center; gap: 0.6rem; flex-wrap: wrap;
+  padding: 0.6rem 0; border-bottom: 1px solid var(--line);
+}
+.lobby-player .dot { width: 8px; height: 8px; border-radius: 50%; background: var(--line); }
+.lobby-player .dot.online { background: var(--arcane); }
+.lobby-player .who { color: var(--parchment-dim); font-size: 0.85rem; }
+.lobby-player .badge {
+  border: 1px solid var(--line); border-radius: 999px;
+  padding: 0.05rem 0.5rem; font-size: 0.7rem; color: var(--arcane);
+}
+.lobby-actions { margin-top: 2rem; gap: 0.75rem; }
+.lobby-actions button { min-height: 44px; }
+.char-choices { display: flex; flex-wrap: wrap; gap: 0.5rem; margin: 0.5rem 0; }
+.char-choices .pick-char { min-height: 44px; }
+.char-choices .pick-char.on { border-color: var(--arcane); color: var(--arcane); }
+
+.invite-box { margin: 0.5rem 0 1rem; }
+.invite-code {
+  font-family: "JetBrains Mono", monospace; font-size: 1.6rem;
+  letter-spacing: 0.35em; color: var(--arcane);
+  padding: 0.6rem 0;
+}
+.invite-box button { min-height: 44px; }
+
+#screen-join .narrow { max-width: 28rem; }
+#join-code {
+  font-family: "JetBrains Mono", monospace; font-size: 1.4rem;
+  letter-spacing: 0.3em; text-align: center; text-transform: uppercase;
+}
+
+@media (max-width: 720px) {
+  .lobby-grid { grid-template-columns: 1fr; gap: 1.5rem; }
+  .player-chip .who { max-width: 6rem; }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .player-chip, .table-rail { transition: none; }
+}

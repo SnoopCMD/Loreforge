@@ -138,6 +138,44 @@ est relu à chaque tour des actes suivants et est plafonné à 2 000 caractères
 `narrated_summary_md` s'adresse au joueur, est de la prose, et n'est généré
 qu'à la demande.
 
+### Table partagée (M8)
+
+Une session peut réunir plusieurs joueurs. Il n'y a PAS deux moteurs : le solo
+est une table d'un joueur, et `mode` ne pilote que trois choses — la politique
+de tour (résolution immédiate en solo), l'interface (ni lobby ni rail) et les
+permissions (pas de rôle d'hôte à faire respecter).
+
+```sh
+POST   /api/sessions                          # { mode: "solo" | "table" }
+POST   /api/sessions/<id>/invite              # (hôte) → { code, expires_at }
+POST   /api/sessions/join                     # { code } → rejoint la table
+GET    /api/sessions/<id>/members             # qui est là, avec quel personnage
+PUT    /api/sessions/<id>/members/me          # { character_id } — je m'assois
+DELETE /api/sessions/<id>/members/<userId>    # (hôte, ou soi-même)
+POST   /api/sessions/<id>/start               # (hôte) lance depuis le lobby
+POST   /api/sessions/<id>/turn/resolve        # (hôte) force la résolution
+GET    /api/sessions/<id>/ws                  # la table en direct (WebSocket)
+```
+
+L'accès passe par `session_members`, jamais par la propriété : `user_id` reste
+l'AUTEUR de la partie, à qui reviennent les propositions de canon. Le WebSocket
+utilise l'API d'hibernation (une partie reste ouverte des heures) et
+s'authentifie **à l'upgrade** — aucun message entrant ne peut redire qui l'on
+est.
+
+Le Souffle, les compétences et les jets appartiennent à un `character_id` ;
+seuls les faits établis et le compteur de tours restent collectifs. Le régime
+de tour est choisi par le MJ, pas par les joueurs :
+
+```
+<turn_mode value="simultaneous"/>                      dialogue, exploration
+<turn_mode value="sequential" order="Kaelen,Mira"/>    combat, tension
+```
+
+En simultané, le tour part quand tous les joueurs connectés ont soumis, au
+délai, ou sur forçage de l'hôte. En séquentiel, une action hors tour est
+refusée — jamais mise en file.
+
 ## Qualité
 
 ```sh
@@ -179,4 +217,4 @@ avant d'ajouter des appels sur l'un ou l'autre chemin.
 - [x] **M5 — Boucle canon**
 - [x] **M6 — RAG (Vectorize)**
 - [x] **M7 — Actes** : fenêtre de contexte bornée, résumés de mémoire, récits narrés + audio
-- [ ] **M8 — Table partagée** : membres, WebSocket, état par joueur, lobby, régimes de tour
+- [x] **M8 — Table partagée** : membres, WebSocket, état par joueur, lobby, régimes de tour
