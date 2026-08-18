@@ -251,7 +251,8 @@ bibles.delete("/:id", async (c) => {
     .bind(id)
     .all<{ id: string }>();
 
-  // Enfants d'abord (canon_proposals et session_acts référencent game_sessions).
+  // Enfants d'abord (canon_proposals, session_acts, session_members et
+  // session_invites référencent tous game_sessions).
   await c.env.DB.batch([
     c.env.DB.prepare(
       `DELETE FROM writing_messages WHERE writing_id IN
@@ -263,6 +264,14 @@ bibles.delete("/:id", async (c) => {
     c.env.DB.prepare(`DELETE FROM canon_proposals WHERE bible_id = ?`).bind(id),
     c.env.DB.prepare(
       `DELETE FROM session_acts WHERE session_id IN
+         (SELECT id FROM game_sessions WHERE bible_id = ?)`,
+    ).bind(id),
+    c.env.DB.prepare(
+      `DELETE FROM session_invites WHERE session_id IN
+         (SELECT id FROM game_sessions WHERE bible_id = ?)`,
+    ).bind(id),
+    c.env.DB.prepare(
+      `DELETE FROM session_members WHERE session_id IN
          (SELECT id FROM game_sessions WHERE bible_id = ?)`,
     ).bind(id),
     c.env.DB.prepare(`DELETE FROM game_sessions WHERE bible_id = ?`).bind(id),

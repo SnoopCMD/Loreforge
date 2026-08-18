@@ -9,6 +9,16 @@ import { findOwnedBible } from "../bibles/db";
 import { parsePalette, serializePalette } from "../bibles/palette";
 import { loreKvPrefix, normalizeTrame, sessionKvKey } from "./do";
 import { purgeSessionAudio } from "../tts/cartesia";
+import {
+  generateInviteCode,
+  INVITE_MAX_USES,
+  INVITE_TTL_MS,
+  listMembers,
+  loadSessionAccess,
+  normalizeInviteCode,
+  SESSION_MODES,
+  type SessionAccess,
+} from "./members";
 
 const FORMATS = ["oneshot", "mini", "campaign"] as const;
 const CHARACTER_MODES = ["embody_canon", "embody_quiz", "create"] as const;
@@ -16,20 +26,6 @@ const CHARACTER_MODES = ["embody_canon", "embody_quiz", "create"] as const;
 export const sessions = new Hono<AppEnv>();
 
 sessions.use("*", requireAuth);
-
-interface GameSessionRow {
-  id: string;
-  bible_id: string;
-  user_id: string;
-  character_id: string | null;
-  format: string;
-  trame: string | null;
-  status: string;
-  summary_md: string | null;
-  created_at: number;
-  finished_at: number | null;
-  palette_json: string | null;
-}
 
 // POST /api/sessions — { bible_id, character_id?, format, trame? }
 // → crée le DO, retourne { session_id, setup_questions[] }.
@@ -41,6 +37,7 @@ sessions.post("/", async (c) => {
     format?: unknown;
     trame?: unknown;
     palette?: unknown;
+    mode?: unknown;
   };
   try {
     body = await c.req.json();
@@ -81,6 +78,13 @@ sessions.post("/", async (c) => {
     return c.json({ error: "invalid_character_mode" }, 400);
   }
 
+  // Mode : solo par défaut. Une table ne change pas de moteur — seulement la
+  // politique de tour, l'interface et les permissions.
+  const mode = body.mode === undefined ? "solo" : body.mode;
+  if (typeof mode !== "string" || !(SESSION_MODES as readonly string[]).includes(mode)) {
+    return c.json({ error: "invalid_mode" }, 400);
+  }
+
   // Palette d'ambiance (§8) : facultative, modifiable en cours de partie.
   let paletteJson: string | null = null;
   if (body.palette !== undefined && body.palette !== null) {
@@ -106,12 +110,14 @@ sessions.post("/", async (c) => {
   const sessionId = doId.toString();
   const now = Date.now();
 
-  await c.env.DB.prepare(
-    `INSERT INTO game_sessions
-       (id, bible_id, user_id, character_id, format, trame, status, created_at, palette_json)
-     VALUES (?, ?, ?, ?, ?, ?, 'setup', ?, ?)`,
-  )
-    .bind(
+  // La session et son hôte naissent ensemble : sans la ligne de membre,
+  // l'auteur n'aurait pas accès à sa propre partie une seconde plus tard.
+  await c.env.DB.batch([
+    c.env.DB.prepare(
+      `INSERT INTO game_sessions
+         (id, bible_id, user_id, character_id, format, trame, status, created_at, palette_json, mode)
+       VALUES (?, ?, ?, ?, ?, ?, 'setup', ?, ?, ?)`,
+    ).bind(
       sessionId,
       bible.id,
       user.id,
@@ -120,8 +126,14 @@ sessions.post("/", async (c) => {
       trame,
       now,
       paletteJson,
-    )
-    .run();
+      mode,
+    ),
+    c.env.DB.prepare(
+      `INSERT INTO session_members
+         (session_id, user_id, character_id, role, joined_at)
+       VALUES (?, ?, ?, 'host', ?)`,
+    ).bind(sessionId, user.id, characterId, now),
+  ]);
 
   const stub = c.env.GAME_SESSIONS.get(doId);
   const res = await stub.fetch("https://do/init", {
@@ -138,16 +150,20 @@ sessions.post("/", async (c) => {
   });
   if (!res.ok) {
     // Init impossible (bible vidée entre-temps...) : pas de ligne orpheline.
-    await c.env.DB.prepare(`DELETE FROM game_sessions WHERE id = ?`)
-      .bind(sessionId)
-      .run();
+    // Le membre part d'abord, il référence la session.
+    await c.env.DB.batch([
+      c.env.DB.prepare(`DELETE FROM session_members WHERE session_id = ?`).bind(
+        sessionId,
+      ),
+      c.env.DB.prepare(`DELETE FROM game_sessions WHERE id = ?`).bind(sessionId),
+    ]);
     return c.json({ error: "session_init_failed" }, 500);
   }
 
   const { setup_questions } = (await res.json()) as {
     setup_questions: string[];
   };
-  return c.json({ session_id: sessionId, setup_questions }, 201);
+  return c.json({ session_id: sessionId, mode, setup_questions }, 201);
 });
 
 // GET /api/sessions?bible_id= — sessions de l'utilisateur pour une bible ;
@@ -161,14 +177,18 @@ sessions.get("/", async (c) => {
     if (!bible) return c.json({ error: "bible_not_found" }, 404);
   }
 
+  // Les sessions où l'on est ASSIS, pas seulement celles qu'on a créées : un
+  // invité doit retrouver la partie qu'il a rejointe sur son accueil.
   const { results } = await c.env.DB.prepare(
     `SELECT gs.id, gs.bible_id, b.title AS bible_title,
-            gs.character_id, ch.name AS character_name, gs.format,
-            gs.trame, gs.status, gs.created_at, gs.finished_at, gs.palette_json
-     FROM game_sessions gs
+            sm.character_id, ch.name AS character_name, gs.format,
+            gs.trame, gs.status, gs.mode, sm.role, gs.created_at,
+            gs.finished_at, gs.palette_json
+     FROM session_members sm
+     JOIN game_sessions gs ON gs.id = sm.session_id
      JOIN bibles b ON b.id = gs.bible_id
-     LEFT JOIN characters ch ON ch.id = gs.character_id
-     WHERE gs.user_id = ? AND (? IS NULL OR gs.bible_id = ?)
+     LEFT JOIN characters ch ON ch.id = sm.character_id
+     WHERE sm.user_id = ? AND (? IS NULL OR gs.bible_id = ?)
      ORDER BY gs.created_at DESC`,
   )
     .bind(user.id, bibleId ?? null, bibleId ?? null)
@@ -182,29 +202,40 @@ sessions.get("/", async (c) => {
   return c.json({ sessions });
 });
 
-async function loadOwnedSession(
-  db: D1Database,
-  id: string,
-  userId: string,
-): Promise<GameSessionRow | null> {
-  return db
-    .prepare(`SELECT * FROM game_sessions WHERE id = ? AND user_id = ?`)
-    .bind(id, userId)
-    .first<GameSessionRow>();
+/**
+ * Accès d'un membre à une session, ou null. Toutes les routes passent par là :
+ * un seul oubli, et un joueur invité prend un 404 sur une partie où il est
+ * assis. `opts.host` réserve le geste à l'hôte (403 sinon).
+ */
+async function access(
+  c: Context<AppEnv>,
+  opts: { host?: boolean } = {},
+): Promise<SessionAccess | Response> {
+  const found = await loadSessionAccess(
+    c.env.DB,
+    c.req.param("id")!,
+    c.get("user").id,
+  );
+  if (!found) return c.json({ error: "not_found" }, 404);
+  if (opts.host && found.role !== "host") {
+    return c.json({ error: "host_only" }, 403);
+  }
+  return found;
+}
+
+/** `access()` a-t-il rendu une erreur plutôt qu'un accès ? */
+function denied(result: SessionAccess | Response): result is Response {
+  return result instanceof Response;
 }
 
 /** Proxy d'un endpoint du DO ; le corps de la requête est transmis tel quel. */
-function proxy(path: string) {
+function proxy(path: string, opts: { host?: boolean } = {}) {
   return async (c: Context<AppEnv, "/:id">): Promise<Response> => {
-    const row = await loadOwnedSession(
-      c.env.DB,
-      c.req.param("id"),
-      c.get("user").id,
-    );
-    if (!row) return c.json({ error: "not_found" }, 404);
+    const found = await access(c, opts);
+    if (denied(found)) return found;
 
     const stub = c.env.GAME_SESSIONS.get(
-      c.env.GAME_SESSIONS.idFromString(row.id),
+      c.env.GAME_SESSIONS.idFromString(found.row.id),
     );
     return stub.fetch(new Request(`https://do${path}`, c.req.raw));
   };
@@ -214,16 +245,18 @@ function proxy(path: string) {
 // Vit en D1 et non dans le DO : c'est une préférence d'affichage, pas de la
 // fiction — elle survit donc au refresh sans réveiller le Durable Object.
 sessions.get("/:id/palette", async (c) => {
-  const row = await loadOwnedSession(c.env.DB, c.req.param("id"), c.get("user").id);
-  if (!row) return c.json({ error: "not_found" }, 404);
-  return c.json({ palette: parsePalette(row.palette_json) });
+  const found = await access(c);
+  if (denied(found)) return found;
+  return c.json({ palette: parsePalette(found.row.palette_json) });
 });
 
 // PUT /api/sessions/:id/palette — { palette } pour changer d'ambiance en cours
 // de partie, ou { palette: null } pour revenir à la DA par défaut.
 sessions.put("/:id/palette", async (c) => {
-  const row = await loadOwnedSession(c.env.DB, c.req.param("id"), c.get("user").id);
-  if (!row) return c.json({ error: "not_found" }, 404);
+  // Hôte seulement : l'ambiance s'applique à toute la table.
+  const found = await access(c, { host: true });
+  if (denied(found)) return found;
+  const row = found.row;
 
   let body: { palette?: unknown };
   try {
@@ -245,22 +278,148 @@ sessions.put("/:id/palette", async (c) => {
   return c.json({ palette: parsePalette(paletteJson) });
 });
 
-sessions.post("/:id/trame", proxy("/trame"));
-sessions.post("/:id/setup", proxy("/setup"));
+// Mise en place et fin de partie : gestes d'hôte. Jouer un tour et lancer un
+// dé, eux, appartiennent à tout membre de la table.
+// ── Membres et invitations (M8 lot 8.1) ──────────────────────────────────
+
+// POST /api/sessions/:id/invite (hôte) → { code, expires_at }.
+// Un nouveau code n'invalide pas les précédents : on peut relancer un joueur
+// qui a perdu le sien sans casser l'invitation des autres.
+sessions.post("/:id/invite", async (c) => {
+  const found = await access(c, { host: true });
+  if (denied(found)) return found;
+  if (found.row.status === "finished") {
+    return c.json({ error: "session_finished" }, 409);
+  }
+
+  const now = Date.now();
+  const code = generateInviteCode();
+  const expiresAt = now + INVITE_TTL_MS;
+  await c.env.DB.prepare(
+    `INSERT INTO session_invites
+       (code, session_id, created_by, expires_at, max_uses, uses, created_at)
+     VALUES (?, ?, ?, ?, ?, 0, ?)`,
+  )
+    .bind(code, found.row.id, c.get("user").id, expiresAt, INVITE_MAX_USES, now)
+    .run();
+
+  return c.json({ code, expires_at: expiresAt, max_uses: INVITE_MAX_USES }, 201);
+});
+
+// POST /api/sessions/join { code } → rejoint la table.
+// Pas de :id dans l'URL : celui qui rejoint ne connaît que le code.
+sessions.post("/join", async (c) => {
+  let body: { code?: unknown };
+  try {
+    body = await c.req.json();
+  } catch {
+    return c.json({ error: "invalid_json" }, 400);
+  }
+  const code = normalizeInviteCode(body.code);
+  if (!code) return c.json({ error: "invalid_code" }, 400);
+
+  const invite = await c.env.DB.prepare(
+    `SELECT i.code, i.session_id, i.expires_at, i.max_uses, i.uses,
+            gs.status, gs.mode
+     FROM session_invites i
+     JOIN game_sessions gs ON gs.id = i.session_id
+     WHERE i.code = ?`,
+  )
+    .bind(code)
+    .first<{
+      code: string;
+      session_id: string;
+      expires_at: number;
+      max_uses: number;
+      uses: number;
+      status: string;
+      mode: string;
+    }>();
+  if (!invite) return c.json({ error: "invalid_code" }, 404);
+  if (invite.expires_at < Date.now() || invite.uses >= invite.max_uses) {
+    return c.json({ error: "code_expired" }, 410);
+  }
+  if (invite.status === "finished") {
+    return c.json({ error: "session_finished" }, 409);
+  }
+
+  const user = c.get("user");
+  // Déjà membre : on ne consomme pas d'usage, et rejoindre reste idempotent
+  // (un lien recliqué ne doit pas épuiser le code de la table).
+  const existing = await loadSessionAccess(c.env.DB, invite.session_id, user.id);
+  if (existing) {
+    return c.json({ session_id: invite.session_id, role: existing.role });
+  }
+
+  await c.env.DB.batch([
+    c.env.DB.prepare(
+      `INSERT INTO session_members
+         (session_id, user_id, character_id, role, joined_at)
+       VALUES (?, ?, NULL, 'player', ?)`,
+    ).bind(invite.session_id, user.id, Date.now()),
+    // L'usage est décompté au même endroit : un code épuisé l'est vraiment,
+    // même si deux joueurs cliquent en même temps.
+    c.env.DB.prepare(
+      `UPDATE session_invites SET uses = uses + 1 WHERE code = ?`,
+    ).bind(code),
+  ]);
+
+  return c.json({ session_id: invite.session_id, role: "player" }, 201);
+});
+
+// GET /api/sessions/:id/members — qui est à la table, et avec quel personnage.
+sessions.get("/:id/members", async (c) => {
+  const found = await access(c);
+  if (denied(found)) return found;
+  return c.json({
+    members: await listMembers(c.env.DB, found.row.id),
+    mode: found.row.mode,
+    role: found.role,
+  });
+});
+
+// DELETE /api/sessions/:id/members/:userId — l'hôte exclut, chacun part.
+// L'hôte ne peut pas se retirer lui-même : une table sans hôte n'aurait plus
+// personne pour la lancer, la clore ou inviter.
+sessions.delete("/:id/members/:userId", async (c) => {
+  const found = await access(c);
+  if (denied(found)) return found;
+
+  const target = c.req.param("userId");
+  const self = c.get("user").id;
+  if (target !== self && found.role !== "host") {
+    return c.json({ error: "host_only" }, 403);
+  }
+  if (target === found.row.user_id) {
+    return c.json({ error: "host_cannot_leave" }, 409);
+  }
+
+  const res = await c.env.DB.prepare(
+    `DELETE FROM session_members WHERE session_id = ? AND user_id = ?`,
+  )
+    .bind(found.row.id, target)
+    .run();
+  if (!res.meta.changes) return c.json({ error: "not_a_member" }, 404);
+  return c.json({ ok: true });
+});
+
+sessions.post("/:id/trame", proxy("/trame", { host: true }));
+sessions.post("/:id/setup", proxy("/setup", { host: true }));
 sessions.post("/:id/turn", proxy("/turn"));
 sessions.post("/:id/roll", proxy("/roll"));
-sessions.post("/:id/finish", proxy("/finish"));
+sessions.post("/:id/finish", proxy("/finish", { host: true }));
 // Clôture d'acte (M7) : l'historique de l'acte est remplacé par son résumé et
 // la fenêtre de contexte repart de zéro — c'est ce qui empêche une partie
 // longue de perdre son passé et de payer plein tarif à chaque tour.
-sessions.post("/:id/acts/close", proxy("/act/close"));
+sessions.post("/:id/acts/close", proxy("/act/close", { host: true }));
 
 // GET /api/sessions/:id/acts — les actes clos et leurs résumés.
 // Lu directement en D1 : pas besoin de réveiller le Durable Object pour
 // afficher un historique qui, par définition, ne bouge plus.
 sessions.get("/:id/acts", async (c) => {
-  const row = await loadOwnedSession(c.env.DB, c.req.param("id"), c.get("user").id);
-  if (!row) return c.json({ error: "not_found" }, 404);
+  const found = await access(c);
+  if (denied(found)) return found;
+  const row = found.row;
 
   const { results } = await c.env.DB.prepare(
     `SELECT act_index, title, context_summary_md, narrated_summary_md,
@@ -284,8 +443,9 @@ function stubFor(c: Context<AppEnv>, id: string): DurableObjectStub {
 // joueur. Idempotent : un acte déjà narré renvoie l'existant (?force=1 pour
 // régénérer). Handler dédié : le proxy générique perdrait la query string.
 sessions.post("/:id/acts/:index/narrate", async (c) => {
-  const row = await loadOwnedSession(c.env.DB, c.req.param("id"), c.get("user").id);
-  if (!row) return c.json({ error: "not_found" }, 404);
+  const found = await access(c);
+  if (denied(found)) return found;
+  const row = found.row;
 
   const qs = new URLSearchParams({
     index: c.req.param("index"),
@@ -300,8 +460,9 @@ sessions.post("/:id/acts/:index/narrate", async (c) => {
 // Protégée par l'accès à la session : l'objet R2 n'est jamais servi
 // directement, et un non-membre prend 404 sur la session avant tout le reste.
 sessions.get("/:id/acts/:index/audio", async (c) => {
-  const row = await loadOwnedSession(c.env.DB, c.req.param("id"), c.get("user").id);
-  if (!row) return c.json({ error: "not_found" }, 404);
+  const found = await access(c);
+  if (denied(found)) return found;
+  const row = found.row;
 
   return stubFor(c, row.id).fetch(
     `https://do/act/audio?index=${encodeURIComponent(c.req.param("index"))}`,
@@ -313,12 +474,9 @@ sessions.get("/:id/acts/:index/audio", async (c) => {
 // canon issues d'elle, puis la ligne D1. Le canon déjà accepté, lui, reste —
 // il appartient à la bible. Les compétences déjà versées au personnage aussi.
 sessions.delete("/:id", async (c) => {
-  const row = await loadOwnedSession(
-    c.env.DB,
-    c.req.param("id"),
-    c.get("user").id,
-  );
-  if (!row) return c.json({ error: "not_found" }, 404);
+  const found = await access(c, { host: true });
+  if (denied(found)) return found;
+  const row = found.row;
 
   const stub = c.env.GAME_SESSIONS.get(
     c.env.GAME_SESSIONS.idFromString(row.id),
@@ -340,6 +498,12 @@ sessions.delete("/:id", async (c) => {
       row.id,
     ),
     c.env.DB.prepare(`DELETE FROM session_acts WHERE session_id = ?`).bind(
+      row.id,
+    ),
+    c.env.DB.prepare(`DELETE FROM session_invites WHERE session_id = ?`).bind(
+      row.id,
+    ),
+    c.env.DB.prepare(`DELETE FROM session_members WHERE session_id = ?`).bind(
       row.id,
     ),
     c.env.DB.prepare(`DELETE FROM game_sessions WHERE id = ?`).bind(row.id),
@@ -375,8 +539,9 @@ async function purgeSessionCache(
 // GET /api/sessions/:id/lore?term=&kind= — fiche d'un terme d'univers (§7).
 // Handler dédié : le proxy générique perdrait la query string.
 sessions.get("/:id/lore", async (c) => {
-  const row = await loadOwnedSession(c.env.DB, c.req.param("id"), c.get("user").id);
-  if (!row) return c.json({ error: "not_found" }, 404);
+  const found = await access(c);
+  if (denied(found)) return found;
+  const row = found.row;
 
   const qs = new URLSearchParams({
     term: c.req.query("term") ?? "",
@@ -390,12 +555,9 @@ sessions.get("/:id/lore", async (c) => {
 
 // GET /api/sessions/:id/state — cache chaud KV, sinon DO (qui repeuple KV).
 sessions.get("/:id/state", async (c) => {
-  const row = await loadOwnedSession(
-    c.env.DB,
-    c.req.param("id"),
-    c.get("user").id,
-  );
-  if (!row) return c.json({ error: "not_found" }, 404);
+  const found = await access(c);
+  if (denied(found)) return found;
+  const row = found.row;
 
   if (row.status !== "finished") {
     const cached = await c.env.CACHE.get(sessionKvKey(row.id));
