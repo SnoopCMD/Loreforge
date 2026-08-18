@@ -480,3 +480,48 @@ avec cette relance (1 à 3 phrases), sans aucune balise.`;
 export const SUMMARY_MESSAGE = `La session est terminée. Rédige un résumé structuré en Markdown avec les
 sections : ## Résumé, ## Faits marquants, ## PNJ rencontrés, ## Fils laissés
 ouverts. Réponds uniquement avec ce Markdown, sans aucune balise.`;
+
+// ── Actes clos (lot 7.1) ──────────────────────────────────────────────────
+
+/** Ce qu'un acte clos laisse au modèle : son résumé de contexte, rien d'autre. */
+export interface ClosedActSummary {
+  act_index: number;
+  title: string | null;
+  context_summary_md: string;
+}
+
+/**
+ * Mémoire des actes clos, en UN SEUL bloc de texte placé en tête de
+ * l'historique de l'acte courant.
+ *
+ * C'est ce bloc qui porte le point de cache : il ne change plus de toute la
+ * durée de l'acte, donc le préfixe (système + résumés) reste identique à
+ * l'octet près d'un tour à l'autre. C'est exactement ce que la fenêtre
+ * glissante de 40 tours cassait — passé le 40e tour, le premier message de la
+ * liste changeait à chaque tour et tout l'historique repassait plein tarif.
+ *
+ * Renvoie null quand aucun acte n'est clos : la session se comporte alors
+ * exactement comme avant, sans bloc parasite dans les messages.
+ */
+export function buildActsBlock(acts: ClosedActSummary[]): string | null {
+  const usable = acts
+    .filter((a) => a.context_summary_md.trim() !== "")
+    .sort((a, b) => a.act_index - b.act_index);
+  if (usable.length === 0) return null;
+
+  const body = usable
+    .map((a) => {
+      const title = a.title?.trim();
+      return `## Acte ${a.act_index + 1}${title ? ` — ${title}` : ""}\n${a.context_summary_md.trim()}`;
+    })
+    .join("\n\n");
+
+  return `[ACTES PRÉCÉDENTS — mémoire de la session, vérité serveur]
+Ces actes se sont joués plus tôt dans CETTE partie. Leur narration détaillée
+n'est plus dans l'historique : ces résumés en tiennent lieu et font foi. Ne les
+contredis jamais, ne les recopie pas, n'y fais jamais référence comme à un
+texte — pour le joueur, ce sont des souvenirs, pas des notes.
+
+${body}
+[FIN DES ACTES PRÉCÉDENTS]`;
+}

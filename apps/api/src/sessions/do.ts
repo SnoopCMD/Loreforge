@@ -10,6 +10,7 @@
 //   POST /roll    {reason?}        → JSON RollResult (dés, dé retenu, issue)
 //   GET  /state                    → JSON état public
 //   POST /finish                   → JSON {summary_md, inventions}
+//   POST /act/close                → JSON {act} (clôt l'acte courant, lot 7.1)
 //   POST /destroy                  → JSON {ok} (purge totale, session supprimée)
 
 import { DurableObject } from "cloudflare:workers";
@@ -45,6 +46,7 @@ import {
 import { retrieveCanonExcerpts } from "../rag/store";
 import { loadMoodboardAnnex } from "../bibles/moodboard-context";
 import {
+  buildActsBlock,
   buildSetupMessage,
   buildSystemPrompt,
   buildTurnContext,
@@ -54,6 +56,7 @@ import {
   selectSetupGaps,
   SUMMARY_MESSAGE,
   turnEndsOpen,
+  type ClosedActSummary,
   type SetupContext,
 } from "./prompt";
 import { canonizeGapAnswers, type GapAnswer } from "../richness/suggest";
@@ -80,8 +83,18 @@ const MAX_PLAYER_INPUT_CHARS = 4000;
 const MAX_ANSWERS = 10;
 /** Fil rouge de session : une intention, pas un synopsis. */
 export const MAX_TRAME_CHARS = 500;
-// Fenêtre de contexte : derniers tours envoyés au modèle.
+// Fenêtre de contexte, en TOURS DE JEU. Attention au piège : le storage garde
+// DEUX entrées par tour (la saisie du joueur, puis la narration du MJ). La
+// fenêtre historique passait 40 à listTurns(), qui compte des entrées — elle
+// valait donc 20 tours de jeu, pas 40. On l'exprime désormais dans l'unité que
+// tout le reste du code manipule (act_turns, bornes de clôture), et les appels
+// passent par CONTEXT_MESSAGES.
+//
+// Depuis le découpage en actes (lot 7.1), cette fenêtre ne glisse plus en
+// pratique : la clôture forcée d'un acte intervient AVANT qu'on l'atteigne.
+// Elle reste un plafond de sécurité.
 const CONTEXT_TURNS = 40;
+const CONTEXT_MESSAGES = CONTEXT_TURNS * 2;
 // Prompt caching (coût) : le préfixe stable (system + historique) est mis en
 // cache côté API ; TTL 1h car le rythme d'une partie dépasse souvent les 5 min
 // entre deux tours. Relecture ≈ 0,1× le prix d'un token d'entrée.
@@ -139,6 +152,14 @@ interface StoredTurn {
   role: "user" | "assistant";
   text: string;
 }
+
+/**
+ * Acte clos, tel que le DO le garde sous la main pour construire ses messages.
+ * D1 (`session_acts`) en est la copie durable et requêtable ; ce doublon en
+ * storage évite un aller-retour D1 à CHAQUE tour, sur le chemin le plus chaud
+ * de l'application.
+ */
+type ClosedAct = ClosedActSummary;
 
 /** Entrée de cache d'une fiche lore : la fiche + l'empreinte de ses sources. */
 interface LoreCacheEntry {
@@ -233,6 +254,9 @@ export class GameSession extends DurableObject<Env> {
       }
       if (request.method === "POST" && path === "/finish") {
         return await this.finish(meta);
+      }
+      if (request.method === "POST" && path === "/act/close") {
+        return await this.closeAct(meta);
       }
       return json({ error: "not_found" }, 404);
     } catch (err) {
@@ -365,6 +389,11 @@ export class GameSession extends DurableObject<Env> {
       open_gaps: openGaps,
       inventions: [] as Invention[],
       turn_count_stored: 0,
+      // Bornes d'acte (lot 7.1) : la session naît sur l'acte 0, dont la
+      // fenêtre part du tout premier tour stocké.
+      act_index: 0,
+      act_start_index: 0,
+      closed_acts: [] as ClosedAct[],
     });
     await this.syncKV(meta, state);
 
@@ -609,7 +638,15 @@ export class GameSession extends DurableObject<Env> {
     meta: SessionMeta,
     state: GameState,
   ): Promise<Record<string, unknown>> {
-    const turns = await this.listTurns(LOG_TURNS);
+    // Le journal affiché n'est PAS borné à l'acte : le joueur qui recharge en
+    // début d'acte doit garder la continuité de ce qu'il vient de vivre. Seul
+    // le contexte envoyé au modèle est borné (listTurns).
+    const turns = await this.listAllTurns();
+    const log = turns.slice(-LOG_TURNS);
+    const actIndex = (await this.ctx.storage.get<number>("act_index")) ?? 0;
+    const actStart = await this.actStartIndex();
+    const stored =
+      (await this.ctx.storage.get<number>("turn_count_stored")) ?? 0;
     return {
       session_id: meta.sessionId,
       status: meta.status,
@@ -627,7 +664,12 @@ export class GameSession extends DurableObject<Env> {
         : null,
       last_roll: state.last_roll,
       turn_count: state.turn_count,
-      log: turns.map((t) => ({
+      // Acte courant : son numéro et les tours déjà joués dedans. Le front s'en
+      // sert pour situer la partie et proposer la clôture au bon moment.
+      act_index: actIndex,
+      act_turns: Math.max(0, Math.floor((stored - actStart) / 2)),
+      acts_closed: (await this.closedActs()).length,
+      log: log.map((t) => ({
         role: t.role === "assistant" ? "gm" : "player",
         // Côté joueur, la ligne technique du jet est retirée : le client
         // affiche le jet via son propre bloc dédié. Un tour de continuation
@@ -674,6 +716,7 @@ export class GameSession extends DurableObject<Env> {
         system,
         messages,
       });
+      this.logUsage("résumé", meta.sessionId, response.usage);
       summaryMd = response.content
         .filter((block) => block.type === "text")
         .map((block) => block.text)
@@ -792,6 +835,91 @@ export class GameSession extends DurableObject<Env> {
       );
     }
     return json({ summary_md: summaryMd, inventions, proposals });
+  }
+
+  // ── Actes (lot 7.1) ───────────────────────────────────────────────────
+
+  /**
+   * Clôt l'acte courant : son résumé rejoint D1 et le storage du DO, puis la
+   * fenêtre de contexte repart du tour suivant. Les tours de l'acte ne sont
+   * PAS purgés — le résumé narré (lot 7.3) est bien meilleur quand il peut
+   * relire les tours d'origine.
+   *
+   * Idempotent : rappelée sur un acte où rien n'a été joué, la clôture ne
+   * crée pas d'acte vide et renvoie le dernier acte clos.
+   */
+  private async closeAct(meta: SessionMeta): Promise<Response> {
+    if (meta.status !== "playing") {
+      return json({ error: "invalid_status", status: meta.status }, 409);
+    }
+
+    const actIndex = (await this.ctx.storage.get<number>("act_index")) ?? 0;
+    const turnStart = await this.actStartIndex();
+    const turnEnd =
+      (await this.ctx.storage.get<number>("turn_count_stored")) ?? 0;
+
+    if (turnEnd <= turnStart) {
+      const acts = await this.closedActs();
+      const last = acts.at(-1);
+      if (!last) return json({ error: "empty_act" }, 409);
+      return json({ act: last, closed: false });
+    }
+
+    const summary = await this.summarizeAct(meta, turnStart, turnEnd);
+    if (!summary) return json({ error: "act_summary_failed" }, 502);
+
+    const act: ClosedAct = {
+      act_index: actIndex,
+      title: summary.title,
+      context_summary_md: summary.context_summary_md,
+    };
+    const closed = [...(await this.closedActs()), act];
+
+    await this.env.DB.prepare(
+      `INSERT INTO session_acts
+         (id, session_id, act_index, title, context_summary_md,
+          turn_start, turn_end, closed_at)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
+    )
+      .bind(
+        crypto.randomUUID(),
+        meta.sessionId,
+        actIndex,
+        act.title,
+        act.context_summary_md,
+        turnStart,
+        turnEnd,
+        Date.now(),
+      )
+      .run();
+
+    // La fenêtre repart d'ici : listTurns() ne remontera plus au-delà, et le
+    // bloc des résumés devient la nouvelle ancre de cache de l'acte suivant.
+    await this.ctx.storage.put({
+      act_index: actIndex + 1,
+      act_start_index: turnEnd,
+      closed_acts: closed,
+    });
+
+    const state = (await this.ctx.storage.get<GameState>("state"))!;
+    await this.syncKV(meta, state);
+    return json({ act, closed: true });
+  }
+
+  /**
+   * Résumé de contexte d'un acte. Provisoire à ce stade (lot 7.1) : l'objectif
+   * du lot est la mécanique de fenêtrage, testable seule. La génération réelle
+   * arrive au lot 7.2, avec son propre prompt de concision.
+   */
+  private async summarizeAct(
+    _meta: SessionMeta,
+    turnStart: number,
+    turnEnd: number,
+  ): Promise<{ title: string | null; context_summary_md: string } | null> {
+    return {
+      title: null,
+      context_summary_md: `(résumé provisoire — tours ${turnStart} à ${turnEnd})`,
+    };
   }
 
   // ── Génération streamée (setup et turn) ───────────────────────────────
@@ -925,6 +1053,9 @@ export class GameSession extends DurableObject<Env> {
         ) {
           raw += event.delta.text;
           await handle(parser.feed(event.delta.text));
+        } else if (event.type === "message_start") {
+          // Le coût du préfixe se lit ici, et nulle part ailleurs.
+          this.logUsage("narration", meta.sessionId, event.message.usage);
         }
       }
       await handle(parser.flush());
@@ -1085,7 +1216,7 @@ export class GameSession extends DurableObject<Env> {
     const canon = await this.ensureCanon(meta.bibleId);
     const inventions =
       (await this.ctx.storage.get<Invention[]>("inventions")) ?? [];
-    const narration = (await this.listTurns(CONTEXT_TURNS))
+    const narration = (await this.listTurns(CONTEXT_MESSAGES))
       .filter((t) => t.role === "assistant")
       .map((t) => stripGmTags(t.text).trim());
     const sources = collectLoreSources(canon, inventions, narration, term);
@@ -1214,34 +1345,135 @@ export class GameSession extends DurableObject<Env> {
   }
 
   /**
-   * Historique stocké + nouveau message utilisateur, fenêtré. Le dernier tour
-   * stocké porte le point de cache : à la requête suivante, tout le préfixe
-   * (system + historique) est relu depuis le cache, seuls le nouveau tour et
-   * le contexte volatile sont facturés plein tarif.
+   * Historique de l'acte courant + nouveau message utilisateur.
+   *
+   * Deux points de cache, deux rôles :
+   * - sur le bloc des actes clos, en tête du premier message : c'est l'ANCRE.
+   *   Elle ne bouge plus de tout l'acte, donc le préfixe (système + résumés)
+   *   reste identique à l'octet près d'un tour à l'autre. C'est précisément ce
+   *   que la fenêtre glissante cassait : passé le 40e tour, le premier message
+   *   changeait à chaque tour et tout l'historique repassait plein tarif.
+   * - sur le dernier tour stocké : cache INCRÉMENTAL. L'historique de l'acte
+   *   ne fait que s'allonger, chaque tour étend donc l'entrée précédente au
+   *   lieu de la réécrire.
    */
   private async buildMessages(
     sentText: string,
   ): Promise<Anthropic.MessageParam[]> {
-    const turns = await this.listTurns(CONTEXT_TURNS);
+    const turns = await this.listTurns(CONTEXT_MESSAGES);
+    const actsBlock = buildActsBlock(await this.closedActs());
+    const tail = { role: "user" as const, content: sentText };
+
+    // Aucun acte clos : forme historique inchangée (une session courte ne voit
+    // strictement aucune différence).
+    if (!actsBlock) {
+      return [
+        ...turns.map((t, i): Anthropic.MessageParam => ({
+          role: t.role,
+          content:
+            i === turns.length - 1 && t.text !== ""
+              ? [{ type: "text", text: t.text, cache_control: CACHE_CONTROL }]
+              : t.text,
+        })),
+        tail,
+      ];
+    }
+
+    const ancre: Anthropic.TextBlockParam = {
+      type: "text",
+      text: actsBlock,
+      cache_control: CACHE_CONTROL,
+    };
+
+    // Acte tout juste ouvert, aucun tour joué dedans : l'ancre voyage en tête
+    // du message du tour. Elle garde son propre bloc, donc son point de cache
+    // reste devant le contexte volatile (qui, lui, change à chaque tour).
+    if (turns.length === 0) {
+      return [{ role: "user", content: [ancre, { type: "text", text: sentText }] }];
+    }
+
     return [
-      ...turns.map((t, i): Anthropic.MessageParam => ({
-        role: t.role,
-        content:
-          i === turns.length - 1 && t.text !== ""
-            ? [{ type: "text", text: t.text, cache_control: CACHE_CONTROL }]
-            : t.text,
-      })),
-      { role: "user" as const, content: sentText },
+      ...turns.map((t, i): Anthropic.MessageParam => {
+        const blocks: Anthropic.TextBlockParam[] = [];
+        if (i === 0) blocks.push(ancre);
+        if (t.text !== "") {
+          blocks.push(
+            i === turns.length - 1
+              ? { type: "text", text: t.text, cache_control: CACHE_CONTROL }
+              : { type: "text", text: t.text },
+          );
+        }
+        // Un tour vide en fin de fenêtre laisserait un contenu vide : on
+        // retombe alors sur la forme chaîne, comme avant les actes.
+        return blocks.length === 0
+          ? { role: t.role, content: t.text }
+          : { role: t.role, content: blocks };
+      }),
+      tail,
     ];
   }
 
+  /**
+   * Tours de l'ACTE COURANT, les `limit` derniers. Ne remonte jamais avant
+   * act_start_index : ce qui précède est représenté par les résumés d'actes,
+   * pas par des tours bruts.
+   */
   private async listTurns(limit: number): Promise<StoredTurn[]> {
+    const start = await this.actStartIndex();
     const map = await this.ctx.storage.list<StoredTurn>({
       prefix: "turn:",
+      start: turnKey(start),
       reverse: true,
       limit,
     });
     return [...map.values()].reverse();
+  }
+
+  /**
+   * Historique COMPLET de la session, actes clos compris. Les tours d'un acte
+   * clos ne sont pas purgés : le résumé narré (lot 7.3) est bien meilleur
+   * quand il peut relire les tours d'origine.
+   */
+  private async listAllTurns(range?: {
+    start: number;
+    end: number;
+  }): Promise<StoredTurn[]> {
+    const map = await this.ctx.storage.list<StoredTurn>({
+      prefix: "turn:",
+      ...(range
+        ? { start: turnKey(range.start), end: turnKey(range.end) }
+        : {}),
+    });
+    return [...map.values()];
+  }
+
+  /** Borne basse de la fenêtre de contexte : premier tour de l'acte courant. */
+  private async actStartIndex(): Promise<number> {
+    return (await this.ctx.storage.get<number>("act_start_index")) ?? 0;
+  }
+
+  /** Résumés des actes déjà clos, dans l'ordre de jeu. */
+  private async closedActs(): Promise<ClosedAct[]> {
+    return (await this.ctx.storage.get<ClosedAct[]>("closed_acts")) ?? [];
+  }
+
+  /**
+   * Coût du prompt caching, tour par tour. C'est la seule façon de PROUVER que
+   * le bornage par acte fait ce qu'on en attend : cache_read élevé et stable =
+   * le préfixe tient ; cache_creation qui repart à chaque tour = il a décroché.
+   * À garder avant d'ajouter le multi-joueurs, qui quadruplera les tours.
+   */
+  private logUsage(label: string, sessionId: string, usage: unknown): void {
+    const u = (usage ?? {}) as Record<string, number | undefined>;
+    console.log(
+      `[game-session] ${label} ${sessionId} tokens :`,
+      JSON.stringify({
+        input: u.input_tokens ?? 0,
+        cache_read: u.cache_read_input_tokens ?? 0,
+        cache_creation: u.cache_creation_input_tokens ?? 0,
+        output: u.output_tokens ?? 0,
+      }),
+    );
   }
 }
 

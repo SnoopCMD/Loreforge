@@ -249,6 +249,10 @@ sessions.post("/:id/setup", proxy("/setup"));
 sessions.post("/:id/turn", proxy("/turn"));
 sessions.post("/:id/roll", proxy("/roll"));
 sessions.post("/:id/finish", proxy("/finish"));
+// Clôture d'acte (M7) : l'historique de l'acte est remplacé par son résumé et
+// la fenêtre de contexte repart de zéro — c'est ce qui empêche une partie
+// longue de perdre son passé et de payer plein tarif à chaque tour.
+sessions.post("/:id/acts/close", proxy("/act/close"));
 
 // DELETE /api/sessions/:id — efface une session et tout ce qu'elle a laissé :
 // storage du DO (historique, faits, inventions), caches KV, propositions de
@@ -275,8 +279,13 @@ sessions.delete("/:id", async (c) => {
 
   // Une lacune répondue par cette session redevient ouverte : sa proposition
   // en attente disparaît, la question reviendra à la prochaine mise en place.
+  // Les actes partent avec : sans ça, session_acts garderait des orphelins
+  // référençant une game_sessions qui n'existe plus.
   await c.env.DB.batch([
     c.env.DB.prepare(`DELETE FROM canon_proposals WHERE session_id = ?`).bind(
+      row.id,
+    ),
+    c.env.DB.prepare(`DELETE FROM session_acts WHERE session_id = ?`).bind(
       row.id,
     ),
     c.env.DB.prepare(`DELETE FROM game_sessions WHERE id = ?`).bind(row.id),
