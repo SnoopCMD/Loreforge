@@ -130,7 +130,17 @@ describe("M3 — moteur de session (DO GameSession)", () => {
     ).json()) as { characters: Array<{ name: string }> };
     expect(list.characters.map((c) => c.name)).toEqual(["Kael"]);
 
-    // Création de session : questions issues des lacunes geography (score 3).
+    // Création de session : le tri de pertinence retient les deux lacunes
+    // geography, que cette partie va effectivement croiser.
+    mockAnthropicText(
+      JSON.stringify({
+        gaps: [
+          { gap_id: "g1", relevance: 9, why: "la scène 1 s'ouvre sur la carte" },
+          { gap_id: "g2", relevance: 7, why: "Kael traverse la capitale" },
+        ],
+        ad_hoc: null,
+      }),
+    );
     const createRes = await post(cookie, "/api/sessions", {
       bible_id: bibleId,
       character_id: characterId,

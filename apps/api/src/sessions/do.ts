@@ -56,6 +56,14 @@ import {
   type SetupContext,
 } from "./prompt";
 import { canonizeGapAnswers, type GapAnswer } from "../richness/suggest";
+import {
+  buildRelevanceMessage,
+  MAX_SCORED_GAPS,
+  parseRelevance,
+  RELEVANCE_OUTPUT_SCHEMA,
+  RELEVANCE_SYSTEM_PROMPT,
+  selectRelevantGaps,
+} from "./setup-relevance";
 
 export const NARRATION_MODEL = "claude-sonnet-5";
 const MAX_NARRATION_TOKENS = 2048;
@@ -78,6 +86,9 @@ const LORE_TTL_SECONDS = 60 * 60 * 24 * 7;
 // Fiche lore : 2-4 phrases, un appel court et non streamé.
 export const LORE_MODEL = "claude-sonnet-5";
 const MAX_LORE_TOKENS = 400;
+// Tri des zones floues avant la mise en place : un verdict chiffré, pas de prose.
+export const SETUP_RELEVANCE_MODEL = "claude-sonnet-5";
+const MAX_RELEVANCE_TOKENS = 1500;
 
 export function sessionKvKey(sessionId: string): string {
   return `session:${sessionId}:state`;
@@ -328,7 +339,7 @@ export class GameSession extends DurableObject<Env> {
     state.skills = characterSkills;
     // Les lacunes retenues sont conservées telles quelles : chaque réponse du
     // joueur pourra être reliée à sa zone floue d'origine au /finish.
-    const setupGaps = selectSetupGaps(scores, openGaps, setupContext(meta));
+    const setupGaps = await this.pickSetupGaps(meta, openGaps);
     const questions = setupGaps.map(gapQuestion);
 
     this.canonCache = bible.canon_md;
@@ -367,11 +378,7 @@ export class GameSession extends DurableObject<Env> {
       (await this.ctx.storage.get<RichnessGap[]>("open_gaps")) ??
       (await this.ctx.storage.get<RichnessGap[]>("setup_gaps")) ??
       [];
-    const setupGaps = selectSetupGaps(
-      meta.scores,
-      openGaps,
-      setupContext(meta),
-    );
+    const setupGaps = await this.pickSetupGaps(meta, openGaps);
     const questions = setupGaps.map(gapQuestion);
 
     await this.ctx.storage.put({
@@ -946,6 +953,58 @@ export class GameSession extends DurableObject<Env> {
       this.canonCache = row?.canon_md ?? "";
     }
     return this.canonCache;
+  }
+
+  // ── Zones floues de la mise en place (§4) ────────────────────────────────
+
+  /**
+   * Choisit les lacunes à soumettre à l'auteur avant la scène 1. Les scores
+   * d'axe disent ce qui manque à la BIBLE ; ils ne disent pas ce que CETTE
+   * partie va croiser. Un appel court note donc chaque lacune à la lumière du
+   * personnage, du fil rouge et du format, et seules celles au-dessus du seuil
+   * sont posées — quitte à n'en poser qu'une, ou aucune.
+   *
+   * Les lacunes écartées ne sont pas perdues : elles restent dans gaps_json et
+   * visibles dans l'éditeur de bible ; elles ne sont simplement pas posées ici.
+   */
+  private async pickSetupGaps(
+    meta: SessionMeta,
+    openGaps: RichnessGap[],
+  ): Promise<RichnessGap[]> {
+    if (!meta.scores || openGaps.length === 0) return [];
+    const candidates = openGaps.slice(0, MAX_SCORED_GAPS);
+    const context = {
+      characterName: meta.characterName,
+      characterSheet: meta.characterSheet,
+      trame: meta.trame,
+      format: meta.format,
+    };
+
+    try {
+      const client = new Anthropic({ apiKey: this.env.ANTHROPIC_API_KEY });
+      const response = await client.messages.create({
+        model: SETUP_RELEVANCE_MODEL,
+        max_tokens: MAX_RELEVANCE_TOKENS,
+        system: RELEVANCE_SYSTEM_PROMPT,
+        output_config: {
+          format: { type: "json_schema", schema: RELEVANCE_OUTPUT_SCHEMA },
+        },
+        messages: [
+          { role: "user", content: buildRelevanceMessage(candidates, context) },
+        ],
+      });
+      const text = response.content
+        .filter((b) => b.type === "text")
+        .map((b) => b.text)
+        .join("");
+      return selectRelevantGaps(parseRelevance(JSON.parse(text), candidates));
+    } catch (err) {
+      // Repli hors ligne : le tri par mots-clés, qui ne rend que les lacunes
+      // que le contexte touche vraiment (souvent aucune) — jamais un lot de
+      // questions hors sujet parce que le scoring n'a pas répondu.
+      console.error(`[game-session] pertinence des lacunes ${meta.sessionId} :`, err);
+      return selectSetupGaps(meta.scores, candidates, setupContext(meta));
+    }
   }
 
   // ── Fiche lore (§7) : un seul chemin, toujours rédigé par l'IA ────────────

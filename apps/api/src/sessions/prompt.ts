@@ -79,18 +79,16 @@ function gapRelevance(gap: RichnessGap, context: SetupContext): number {
 }
 
 /**
- * Lacunes retenues pour la mise en place : les plus proches du contexte de la
- * session d'abord, puis par score d'axe croissant ; une lacune par question,
- * 3 max (SPEC §4).
+ * Repli hors ligne de la sélection : les zones floues que le contexte de la
+ * session touche vraiment, les plus proches d'abord, puis par score d'axe
+ * croissant ; 3 max (SPEC §4).
  *
- * - Contexte : si le fil rouge (ou le personnage) touche à des zones floues,
- *   la mise en place ne parle que de celles-là — inutile de faire trancher la
- *   trame du Passeur quand la partie s'ouvre ailleurs. Les autres attendent
- *   leur tour ; à contexte muet, on retombe sur le tri par axe faible.
- * - Pas de seuil de score : tant qu'il reste une zone floue ouverte, la mise en
- *   place la pose — une bible bien notée garde des flous que l'auteur veut
- *   trancher, et la boucle de canonisation retire d'elle-même les lacunes
- *   déjà traitées.
+ * Le tri normal passe par un scoring IA (voir setup-relevance.ts) ; cette
+ * version par mots-clés ne sert que si cet appel échoue. Elle ne rend RIEN
+ * quand le contexte ne recoupe aucune lacune : une mise en place courte vaut
+ * mieux qu'une mise en place hors sujet — c'est exactement ce que produisait
+ * l'ancien repli « par axe le plus faible », qui faisait trancher les six
+ * Gardiens à une partie de gangs urbains.
  *
  * Renvoyer les lacunes (et pas les questions) permet de relier chaque réponse
  * du joueur à sa zone floue d'origine — la boucle de canonisation en dépend.
@@ -101,16 +99,15 @@ export function selectSetupGaps(
   context: SetupContext = {},
 ): RichnessGap[] {
   if (!scores) return [];
-  const ranked = gaps
+  const pool = gaps
     .filter((gap) => (AXES as readonly string[]).includes(gap.axis))
     .map((gap, index) => ({
       gap,
       index,
       relevance: gapRelevance(gap, context),
-    }));
+    }))
+    .filter((r) => r.relevance > 0);
 
-  const onTopic = ranked.filter((r) => r.relevance > 0);
-  const pool = onTopic.length > 0 ? onTopic : ranked;
   pool.sort(
     (a, b) =>
       b.relevance - a.relevance ||

@@ -32,15 +32,19 @@ const gaps: RichnessGap[] = [
   { axis: "cosmology", description: "Origine de la magie floue." },
 ];
 
-describe("buildSetupQuestions (SPEC §4)", () => {
-  it("priorise les axes faibles par score croissant, max 3 questions", () => {
-    const questions = buildSetupQuestions(scores, gaps);
-    expect(questions).toHaveLength(MAX_SETUP_QUESTIONS);
-    // geography (3) avant tone (4) ; cosmology (9) en dernier, donc écarté.
+// Repli hors ligne du tri de pertinence : sans contexte qui recoupe une
+// lacune, il ne propose RIEN — le tri normal passe par setup-relevance.ts.
+describe("buildSetupQuestions (SPEC §4) — repli par mots-clés", () => {
+  it("ne pose que les lacunes que le contexte touche, max 3", () => {
+    const questions = buildSetupQuestions(scores, gaps, {
+      trame: "Dresser la carte des Mondes depuis la capitale.",
+    });
+    expect(questions.length).toBeLessThanOrEqual(MAX_SETUP_QUESTIONS);
     expect(questions[0]).toContain("Aucune carte des Mondes.");
     expect(questions[1]).toContain("La capitale n'est pas décrite.");
-    expect(questions[2]).toContain("Niveau de violence non explicité.");
-    for (const q of questions) expect(q).not.toContain("magie");
+    // Ni le ton ni la magie ne sont dans le fil rouge : on n'en parle pas.
+    expect(questions.join(" ")).not.toContain("violence");
+    expect(questions.join(" ")).not.toContain("magie");
   });
 
   it("aucune question sans scores ni sans lacune ouverte", () => {
@@ -48,22 +52,18 @@ describe("buildSetupQuestions (SPEC §4)", () => {
     expect(buildSetupQuestions(scores, [])).toEqual([]);
   });
 
-  it("pose les lacunes même sur une bible bien notée (pas de seuil)", () => {
-    // Régression : le seuil « axe ≤ 4 » tarissait les questions dès que les
-    // axes remontaient, alors que des zones floues restaient ouvertes.
-    const strong = {
-      cosmology: 9, characters: 9, plots: 9, tone: 8, geography: 7,
-    };
-    const questions = buildSetupQuestions(strong, gaps);
-    expect(questions).toHaveLength(MAX_SETUP_QUESTIONS);
-    // geography (7) d'abord, puis tone (8) — l'ordre suit toujours les scores.
-    expect(questions[0]).toContain("Aucune carte des Mondes.");
-    expect(questions[2]).toContain("Niveau de violence non explicité.");
+  it("contexte muet : silence plutôt qu'un lot de questions hors sujet", () => {
+    // Régression (mise en place gaspillée) : l'ancien repli « axe le plus
+    // faible » faisait trancher six Gardiens à une partie de gangs urbains.
+    expect(buildSetupQuestions(scores, gaps)).toEqual([]);
   });
 
   it("selectSetupGaps garde l'alignement lacune ↔ question (boucle canon)", () => {
-    const selected = selectSetupGaps(scores, gaps);
-    expect(selected.map(gapQuestion)).toEqual(buildSetupQuestions(scores, gaps));
+    const context = { trame: "Dresser la carte des Mondes." };
+    const selected = selectSetupGaps(scores, gaps, context);
+    expect(selected.map(gapQuestion)).toEqual(
+      buildSetupQuestions(scores, gaps, context),
+    );
     // Chaque lacune retenue conserve sa description d'origine : c'est la clé
     // (source_comment) qui la retirera de gaps_json à l'acceptation.
     expect(selected[0]).toEqual(gaps[0]);
@@ -73,13 +73,11 @@ describe("buildSetupQuestions (SPEC §4)", () => {
     const open = gaps.filter(
       (g) => g.description !== "Aucune carte des Mondes.",
     );
-    const questions = buildSetupQuestions(scores, open);
-    expect(questions).toHaveLength(3);
+    const context = { trame: "Dresser la carte des Mondes depuis la capitale." };
+    const questions = buildSetupQuestions(scores, open, context);
+    expect(questions).toHaveLength(1);
     expect(questions[0]).toContain("La capitale n'est pas décrite.");
     expect(questions.join(" ")).not.toContain("Aucune carte des Mondes.");
-    // La place libérée revient à la lacune suivante (ici cosmology, 9) : une
-    // zone floue traitée laisse la parole à une autre, jamais au silence.
-    expect(questions[2]).toContain("Origine de la magie floue.");
   });
 });
 
@@ -117,14 +115,11 @@ describe("questions de mise en place recentrées sur le contexte", () => {
     expect(questions.join(" ")).not.toContain("Passeur");
   });
 
-  it("hors sujet complet : on retombe sur le tri par axe faible", () => {
+  it("hors sujet complet : aucune question plutôt que trois inutiles", () => {
     const questions = buildSetupQuestions(richScores, trames, {
       trame: "Ouvrir une taverne et n'ennuyer personne.",
     });
-    expect(questions).toHaveLength(MAX_SETUP_QUESTIONS);
-    // characters (3) → geography (4) → plots (5).
-    expect(questions[0]).toContain("Orlanne");
-    expect(questions[1]).toContain("Gué des Cendres");
+    expect(questions).toEqual([]);
   });
 
   it("ignore les mots vides et l'accentuation", () => {
