@@ -18,6 +18,7 @@ import type { Env } from "../env";
 import type { RichnessGap, RichnessScores } from "../richness/logic";
 import {
   addFact,
+  applySkillTiers,
   applySkillUpdate,
   applySouffleDelta,
   initialGameState,
@@ -528,7 +529,11 @@ export class GameSession extends DurableObject<Env> {
           typeof bodyReason === "string" ? bodyReason : null,
         );
 
-    const result = performRoll(await this.auditedRoll(meta, request));
+    // Deux passes avant les dés : le palier des compétences engagées (calcul
+    // pur, la liste des acquis fait foi), puis la vérification des bonus de
+    // fiche que le MJ aurait oubliés.
+    const withTiers = applySkillTiers(request, state.skills);
+    const result = performRoll(await this.auditedRoll(meta, withTiers));
     state.last_roll = result;
     state.pending_roll = null;
 

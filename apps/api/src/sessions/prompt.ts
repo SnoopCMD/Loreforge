@@ -267,12 +267,18 @@ NOMBRE DE DÉS — barème strict, pas d'appréciation libre :
   1 dé de base
   +1 si l'action s'aligne avec le TEMPÉRAMENT du personnage
   +1 si elle mobilise sa CAPACITÉ principale
+  +1 si elle engage une COMPÉTENCE acquise au palier maîtrise ou inné
   +1 si un point de Souffle est dépensé pour l'action
   -1 si elle heurte frontalement sa FAIBLESSE déclarée
-  plancher 1 dé, plafond ${MAX_POOL} dés. On garde le meilleur dé obtenu
-  (le pire en disadvantage) et on le compare au seuil de difficulté.
+  plancher 1 dé, plafond ${MAX_POOL} dés — le cumul peut dépasser, il est
+  simplement écrêté. On garde le meilleur dé obtenu (le pire en disadvantage)
+  et on le compare au seuil de difficulté.
 À CHAQUE jet, énumère dans bonuses les bonus appliqués et pourquoi, sources
-séparées par des points-virgules : temperament, ability, souffle, weakness.
+séparées par des points-virgules : temperament, ability, skill, souffle,
+weakness. Le bonus skill est vérifié sur la liste des compétences acquises :
+inutile de le réclamer pour une compétence à découverte ou apprentissage, et
+inutile de l'oublier pour une compétence à maîtrise — le serveur le corrige
+dans les deux sens à partir des compétences que tu nommes dans skills.
 Exemple : <roll reason="pousser Reika à révéler la faille du sigil" dice="3"
 bonuses="temperament: provocation, pousser à la faute ; ability: sigils"
 difficulty="normal" stance="neutral" skills="comédie, lecture sociale"/>
@@ -318,10 +324,11 @@ ${SKILL_TIERS.map((t, i) => `${i + 1}. ${t}`).join(" → ")}.
     peuvent en appeler un.
 - Un jet raté sur une compétence maîtrisée porte sur l'enjeu, jamais sur la
   capacité elle-même (l'expert ne « rate » pas son geste de base).
-- Quand un jet a bien lieu, nomme les compétences engagées dans skills. Une
-  compétence qui relève de la capacité principale de la fiche justifie le
-  bonus ability du barème ; les paliers, eux, décident du BESOIN d'un jet, pas
-  du nombre de dés.
+- Le palier joue donc deux fois : il décide du BESOIN d'un jet (ci-dessus) et,
+  quand le jet a lieu quand même, il pèse sur la poignée — une compétence
+  engagée à maîtrise ou inné vaut +1 dé (bonus skill du barème). Nomme
+  toujours les compétences engagées dans skills : c'est sur elles que le
+  serveur vérifie ce bonus.
 
 == MÉMOIRE DES FAITS ==
 Quand un événement marquant établit un fait durable (mort d'un PNJ, promesse,

@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import {
   addFact,
+  applySkillTiers,
   applySkillUpdate,
   bonusDice,
   applySouffleDelta,
@@ -236,6 +237,74 @@ describe("barème des dés (§6) — la fiche décide, pas l'humeur du MJ", () =
     });
     expect(r.bonus_dice).toBe(-1);
     expect(poolSize(r)).toBe(1);
+  });
+
+  it("le palier des compétences engagées pèse sur la poignée", () => {
+    const acquired: SkillEntry[] = [
+      { name: "Acrobatie", tier: "maîtrise" },
+      { name: "Crochetage", tier: "apprentissage" },
+    ];
+    const base = normalizeRollRequest({
+      reason: "franchir le vide",
+      skills: ["Acrobatie"],
+    });
+    const withTier = applySkillTiers(base, acquired);
+    expect(withTier.bonus_dice).toBe(1);
+    expect(withTier.bonuses).toEqual([
+      { source: "skill", why: "Acrobatie, maîtrise" },
+    ]);
+
+    // Un acquis encore fragile ne donne pas de dé.
+    const learning = applySkillTiers(
+      normalizeRollRequest({ reason: "crocheter", skills: ["Crochetage"] }),
+      acquired,
+    );
+    expect(learning.bonus_dice).toBe(0);
+    expect(learning.bonuses).toEqual([]);
+  });
+
+  it("retire un bonus de compétence réclamé sans acquis derrière", () => {
+    const claimed = normalizeRollRequest({
+      reason: "escalade",
+      bonuses: "temperament: casse-cou ; skill: Escalade",
+      skills: ["Escalade"],
+    });
+    expect(claimed.bonus_dice).toBe(2);
+    const checked = applySkillTiers(claimed, [
+      { name: "Escalade", tier: "découverte" },
+    ]);
+    expect(checked.bonus_dice).toBe(1);
+    expect(checked.bonuses).toEqual([
+      { source: "temperament", why: "casse-cou" },
+    ]);
+  });
+
+  it("garde le meilleur palier quand plusieurs compétences sont engagées", () => {
+    const r = applySkillTiers(
+      normalizeRollRequest({
+        reason: "duel de sigils",
+        skills: ["Sigils", "Esquive"],
+      }),
+      [
+        { name: "Esquive", tier: "maîtrise" },
+        { name: "Sigils", tier: "inné" },
+      ],
+    );
+    expect(r.bonuses).toEqual([{ source: "skill", why: "Sigils, inné" }]);
+  });
+
+  it("le cumul peut dépasser le plafond, la poignée est écrêtée", () => {
+    const r = applySkillTiers(
+      normalizeRollRequest({
+        reason: "tout donner",
+        bonuses: "temperament: x ; ability: y ; souffle",
+        skills: ["Sigils"],
+        stance: "advantage",
+      }),
+      [{ name: "Sigils", tier: "inné" }],
+    );
+    expect(r.bonus_dice).toBe(4);
+    expect(poolSize(r)).toBe(MAX_POOL);
   });
 
   it("plafonne la poignée à MAX_POOL", () => {

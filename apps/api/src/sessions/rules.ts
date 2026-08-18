@@ -50,8 +50,9 @@ export const STANCE_LABELS: Record<Stance, string> = {
 
 /** Un dé à 5 ou 6 annule un dé raté. */
 export const CANCEL_VALUE = 5;
-/** Somme maximale des bonus de fiche (tempérament + capacité + souffle). */
-export const MAX_BONUS_DICE = 3;
+/** Somme des bonus possibles (tempérament + capacité + compétence + souffle) ;
+ * le cumul peut dépasser la poignée, qui est écrêtée à MAX_POOL. */
+export const MAX_BONUS_DICE = 4;
 /** Plafond de la poignée, dé de posture compris. */
 export const MAX_POOL = 4;
 
@@ -62,9 +63,11 @@ export const MAX_POOL = 4;
 //   1 dé de base
 //   +1 si l'action s'aligne avec le TEMPÉRAMENT du personnage
 //   +1 si elle mobilise sa CAPACITÉ principale
+//   +1 si elle engage une COMPÉTENCE acquise à maîtrise ou inné
 //   +1 si un point de Souffle est dépensé
 //   -1 si elle heurte frontalement sa FAIBLESSE déclarée
-//   (plancher 1 dé, plafond MAX_POOL = 4)
+//   (plancher 1 dé, plafond MAX_POOL = 4 — le cumul peut dépasser, il est
+//    simplement écrêté)
 //
 // Le MJ doit énumérer les bonus qu'il applique et pourquoi ; le serveur
 // recalcule la poignée depuis cette liste, jamais depuis un nombre annoncé.
@@ -72,6 +75,7 @@ export const MAX_POOL = 4;
 export const ROLL_BONUS_SOURCES = [
   "temperament",
   "ability",
+  "skill",
   "souffle",
   "weakness",
 ] as const;
@@ -80,6 +84,7 @@ export type RollBonusSource = (typeof ROLL_BONUS_SOURCES)[number];
 export const ROLL_BONUS_DICE: Record<RollBonusSource, number> = {
   temperament: 1,
   ability: 1,
+  skill: 1,
   souffle: 1,
   weakness: -1,
 };
@@ -87,6 +92,7 @@ export const ROLL_BONUS_DICE: Record<RollBonusSource, number> = {
 export const ROLL_BONUS_LABELS: Record<RollBonusSource, string> = {
   temperament: "tempérament",
   ability: "capacité",
+  skill: "compétence",
   souffle: "souffle",
   weakness: "faiblesse",
 };
@@ -160,6 +166,10 @@ export function normalizeBonusSource(raw: string): RollBonusSource | null {
     case "capacite principale":
     case "pouvoir":
       return "ability";
+    case "skill":
+    case "competence":
+    case "competence engagee":
+      return "skill";
     case "souffle":
       return "souffle";
     case "weakness":
@@ -396,8 +406,18 @@ export interface SkillEntry {
   note?: string;
 }
 
-// Les paliers ne donnent plus de dés : ils disent s'il faut un jet (voir le
-// prompt du MJ). Le nombre de dés vient du barème de fiche, en tête de fichier.
+/**
+ * Ce qu'un palier apporte AU JET, quand jet il y a. En amont, le palier dit
+ * déjà s'il faut lancer les dés (découverte : toujours ; inné : jamais) ;
+ * ici il dit ce que l'acquis vaut une fois la poignée constituée : un savoir
+ * assimilé pèse un dé, un savoir en cours d'acquisition ne pèse rien.
+ */
+export const TIER_GRANTS_DIE: Record<SkillTier, boolean> = {
+  découverte: false,
+  apprentissage: false,
+  maîtrise: true,
+  inné: true,
+};
 
 export const MAX_SKILLS = 40;
 /** Faits établis maximum ; au-delà, les plus anciens sortent (FIFO). */
@@ -485,6 +505,50 @@ export function sanitizeSkills(raw: unknown): SkillEntry[] {
     );
   }
   return skills;
+}
+
+/**
+ * La compétence engagée la mieux assimilée parmi celles nommées par le MJ,
+ * à condition qu'elle soit réellement acquise (la liste du personnage fait
+ * foi) et que son palier donne un dé. null sinon.
+ */
+export function engagedSkillDie(
+  engaged: string[],
+  acquired: SkillEntry[],
+): SkillEntry | null {
+  const wanted = new Set(engaged.map(skillKey));
+  let best: SkillEntry | null = null;
+  for (const skill of acquired) {
+    if (!wanted.has(skillKey(skill.name)) || !TIER_GRANTS_DIE[skill.tier]) continue;
+    if (!best || SKILL_TIERS.indexOf(skill.tier) > SKILL_TIERS.indexOf(best.tier)) {
+      best = skill;
+    }
+  }
+  return best;
+}
+
+/**
+ * Applique le palier des compétences engagées à la poignée. Déterministe et
+ * vérifié : le bonus de compétence n'existe que si le personnage a vraiment
+ * l'acquis au bon palier — un bonus réclamé sans acquis derrière est retiré,
+ * un acquis oublié par le MJ est ajouté.
+ */
+export function applySkillTiers(
+  request: RollRequest,
+  acquired: SkillEntry[],
+): RollRequest {
+  const earned = engagedSkillDie(request.skills, acquired);
+  const others = request.bonuses.filter((b) => b.source !== "skill");
+  const bonuses = earned
+    ? [...others, { source: "skill" as const, why: `${earned.name}, ${earned.tier}` }]
+    : others;
+  if (
+    bonuses.length === request.bonuses.length &&
+    bonuses.every((b, i) => b.source === request.bonuses[i].source && b.why === request.bonuses[i].why)
+  ) {
+    return request;
+  }
+  return { ...request, bonuses, bonus_dice: bonusDice(bonuses) };
 }
 
 /**

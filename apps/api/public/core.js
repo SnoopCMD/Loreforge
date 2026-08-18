@@ -143,17 +143,23 @@ export function rollPoolSize(request) {
 export const ROLL_BONUS_LABELS = {
   temperament: "tempérament",
   ability: "capacité",
+  skill: "compétence",
   souffle: "souffle",
   weakness: "faiblesse",
 };
 
 /**
- * D'où viennent les dés : « +1 tempérament · +1 capacité ». Le joueur doit
- * pouvoir relire son compte — c'est aussi ce qui rend les erreurs visibles.
+ * D'où viennent les dés : « +1 tempérament · +1 compétence (Acrobatie,
+ * maîtrise) ». Le joueur doit pouvoir relire son compte — c'est aussi ce qui
+ * rend les erreurs visibles. Le palier est montré, c'est lui qui donne le dé.
  */
 export function rollBonusText(request) {
   return (request.bonuses || [])
-    .map((b) => (b.source === "weakness" ? "-1 " : "+1 ") + ROLL_BONUS_LABELS[b.source])
+    .map((b) => {
+      const sign = b.source === "weakness" ? "-1 " : "+1 ";
+      const detail = b.source === "skill" && b.why ? ` (${b.why})` : "";
+      return sign + ROLL_BONUS_LABELS[b.source] + detail;
+    })
     .join(" · ");
 }
 

@@ -17,6 +17,7 @@ import {
 } from "../public/core.js";
 import { DEFAULT_PALETTE, PALETTE_KEYS as SERVER_KEYS } from "../src/bibles/palette";
 import {
+  applySkillTiers,
   normalizeRollRequest,
   poolSize,
   resolveRoll,
@@ -231,6 +232,17 @@ describe("normalizeRoll / rollPoolSize (miroir front du moteur §6)", () => {
         ),
       ),
     ).toBe("-1 faiblesse");
+    // Le palier qui donne le dé est montré au joueur.
+    expect(
+      rollBonusText(
+        normalizeRoll(
+          applySkillTiers(
+            normalizeRollRequest({ reason: "franchir le vide", skills: ["Acrobatie"] }),
+            [{ name: "Acrobatie", tier: "maîtrise" }],
+          ),
+        ),
+      ),
+    ).toBe("+1 compétence (Acrobatie, maîtrise)");
     // Rien à afficher quand aucun bonus n'a joué.
     expect(rollBonusText(normalizeRoll("saut"))).toBe("");
   });
