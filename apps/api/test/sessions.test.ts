@@ -181,11 +181,13 @@ describe("M3 — moteur de session (DO GameSession)", () => {
       data: { turn: 1, souffle: 3 },
     });
 
-    // Tour 1 : le MJ demande un jet.
+    // Tour 1 : le MJ demande un jet. Il crédite la capacité (marche-faille)
+    // mais oublie le tempérament — c'est le garde-fou qui le rattrapera.
     mockAnthropicStream([
       "Tu t'élances au-dessus de la faille. ",
       '<roll reason="saut au-dessus de la faille" difficulty="hard" ' +
-        'stance="advantage" dice="1" skills="Acrobatie"/>',
+        'stance="advantage" dice="2" bonuses="ability: marche-faille" ' +
+        'skills="Acrobatie"/>',
     ]);
     const turn1 = await readSse(
       await post(cookie, `/api/sessions/${session_id}/turn`, {
@@ -198,6 +200,7 @@ describe("M3 — moteur de session (DO GameSession)", () => {
         difficulty: "hard",
         stance: "advantage",
         bonus_dice: 1,
+        bonuses: [{ source: "ability", why: "marche-faille" }],
         skills: ["Acrobatie"],
       },
     });
@@ -211,8 +214,15 @@ describe("M3 — moteur de session (DO GameSession)", () => {
       "roll_required",
     );
 
-    // Dés serveur : la poignée suit les conditions posées par le MJ
-    // (1 dé de base + 1 dé de compétence + 1 dé d'avantage).
+    // Garde-fou : le tempérament « taciturne » de la fiche n'avait pas été
+    // crédité — la vérification serveur l'ajoute avant que les dés tombent.
+    mockAnthropicText(
+      JSON.stringify({
+        temperament: { applies: true, why: "saut solitaire, sans un mot" },
+        ability: { applies: true, why: "marche-faille" },
+      }),
+    );
+    // Dés serveur : 1 de base + tempérament + capacité + avantage → plafond 4.
     const rollRes = await post(cookie, `/api/sessions/${session_id}/roll`, {
       // Le client ne choisit rien : ces conditions-là doivent être ignorées.
       difficulty: "easy",
@@ -227,6 +237,8 @@ describe("M3 — moteur de session (DO GameSession)", () => {
       difficulty: string;
       stance: string;
       threshold: number;
+      bonus_dice: number;
+      bonuses: Array<{ source: string; why: string }>;
       dice: Array<{ value: number; kept: boolean }>;
     };
     expect(roll.value).toBeGreaterThanOrEqual(1);
@@ -235,7 +247,12 @@ describe("M3 — moteur de session (DO GameSession)", () => {
     expect(roll.difficulty).toBe("hard");
     expect(roll.stance).toBe("advantage");
     expect(roll.threshold).toBe(5);
-    expect(roll.dice).toHaveLength(3);
+    expect(roll.bonus_dice).toBe(2);
+    expect(roll.bonuses.map((b) => b.source).sort()).toEqual([
+      "ability",
+      "temperament",
+    ]);
+    expect(roll.dice).toHaveLength(4);
     expect(roll.dice.filter((d) => d.kept)).toHaveLength(1);
     expect(["critical_failure", "failure", "success", "critical_success"]).toContain(
       roll.outcome,

@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 import {
   addFact,
   applySkillUpdate,
+  bonusDice,
   applySouffleDelta,
   describeOutcome,
   DIFFICULTY_THRESHOLD,
@@ -11,6 +12,7 @@ import {
   MAX_FACTS,
   MAX_POOL,
   mergeSkills,
+  normalizeBonuses,
   normalizeRollRequest,
   normalizeTier,
   outcomeForValue,
@@ -161,6 +163,7 @@ describe("normalizeRollRequest", () => {
       difficulty: "normal",
       stance: "neutral",
       bonus_dice: 0,
+      bonuses: [],
       skills: [],
     });
   });
@@ -181,8 +184,68 @@ describe("normalizeRollRequest", () => {
       difficulty: "normal",
       stance: "neutral",
       bonus_dice: MAX_BONUS_DICE,
+      bonuses: [],
       skills: [],
     });
+  });
+});
+
+describe("barème des dés (§6) — la fiche décide, pas l'humeur du MJ", () => {
+  it("chaque bonus vaut un dé, la faiblesse en retire un", () => {
+    expect(bonusDice(normalizeBonuses("temperament: provocation"))).toBe(1);
+    expect(
+      bonusDice(
+        normalizeBonuses("temperament: provocation ; ability: sigils ; souffle"),
+      ),
+    ).toBe(3);
+    expect(bonusDice(normalizeBonuses("ability: sigils ; weakness: soleil"))).toBe(0);
+  });
+
+  it("lit les libellés français, accentués ou non, et ignore l'inconnu", () => {
+    expect(normalizeBonuses("Tempérament: bravade ; Capacité: sigils")).toEqual([
+      { source: "temperament", why: "bravade" },
+      { source: "ability", why: "sigils" },
+    ]);
+    expect(normalizeBonuses("chance ; météo favorable")).toEqual([]);
+  });
+
+  it("ne compte pas deux fois la même source", () => {
+    const bonuses = normalizeBonuses(
+      "temperament: provocation ; temperament: audace",
+    );
+    expect(bonuses).toHaveLength(1);
+    expect(bonusDice(bonuses)).toBe(1);
+  });
+
+  it("la poignée vient des bonus, pas du nombre annoncé par le MJ", () => {
+    // Cas observé : action alignée tempérament + capacité annoncée à 1 dé.
+    const r = normalizeRollRequest({
+      reason: "pousser Reika à révéler la faille du sigil",
+      bonus_dice: 1,
+      bonuses: "temperament: pousser à la faute ; ability: sigils",
+      skills: ["comédie", "provocation", "lecture sociale"],
+    });
+    expect(r.bonus_dice).toBe(2);
+    expect(poolSize(r)).toBe(3);
+  });
+
+  it("une faiblesse ne prive jamais du jet", () => {
+    const r = normalizeRollRequest({
+      reason: "affronter le soleil de midi",
+      bonuses: "weakness: vampire au grand jour",
+    });
+    expect(r.bonus_dice).toBe(-1);
+    expect(poolSize(r)).toBe(1);
+  });
+
+  it("plafonne la poignée à MAX_POOL", () => {
+    const r = normalizeRollRequest({
+      reason: "tout donner",
+      bonuses: "temperament: x ; ability: y ; souffle: point dépensé",
+      stance: "advantage",
+    });
+    expect(r.bonus_dice).toBe(3);
+    expect(poolSize(r)).toBe(MAX_POOL);
   });
 });
 

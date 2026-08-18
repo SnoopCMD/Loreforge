@@ -7,7 +7,8 @@ import {
   GENERIC_FIELDS, OUTCOME_LABELS, PALETTE_KEYS, PALETTE_LABELS, STANCE_LABELS,
   STATUS_LABELS, createSseParser,
   createSpeechSegmenter, esc, extractActionChips, labelFor, mdInline,
-  mdToHtml, normalizeRoll, paletteCssVars, paletteVar, rollPoolSize, stripLore,
+  mdToHtml, normalizeRoll, paletteCssVars, paletteVar, rollBonusText,
+  rollPoolSize, stripLore,
 } from "/core.js";
 
 const $ = (id) => document.getElementById(id);
@@ -3490,7 +3491,11 @@ const DIE_SPIN_MS = 70;
 const DIE_FIRST_MS = 520;
 const DIE_STEP_MS = 220;
 
-/** « Difficulté difficile (réussite à 5+) · Avantage · 3 dés · Acrobatie ». */
+/**
+ * « Difficulté difficile (réussite à 5+) · Avantage · 3 dés · +1 tempérament ·
+ * +1 capacité · Acrobatie » — d'où vient chaque dé, pour que le joueur puisse
+ * vérifier le compte.
+ */
 function rollConditionsText(r) {
   const bits = [
     "Difficulté " +
@@ -3499,6 +3504,8 @@ function rollConditionsText(r) {
   ];
   if (r.stance !== "neutral") bits.push(STANCE_LABELS[r.stance]);
   bits.push(plural(r.dice.length || rollPoolSize(r), "dé"));
+  const bonuses = rollBonusText(r);
+  if (bonuses) bits.push(bonuses);
   if (r.skills.length) bits.push(r.skills.join(", "));
   return bits.join(" · ");
 }

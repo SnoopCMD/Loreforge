@@ -106,7 +106,10 @@ export const STANCE_LABELS = {
 export function normalizeRoll(roll) {
   if (!roll) return null;
   if (typeof roll === "string") {
-    return { reason: roll, difficulty: "normal", stance: "neutral", bonus_dice: 0, skills: [] };
+    return {
+      reason: roll, difficulty: "normal", stance: "neutral",
+      bonus_dice: 0, bonuses: [], skills: [],
+    };
   }
   const difficulty = DIFFICULTY_LABELS[roll.difficulty] ? roll.difficulty : "normal";
   return {
@@ -115,6 +118,9 @@ export function normalizeRoll(roll) {
     difficulty,
     stance: STANCE_LABELS[roll.stance] ? roll.stance : "neutral",
     bonus_dice: Number(roll.bonus_dice) || 0,
+    bonuses: (Array.isArray(roll.bonuses) ? roll.bonuses : []).filter(
+      (b) => b && ROLL_BONUS_LABELS[b.source],
+    ),
     skills: Array.isArray(roll.skills) ? roll.skills : [],
     threshold: roll.threshold || DIFFICULTY_THRESHOLD[difficulty],
     // Ancien résultat mono-dé : on lui fabrique sa poignée d'un dé.
@@ -130,7 +136,25 @@ export function normalizeRoll(roll) {
 /** Taille de la poignée annoncée avant le jet (miroir de poolSize). */
 export function rollPoolSize(request) {
   const extra = request.stance === "neutral" ? 0 : 1;
-  return Math.min(6, 1 + (Number(request.bonus_dice) || 0) + extra);
+  return Math.min(4, Math.max(1, 1 + (Number(request.bonus_dice) || 0) + extra));
+}
+
+/** Libellés des bonus de fiche (miroir de ROLL_BONUS_LABELS côté serveur). */
+export const ROLL_BONUS_LABELS = {
+  temperament: "tempérament",
+  ability: "capacité",
+  souffle: "souffle",
+  weakness: "faiblesse",
+};
+
+/**
+ * D'où viennent les dés : « +1 tempérament · +1 capacité ». Le joueur doit
+ * pouvoir relire son compte — c'est aussi ce qui rend les erreurs visibles.
+ */
+export function rollBonusText(request) {
+  return (request.bonuses || [])
+    .map((b) => (b.source === "weakness" ? "-1 " : "+1 ") + ROLL_BONUS_LABELS[b.source])
+    .join(" · ");
 }
 
 export const FORMAT_LABELS = {

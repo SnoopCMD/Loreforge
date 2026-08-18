@@ -11,6 +11,7 @@ import {
   normalizeRoll,
   paletteCssVars,
   paletteVar,
+  rollBonusText,
   rollPoolSize,
   // @ts-expect-error — module JS servi tel quel au front, sans types.
 } from "../public/core.js";
@@ -199,12 +200,39 @@ describe("normalizeRoll / rollPoolSize (miroir front du moteur §6)", () => {
   });
 
   it("annonce la même poignée que le serveur", () => {
+    const ledgers = [
+      "",
+      "temperament: x",
+      "temperament: x ; ability: y",
+      "temperament: x ; ability: y ; souffle",
+      "weakness: soleil",
+      "ability: y ; weakness: soleil",
+    ];
     for (const stance of ["neutral", "advantage", "disadvantage"]) {
-      for (let bonus = 0; bonus <= 4; bonus++) {
-        const request = normalizeRollRequest({ reason: "x", stance, bonus_dice: bonus });
+      for (const bonuses of ledgers) {
+        const request = normalizeRollRequest({ reason: "x", stance, bonuses });
         expect(rollPoolSize(request)).toBe(poolSize(request));
       }
     }
+  });
+
+  it("dit d'où viennent les dés", () => {
+    const request = normalizeRollRequest({
+      reason: "pousser Reika à la faute",
+      bonuses: "temperament: provocation ; ability: sigils",
+    });
+    expect(rollBonusText(normalizeRoll(request))).toBe(
+      "+1 tempérament · +1 capacité",
+    );
+    expect(
+      rollBonusText(
+        normalizeRoll(
+          normalizeRollRequest({ reason: "plein soleil", bonuses: "weakness: soleil" }),
+        ),
+      ),
+    ).toBe("-1 faiblesse");
+    // Rien à afficher quand aucun bonus n'a joué.
+    expect(rollBonusText(normalizeRoll("saut"))).toBe("");
   });
 });
 

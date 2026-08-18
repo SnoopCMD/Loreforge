@@ -43,16 +43,18 @@ describe("GmStreamParser", () => {
           difficulty: "normal",
           stance: "neutral",
           bonus_dice: 0,
+          bonuses: [],
           skills: [],
         },
       },
     ]);
   });
 
-  it("lit les conditions du jet (difficulté, posture, dice pool)", () => {
+  it("lit les conditions du jet (difficulté, posture, bonus de fiche)", () => {
     const { events } = replay([
       '<roll reason="crochetage" difficulty="hard" stance="disadvantage" ',
-      'dice="2" skills="Doigts de fée, Sang-froid"/>',
+      'dice="3" bonuses="temperament: patiente ; ability: doigts de fée" ',
+      'skills="Doigts de fée, Sang-froid"/>',
     ]);
     expect(events).toEqual([
       {
@@ -61,7 +63,12 @@ describe("GmStreamParser", () => {
           reason: "crochetage",
           difficulty: "hard",
           stance: "disadvantage",
+          // Recalculé depuis bonuses, pas lu dans dice.
           bonus_dice: 2,
+          bonuses: [
+            { source: "temperament", why: "patiente" },
+            { source: "ability", why: "doigts de fée" },
+          ],
           skills: ["Doigts de fée", "Sang-froid"],
         },
       },

@@ -9,8 +9,10 @@
 //       de contrôle (DC1/DC2/DC3) OPEN·term·SEP·visible·CLOSE que le front
 //       transforme en <button class="lore"> ; la définition est résolue à la
 //       demande, une fois par session (KV), au clic.
-//   <roll reason="..." difficulty="..." stance="..." dice="..." skills="..."/>
-//       demande de jet serveur, avec ses conditions (§6)
+//   <roll reason="..." difficulty="..." stance="..." dice="..."
+//         bonuses="temperament: ... ; ability: ..." skills="..."/>
+//       demande de jet serveur, avec ses conditions (§6). La poignée se
+//       calcule depuis bonuses, jamais depuis le nombre annoncé dans dice.
 //   <souffle delta="-1"/>                  dépense/regain de Souffle
 //   <scene_break/>                         rupture de scène (event SSE)
 //   <skill name="..." tier="..." note="..."/>  acquis/progression d'une
@@ -123,6 +125,7 @@ function matchTag(buf: string): TagMatch | "incomplete" | null {
           difficulty: attrs.difficulty,
           stance: attrs.stance,
           bonus_dice: attrs.dice,
+          bonuses: attrs.bonuses,
           skills: (attrs.skills ?? "").split(/\s*[,;]\s*/),
         }),
       },

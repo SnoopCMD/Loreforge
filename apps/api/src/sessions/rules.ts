@@ -15,10 +15,10 @@
 //     Désavantage : un dé de plus, on garde le PIRE.
 //   - Chaque dé à 5 ou 6 annule un dé raté (le pire d'abord) : les dés annulés
 //     ne comptent plus, ce qui adoucit notamment le désavantage.
-//   - Dice pool : les compétences engagées ajoutent des dés à la poignée.
+//   - Poignée : barème explicite lié à la fiche (voir « Barème des dés »).
 //
 // Les dés ne sont JAMAIS lancés par le modèle : il demande un jet via
-// <roll reason="..." difficulty="..." stance="..." dice="..."/>, le DO le
+// <roll reason="..." difficulty="..." stance="..." bonuses="..."/>, le DO le
 // résout et injecte le résultat au tour suivant.
 
 export const SOUFFLE_MAX = 3;
@@ -50,10 +50,53 @@ export const STANCE_LABELS: Record<Stance, string> = {
 
 /** Un dé à 5 ou 6 annule un dé raté. */
 export const CANCEL_VALUE = 5;
-/** Dés bonus apportés par les compétences, au plus. */
-export const MAX_BONUS_DICE = 4;
-/** Taille maximale de la poignée (1 base + bonus + dé de posture). */
-export const MAX_POOL = 1 + MAX_BONUS_DICE + 1;
+/** Somme maximale des bonus de fiche (tempérament + capacité + souffle). */
+export const MAX_BONUS_DICE = 3;
+/** Plafond de la poignée, dé de posture compris. */
+export const MAX_POOL = 4;
+
+// ── Barème des dés (SPEC §6) ──────────────────────────────────────────────
+//
+// La poignée ne dépend plus de l'appréciation libre du MJ : elle se calcule.
+//
+//   1 dé de base
+//   +1 si l'action s'aligne avec le TEMPÉRAMENT du personnage
+//   +1 si elle mobilise sa CAPACITÉ principale
+//   +1 si un point de Souffle est dépensé
+//   -1 si elle heurte frontalement sa FAIBLESSE déclarée
+//   (plancher 1 dé, plafond MAX_POOL = 4)
+//
+// Le MJ doit énumérer les bonus qu'il applique et pourquoi ; le serveur
+// recalcule la poignée depuis cette liste, jamais depuis un nombre annoncé.
+
+export const ROLL_BONUS_SOURCES = [
+  "temperament",
+  "ability",
+  "souffle",
+  "weakness",
+] as const;
+export type RollBonusSource = (typeof ROLL_BONUS_SOURCES)[number];
+
+export const ROLL_BONUS_DICE: Record<RollBonusSource, number> = {
+  temperament: 1,
+  ability: 1,
+  souffle: 1,
+  weakness: -1,
+};
+
+export const ROLL_BONUS_LABELS: Record<RollBonusSource, string> = {
+  temperament: "tempérament",
+  ability: "capacité",
+  souffle: "souffle",
+  weakness: "faiblesse",
+};
+
+/** Un bonus (ou malus) appliqué à la poignée, avec sa justification. */
+export interface RollBonus {
+  source: RollBonusSource;
+  /** Ce qui, dans la fiche et dans l'action, justifie ce dé (affichage). */
+  why: string;
+}
 
 export type RollOutcome =
   | "critical_failure"
@@ -66,9 +109,11 @@ export interface RollRequest {
   reason: string;
   difficulty: Difficulty;
   stance: Stance;
-  /** Dés bonus du dice pool (compétences engagées). */
+  /** Somme nette des bonus de fiche — dérivée de `bonuses` quand il y en a. */
   bonus_dice: number;
-  /** Compétences/atouts qui justifient les dés bonus (affichage). */
+  /** Bonus appliqués, source par source, avec leur justification. */
+  bonuses: RollBonus[];
+  /** Compétences/atouts engagés dans l'action (affichage). */
   skills: string[];
 }
 
@@ -99,9 +144,77 @@ function clampInt(value: unknown, min: number, max: number): number {
   return Math.min(max, Math.max(min, n));
 }
 
+/** Source d'un bonus, tolérante aux libellés français et aux accents. */
+export function normalizeBonusSource(raw: string): RollBonusSource | null {
+  const key = raw
+    .normalize("NFD")
+    .replace(/[̀-ͯ]/g, "")
+    .toLowerCase()
+    .trim();
+  switch (key) {
+    case "temperament":
+    case "temperamment":
+      return "temperament";
+    case "ability":
+    case "capacite":
+    case "capacite principale":
+    case "pouvoir":
+      return "ability";
+    case "souffle":
+      return "souffle";
+    case "weakness":
+    case "faiblesse":
+    case "cout":
+      return "weakness";
+    default:
+      return null;
+  }
+}
+
+/**
+ * Lit la liste des bonus : soit un tableau d'objets, soit l'attribut texte du
+ * MJ — `tempérament: provocation ; capacité: sigils`. Les entrées inconnues
+ * sont ignorées (un bonus non nommé n'est pas un bonus), et une même source ne
+ * compte qu'une fois.
+ */
+export function normalizeBonuses(raw: unknown): RollBonus[] {
+  const entries: Array<{ source: string; why: string }> = [];
+  if (typeof raw === "string") {
+    for (const part of raw.split(/\s*[;/|]\s*/)) {
+      const m = part.match(/^\s*([^:]+?)\s*(?::\s*(.*))?$/);
+      if (m) entries.push({ source: m[1], why: m[2] ?? "" });
+    }
+  } else if (Array.isArray(raw)) {
+    for (const item of raw) {
+      const o = (item ?? {}) as { source?: unknown; why?: unknown };
+      if (typeof o.source === "string") {
+        entries.push({
+          source: o.source,
+          why: typeof o.why === "string" ? o.why : "",
+        });
+      }
+    }
+  }
+
+  const out: RollBonus[] = [];
+  for (const entry of entries) {
+    const source = normalizeBonusSource(entry.source);
+    if (!source || out.some((b) => b.source === source)) continue;
+    out.push({ source, why: entry.why.trim().slice(0, 120) });
+  }
+  return out;
+}
+
+/** Somme nette des dés d'une liste de bonus. */
+export function bonusDice(bonuses: RollBonus[]): number {
+  return bonuses.reduce((n, b) => n + ROLL_BONUS_DICE[b.source], 0);
+}
+
 /**
  * Normalise une demande de jet venant du modèle, du client ou d'un état
  * persisté avant ce système (où `pending_roll` n'était qu'une raison texte).
+ * Quand le MJ a énuméré ses bonus, ce sont EUX qui font la poignée : le
+ * nombre de dés annoncé n'est jamais cru sur parole.
  */
 export function normalizeRollRequest(
   input: unknown,
@@ -113,6 +226,7 @@ export function normalizeRollRequest(
       difficulty: "normal",
       stance: "neutral",
       bonus_dice: 0,
+      bonuses: [],
       skills: [],
     };
   }
@@ -133,19 +247,30 @@ export function normalizeRollRequest(
   const reason =
     (typeof raw.reason === "string" && raw.reason.trim().slice(0, 200)) ||
     fallbackReason;
+  const bonuses = normalizeBonuses(raw.bonuses);
   return {
     reason,
     difficulty,
     stance,
-    bonus_dice: clampInt(raw.bonus_dice ?? 0, 0, MAX_BONUS_DICE),
+    // Avec un barème explicite, le total se déduit ; sans lui (état d'avant ce
+    // système, jet libre), on retombe sur le nombre transmis.
+    bonus_dice:
+      bonuses.length > 0
+        ? bonusDice(bonuses)
+        : clampInt(raw.bonus_dice ?? 0, 0, MAX_BONUS_DICE),
+    bonuses,
     skills,
   };
 }
 
-/** Taille de la poignée : 1 dé de base + dice pool + 1 dé de posture. */
+/**
+ * Taille de la poignée : 1 dé de base + bonus de fiche + 1 dé de posture,
+ * jamais moins d'un dé (une faiblesse ne prive pas du jet), jamais plus de
+ * MAX_POOL (4).
+ */
 export function poolSize(request: RollRequest): number {
   const extra = request.stance === "neutral" ? 0 : 1;
-  return Math.min(MAX_POOL, 1 + request.bonus_dice + extra);
+  return Math.min(MAX_POOL, Math.max(1, 1 + request.bonus_dice + extra));
 }
 
 export function outcomeForValue(
@@ -271,17 +396,8 @@ export interface SkillEntry {
   note?: string;
 }
 
-/**
- * Dés bonus qu'apporte une compétence engagée dans un jet, selon son palier
- * (§6). Barème indicatif donné au MJ : c'est lui qui décide quelles
- * compétences comptent pour l'action tentée.
- */
-export const SKILL_TIER_DICE: Record<SkillTier, number> = {
-  découverte: 0,
-  apprentissage: 1,
-  maîtrise: 2,
-  inné: 2,
-};
+// Les paliers ne donnent plus de dés : ils disent s'il faut un jet (voir le
+// prompt du MJ). Le nombre de dés vient du barème de fiche, en tête de fichier.
 
 export const MAX_SKILLS = 40;
 /** Faits établis maximum ; au-delà, les plus anciens sortent (FIFO). */

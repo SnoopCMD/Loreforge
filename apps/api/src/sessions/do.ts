@@ -57,6 +57,14 @@ import {
 } from "./prompt";
 import { canonizeGapAnswers, type GapAnswer } from "../richness/suggest";
 import {
+  applyRollAudit,
+  buildRollAuditMessage,
+  needsRollAudit,
+  ROLL_AUDIT_SCHEMA,
+  ROLL_AUDIT_SYSTEM_PROMPT,
+  sheetTraits,
+} from "./roll-audit";
+import {
   buildRelevanceMessage,
   MAX_SCORED_GAPS,
   parseRelevance,
@@ -89,6 +97,9 @@ const MAX_LORE_TOKENS = 400;
 // Tri des zones floues avant la mise en place : un verdict chiffré, pas de prose.
 export const SETUP_RELEVANCE_MODEL = "claude-sonnet-5";
 const MAX_RELEVANCE_TOKENS = 1500;
+// Vérification des bonus de dés juste avant le jet : deux verdicts, pas plus.
+export const ROLL_AUDIT_MODEL = "claude-sonnet-5";
+const MAX_ROLL_AUDIT_TOKENS = 300;
 
 export function sessionKvKey(sessionId: string): string {
   return `session:${sessionId}:state`;
@@ -517,13 +528,60 @@ export class GameSession extends DurableObject<Env> {
           typeof bodyReason === "string" ? bodyReason : null,
         );
 
-    const result = performRoll(request);
+    const result = performRoll(await this.auditedRoll(meta, request));
     state.last_roll = result;
     state.pending_roll = null;
 
     await this.ctx.storage.put("state", state);
     await this.syncKV(meta, state);
     return json(result);
+  }
+
+  /**
+   * Garde-fou : le barème du prompt s'applique de façon intermittente. Si un
+   * bonus de fiche manque alors qu'il pourrait être dû, un appel court tranche
+   * avant que les dés ne tombent. Il ne peut qu'AJOUTER des dés ; en cas
+   * d'échec, on lance la poignée telle que le MJ l'a demandée.
+   */
+  private async auditedRoll(
+    meta: SessionMeta,
+    request: RollRequest,
+  ): Promise<RollRequest> {
+    const traits = sheetTraits(meta.characterSheet);
+    if (!needsRollAudit(request, traits)) return request;
+
+    try {
+      const client = new Anthropic({ apiKey: this.env.ANTHROPIC_API_KEY });
+      const response = await client.messages.create(
+        {
+          model: ROLL_AUDIT_MODEL,
+          max_tokens: MAX_ROLL_AUDIT_TOKENS,
+          system: ROLL_AUDIT_SYSTEM_PROMPT,
+          output_config: {
+            format: { type: "json_schema", schema: ROLL_AUDIT_SCHEMA },
+          },
+          messages: [
+            {
+              role: "user",
+              content: buildRollAuditMessage({
+                reason: request.reason,
+                skills: request.skills,
+                traits,
+              }),
+            },
+          ],
+        },
+        { maxRetries: 0 },
+      );
+      const text = response.content
+        .filter((b) => b.type === "text")
+        .map((b) => b.text)
+        .join("");
+      return applyRollAudit(request, JSON.parse(text), traits);
+    } catch (err) {
+      console.error(`[game-session] audit du jet ${meta.sessionId} :`, err);
+      return request;
+    }
   }
 
   // ── État public ───────────────────────────────────────────────────────

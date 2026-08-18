@@ -10,8 +10,9 @@ import {
 import {
   describeOutcome,
   DIFFICULTY_LABELS,
-  MAX_BONUS_DICE,
-  SKILL_TIER_DICE,
+  MAX_POOL,
+  ROLL_BONUS_DICE,
+  ROLL_BONUS_LABELS,
   SKILL_TIERS,
   SOUFFLE_MAX,
   STANCE_LABELS,
@@ -252,7 +253,8 @@ tour immédiatement — pas une phrase de plus.
 
 C'est TOI qui fixes les conditions du jet d'après le contexte de la scène :
 <roll reason="ce qui est tenté" difficulty="easy|normal|hard"
-      stance="advantage|neutral|disadvantage" dice="0-${MAX_BONUS_DICE}"
+      stance="advantage|neutral|disadvantage" dice="1-${MAX_POOL}"
+      bonuses="temperament: ce qui l'aligne ; ability: ce qu'elle mobilise"
       skills="compétences engagées, séparées par des virgules"/>
 - difficulty : facile (1-2 échec, 3-6 réussite) quand la situation aide ;
   normal (1-3 échec, 4-6 réussite) par défaut ;
@@ -260,11 +262,27 @@ C'est TOI qui fixes les conditions du jet d'après le contexte de la scène :
 - stance : advantage si la position, la préparation ou un allié favorisent
   l'action (on garde le meilleur dé) ; disadvantage si blessure, obscurité,
   encombrement, épuisement (on garde le pire) ; neutral sinon.
-- dice : dés supplémentaires du dice pool, apportés par les compétences (liste
-  ci-dessous), pouvoirs ou atouts de la fiche réellement pertinents pour CETTE
-  action — 0 si aucun. Barème par palier :
-  ${SKILL_TIERS.map((t) => `${t} +${SKILL_TIER_DICE[t]}`).join(", ")}.
-  Nomme dans skills les compétences retenues.
+
+NOMBRE DE DÉS — barème strict, pas d'appréciation libre :
+  1 dé de base
+  +1 si l'action s'aligne avec le TEMPÉRAMENT du personnage
+  +1 si elle mobilise sa CAPACITÉ principale
+  +1 si un point de Souffle est dépensé pour l'action
+  -1 si elle heurte frontalement sa FAIBLESSE déclarée
+  plancher 1 dé, plafond ${MAX_POOL} dés. On garde le meilleur dé obtenu
+  (le pire en disadvantage) et on le compare au seuil de difficulté.
+À CHAQUE jet, énumère dans bonuses les bonus appliqués et pourquoi, sources
+séparées par des points-virgules : temperament, ability, souffle, weakness.
+Exemple : <roll reason="pousser Reika à révéler la faille du sigil" dice="3"
+bonuses="temperament: provocation, pousser à la faute ; ability: sigils"
+difficulty="normal" stance="neutral" skills="comédie, lecture sociale"/>
+Sois généreux et littéral : dès que l'action recoupe le tempérament ou la
+capacité écrits sur la fiche — même partiellement, même sur un registre social
+plutôt que physique — le bonus est dû. Un jet à 1 dé est réservé aux actions
+qui ne doivent rien à la fiche. Le serveur recalcule la poignée depuis
+bonuses : un dice qui ne correspond pas à tes bonus ne sera pas suivi.
+- skills : nomme les compétences ou atouts engagés (affichage) ; leur palier
+  décide s'il faut un jet, pas combien de dés (voir plus bas).
 L'issue est binaire : réussite ou échec, avec critique sur 6 et sur 1. Chaque
 dé à 5 ou 6 annule un dé raté. Le résultat te sera transmis au tour suivant :
 reprends alors la narration exactement où elle s'était arrêtée et raconte
@@ -300,8 +318,10 @@ ${SKILL_TIERS.map((t, i) => `${i + 1}. ${t}`).join(" → ")}.
     peuvent en appeler un.
 - Un jet raté sur une compétence maîtrisée porte sur l'enjeu, jamais sur la
   capacité elle-même (l'expert ne « rate » pas son geste de base).
-- Quand un jet a bien lieu, les compétences engagées alimentent son dice pool
-  (attribut dice de <roll/>, barème par palier ci-dessus).
+- Quand un jet a bien lieu, nomme les compétences engagées dans skills. Une
+  compétence qui relève de la capacité principale de la fiche justifie le
+  bonus ability du barème ; les paliers, eux, décident du BESOIN d'un jet, pas
+  du nombre de dés.
 
 == MÉMOIRE DES FAITS ==
 Quand un événement marquant établit un fait durable (mort d'un PNJ, promesse,
@@ -381,7 +401,17 @@ export function buildTurnMessage(
   const skills = lastRoll.skills.length
     ? `, compétences : ${lastRoll.skills.join(", ")}`
     : "";
-  const rollLine = `[Jet ${lastRoll.reason} — difficulté ${DIFFICULTY_LABELS[lastRoll.difficulty]} (réussite à ${lastRoll.threshold}+), ${STANCE_LABELS[lastRoll.stance]}${skills} : ${lastRoll.dice.length} dé${lastRoll.dice.length > 1 ? "s" : ""} ${dice} → dé retenu ${lastRoll.value}, ${describeOutcome(lastRoll.outcome)}]`;
+  // Les bonus retenus sont renvoyés au MJ : il voit le barème appliqué (y
+  // compris ce que la vérification serveur a rattrapé) et s'y aligne.
+  const bonuses = lastRoll.bonuses.length
+    ? `, bonus : ${lastRoll.bonuses
+        .map(
+          (b) =>
+            `${ROLL_BONUS_DICE[b.source] > 0 ? "+1" : "-1"} ${ROLL_BONUS_LABELS[b.source]}${b.why ? ` (${b.why})` : ""}`,
+        )
+        .join(", ")}`
+    : "";
+  const rollLine = `[Jet ${lastRoll.reason} — difficulté ${DIFFICULTY_LABELS[lastRoll.difficulty]} (réussite à ${lastRoll.threshold}+), ${STANCE_LABELS[lastRoll.stance]}${skills}${bonuses} : ${lastRoll.dice.length} dé${lastRoll.dice.length > 1 ? "s" : ""} ${dice} → dé retenu ${lastRoll.value}, ${describeOutcome(lastRoll.outcome)}]`;
   return playerInput.trim() === ""
     ? rollLine
     : `${rollLine}\n\n${playerInput}`;
