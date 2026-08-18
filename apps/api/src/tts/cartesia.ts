@@ -63,3 +63,25 @@ export async function listVoices(
 export function actAudioKey(sessionId: string, actIndex: number): string {
   return `acts/${sessionId}/${actIndex}.mp3`;
 }
+
+/**
+ * Efface les récits audio d'une session. Appelé à la suppression d'une session
+ * comme à celle d'une bible entière : ce sont les seuls objets R2 qu'une
+ * partie crée, et plus rien ne les référence ensuite.
+ */
+export async function purgeSessionAudio(
+  bucket: R2Bucket,
+  sessionId: string,
+): Promise<void> {
+  try {
+    const prefix = `acts/${sessionId}/`;
+    let cursor: string | undefined;
+    do {
+      const page = await bucket.list({ prefix, cursor });
+      await Promise.all(page.objects.map((o) => bucket.delete(o.key)));
+      cursor = page.truncated ? page.cursor : undefined;
+    } while (cursor);
+  } catch (err) {
+    console.error(`[sessions] purge audio ${sessionId} :`, err);
+  }
+}

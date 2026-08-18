@@ -745,3 +745,151 @@ describe("lot 7.3 — récit narré et audio", () => {
     expect(narrate.status).toBe(404);
   });
 });
+
+describe("M7 — défauts relevés en relecture", () => {
+  it("supprimer une bible dont une session a un acte clos ne casse pas la clé étrangère", async () => {
+    const cookie = await login("bible-purge@example.com");
+    const bibleRes = await post(cookie, "/api/bibles", {
+      markdown: "# Univers jetable\n\nUn monde de passage.",
+    });
+    const { id: bibleId } = (await bibleRes.json()) as { id: string };
+
+    const createRes = await post(cookie, "/api/sessions", {
+      bible_id: bibleId,
+      format: "oneshot",
+    });
+    const { session_id } = (await createRes.json()) as { session_id: string };
+    mockAnthropicStream(["La scène s'ouvre. Que fais-tu ?"]);
+    await (
+      await post(cookie, `/api/sessions/${session_id}/setup`, { answers: [] })
+    ).text();
+
+    mockAnthropicText("# Un acte\n\n- de quoi bloquer la suppression");
+    expect(
+      (await post(cookie, `/api/sessions/${session_id}/acts/close`)).status,
+    ).toBe(200);
+
+    // Avant correction : FOREIGN KEY constraint failed → 500, et la bible
+    // devenait indestructible par l'API.
+    const del = await SELF.fetch(`${BASE}/api/bibles/${bibleId}`, {
+      method: "DELETE",
+      headers: { cookie },
+    });
+    expect(del.status).toBe(200);
+
+    const { count } = (await env.DB.prepare(
+      `SELECT COUNT(*) AS count FROM session_acts WHERE session_id = ?`,
+    )
+      .bind(session_id)
+      .first<{ count: number }>())!;
+    expect(count).toBe(0);
+    expect(
+      await env.DB.prepare(`SELECT id FROM bibles WHERE id = ?`)
+        .bind(bibleId)
+        .first(),
+    ).toBeNull();
+  });
+
+  it("annonce la clôture forcée avant de la générer, pour tenir le flux ouvert", async () => {
+    const { cookie, sessionId } = await playingSession("battement@example.com");
+    await runInDurableObject(stubFor(sessionId), async (_i, state) => {
+      await state.storage.put("turn_count_stored", 34 * 2);
+    });
+
+    mockAnthropicStream(["Le dernier tour de l'acte. Que fais-tu ?"]);
+    mockAnthropicText("# Acte plein\n\n- résumé");
+    const events = await readSse(
+      await post(cookie, `/api/sessions/${sessionId}/turn`, {
+        player_input: "j'avance encore",
+      }),
+    );
+
+    const noms = events.map((e) => e.event);
+    // Le signe de vie part AVANT la génération du résumé : sans lui, 20 s de
+    // silence coupaient le flux côté client et la clôture était perdue.
+    expect(noms.indexOf("act_closing")).toBeGreaterThan(noms.indexOf("done"));
+    expect(noms.indexOf("act_closing")).toBeLessThan(noms.indexOf("act_closed"));
+  });
+
+  it("rend la main au joueur quand la clôture forcée échoue", async () => {
+    const { cookie, sessionId } = await playingSession("echec-force@example.com");
+    await runInDurableObject(stubFor(sessionId), async (_i, state) => {
+      await state.storage.put("turn_count_stored", 34 * 2);
+    });
+
+    mockAnthropicStream(["Un tour de plus. Que fais-tu ?"]);
+    mockAnthropicText(""); // résumé vide → clôture impossible
+    const events = await readSse(
+      await post(cookie, `/api/sessions/${sessionId}/turn`, {
+        player_input: "encore",
+      }),
+    );
+    expect(events.some((e) => e.event === "act_close_failed")).toBe(true);
+
+    // L'acte reste ouvert : rien n'a été effacé sans contrepartie.
+    const state = (await (
+      await get(cookie, `/api/sessions/${sessionId}/state`)
+    ).json()) as Record<string, unknown>;
+    expect(state.act_index).toBe(0);
+  });
+
+  it("régénère vraiment un récit quand force est demandé", async () => {
+    const session = await playingSession("reecrire@example.com");
+    mockAnthropicText("# Acte\n\n- fiche");
+    await post(session.cookie, `/api/sessions/${session.sessionId}/acts/close`);
+
+    mockAnthropicText("Premier récit.");
+    await post(
+      session.cookie,
+      `/api/sessions/${session.sessionId}/acts/0/narrate`,
+    );
+
+    mockAnthropicText("Second récit, réécrit.");
+    const res = await post(
+      session.cookie,
+      `/api/sessions/${session.sessionId}/acts/0/narrate?force=1`,
+    );
+    const body = (await res.json()) as {
+      generated: boolean;
+      act: { narrated_summary_md: string };
+    };
+    expect(body.generated).toBe(true);
+    expect(body.act.narrated_summary_md).toBe("Second récit, réécrit.");
+  });
+
+  it("garde les sources de lore des actes précédents", async () => {
+    const { cookie, sessionId } = await playingSession("lore-actes@example.com");
+
+    mockAnthropicStream([
+      'Le <lore term="Sanctuaire" kind="lieu">Sanctuaire</lore> est scellé ' +
+        "depuis mille ans. Que fais-tu ?",
+    ]);
+    await (
+      await post(cookie, `/api/sessions/${sessionId}/turn`, {
+        player_input: "je regarde autour",
+      })
+    ).text();
+
+    mockAnthropicText("# Acte un\n\n- le Sanctuaire est scellé");
+    await post(cookie, `/api/sessions/${sessionId}/acts/close`);
+
+    // L'acte est clos : les tours qui parlaient du Sanctuaire sont sortis de
+    // la fenêtre du modèle, mais la fiche de lore doit toujours les voir.
+    await runInDurableObject(stubFor(sessionId), async (instance) => {
+      const turns = await (
+        instance as unknown as GameSessionInternals
+      ).listTurns(1000);
+      expect(turns).toHaveLength(0); // rien dans l'acte courant
+    });
+
+    mockAnthropicText("Le Sanctuaire est un lieu scellé depuis mille ans.");
+    const res = await get(
+      cookie,
+      `/api/sessions/${sessionId}/lore?term=Sanctuaire&kind=lieu`,
+    );
+    expect(res.status).toBe(200);
+    const fiche = (await res.json()) as { sources?: unknown[] };
+    // La fiche s'appuie encore sur la narration passée, pas sur le seul canon.
+    expect(JSON.stringify(fiche)).toContain("scellé");
+  });
+});

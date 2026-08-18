@@ -8,6 +8,7 @@ import { requireAuth } from "../auth/middleware";
 import { findOwnedBible } from "../bibles/db";
 import { parsePalette, serializePalette } from "../bibles/palette";
 import { loreKvPrefix, normalizeTrame, sessionKvKey } from "./do";
+import { purgeSessionAudio } from "../tts/cartesia";
 
 const FORMATS = ["oneshot", "mini", "campaign"] as const;
 const CHARACTER_MODES = ["embody_canon", "embody_quiz", "create"] as const;
@@ -350,24 +351,6 @@ sessions.delete("/:id", async (c) => {
   c.executionCtx.waitUntil(purgeSessionAudio(c.env.BUCKET, row.id));
   return c.json({ ok: true });
 });
-
-/** Récits audio des actes d'une session (R2). */
-async function purgeSessionAudio(
-  bucket: R2Bucket,
-  sessionId: string,
-): Promise<void> {
-  try {
-    const prefix = `acts/${sessionId}/`;
-    let cursor: string | undefined;
-    do {
-      const page = await bucket.list({ prefix, cursor });
-      await Promise.all(page.objects.map((o) => bucket.delete(o.key)));
-      cursor = page.truncated ? page.cursor : undefined;
-    } while (cursor);
-  } catch (err) {
-    console.error(`[sessions] purge audio ${sessionId} :`, err);
-  }
-}
 
 /** Caches KV d'une session : état public + fiches lore résolues. */
 async function purgeSessionCache(

@@ -4,7 +4,7 @@
 // déploiement (constaté : l'utilisateur retestait un bug déjà corrigé).
 // Jamais de cache sur les mutations ni sur les flux SSE.
 
-const VERSION = "lf-v2";
+const VERSION = "lf-v3";
 const ASSET_CACHE = VERSION + "-assets";
 const API_CACHE = VERSION + "-api";
 
@@ -13,6 +13,9 @@ const ASSETS = [
   "/styles.css",
   "/app.js",
   "/core.js",
+  // app.js importe transport.js : sans lui au pré-cache, un premier lancement
+  // hors-ligne échoue sur l'import et l'écran reste blanc.
+  "/transport.js",
   "/manifest.webmanifest",
   "/icon.svg",
   "/icon-maskable.svg",

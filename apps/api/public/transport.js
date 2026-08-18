@@ -24,6 +24,11 @@ export const STREAM_EVENTS = Object.freeze([
   "scene_break",
   "done",
   "error",
+  // Bornes d'acte (M7), émises après le `done` : le tour est déjà validé.
+  "act_close_suggested",
+  "act_closing",
+  "act_closed",
+  "act_close_failed",
 ]);
 
 /**

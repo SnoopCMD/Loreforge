@@ -119,6 +119,10 @@ const ACT_SOFT_LIMIT = 20;
 const ACT_HARD_LIMIT = 35;
 // Le résumé d'acte est court par construction (voir MAX_ACT_SUMMARY_CHARS).
 const MAX_ACT_SUMMARY_TOKENS = 1024;
+// Signe de vie pendant une clôture forcée, sous le timeout d'inactivité du
+// client (20 s côté transport) : sans lui, le flux serait coupé en plein
+// résumé et l'event de clôture n'arriverait jamais.
+const ACT_CLOSING_HEARTBEAT_MS = 5000;
 // Récit narré : une page de prose, plus généreux que la fiche de mémoire —
 // il n'est ni relu à chaque tour ni facturé plus d'une fois.
 const MAX_NARRATED_ACT_TOKENS = 1600;
@@ -250,6 +254,17 @@ export class GameSession extends DurableObject<Env> {
    * s'y entrelaceraient et paieraient deux fois la même voix.
    */
   private audioInFlight = new Map<number, Promise<ArrayBuffer | null>>();
+
+  /**
+   * Clôture d'acte en cours, s'il y en a une. Le DO ne sérialise PAS deux
+   * requêtes qui s'attendent sur un long fetch : la clôture forcée de fin de
+   * tour et un clic sur « Clore l'acte » s'entrelaceraient, paieraient deux
+   * résumés, et le second INSERT violerait l'unicité (session_id, act_index).
+   */
+  private closeInFlight: Promise<Response> | null = null;
+
+  /** Récits d'acte en cours, par index — deux onglets ouverts, un seul appel. */
+  private narrateInFlight = new Map<number, Promise<Response>>();
 
   async fetch(request: Request): Promise<Response> {
     const path = new URL(request.url).pathname;
@@ -681,8 +696,7 @@ export class GameSession extends DurableObject<Env> {
     // Le journal affiché n'est PAS borné à l'acte : le joueur qui recharge en
     // début d'acte doit garder la continuité de ce qu'il vient de vivre. Seul
     // le contexte envoyé au modèle est borné (listTurns).
-    const turns = await this.listAllTurns();
-    const log = turns.slice(-LOG_TURNS);
+    const log = await this.listAllTurns(undefined, LOG_TURNS);
     const actIndex = (await this.ctx.storage.get<number>("act_index")) ?? 0;
     const actStart = await this.actStartIndex();
     const stored =
@@ -896,6 +910,24 @@ export class GameSession extends DurableObject<Env> {
     meta: SessionMeta,
     reason: "manual" | "forced" = "manual",
   ): Promise<Response> {
+    // Une clôture déjà en vol fait foi : on rend SA réponse plutôt que d'en
+    // lancer une seconde. Response n'étant lisible qu'une fois, on la clone.
+    const pending = this.closeInFlight;
+    if (pending) return (await pending).clone();
+
+    const job = this.runCloseAct(meta, reason);
+    this.closeInFlight = job;
+    try {
+      return (await job).clone();
+    } finally {
+      this.closeInFlight = null;
+    }
+  }
+
+  private async runCloseAct(
+    meta: SessionMeta,
+    reason: "manual" | "forced",
+  ): Promise<Response> {
     if (meta.status !== "playing") {
       return json({ error: "invalid_status", status: meta.status }, 409);
     }
@@ -1041,6 +1073,26 @@ export class GameSession extends DurableObject<Env> {
     if (!Number.isInteger(index) || index < 0) {
       return json({ error: "invalid_index" }, 400);
     }
+
+    // Un récit coûte plus cher qu'une synthèse vocale : il mérite au moins la
+    // même protection contre les appels concurrents (deux onglets, double clic).
+    const pending = this.narrateInFlight.get(index);
+    if (pending) return (await pending).clone();
+
+    const job = this.runNarrateAct(meta, url, index);
+    this.narrateInFlight.set(index, job);
+    try {
+      return (await job).clone();
+    } finally {
+      this.narrateInFlight.delete(index);
+    }
+  }
+
+  private async runNarrateAct(
+    meta: SessionMeta,
+    url: URL,
+    index: number,
+  ): Promise<Response> {
     const force = url.searchParams.get("force") === "1";
 
     const act = await this.env.DB.prepare(
@@ -1417,10 +1469,27 @@ export class GameSession extends DurableObject<Env> {
       // ouvert, l'UI reçoit donc la suite sans second aller-retour.
       const verdict = await this.actVerdict(sceneBreak);
       if (verdict.force) {
-        const res = await this.closeAct(meta, "forced");
-        if (res.ok) {
-          const { act } = (await res.json()) as { act: ClosedAct };
-          await send("act_closed", { act, forced: true });
+        // Le résumé prend plusieurs secondes. Sans signe de vie, le timeout
+        // d'inactivité du client (20 s) couperait le flux et l'event de
+        // clôture serait perdu : le joueur garderait un état périmé jusqu'au
+        // prochain rechargement. On annonce donc la clôture, puis on tient la
+        // connexion éveillée pendant la génération.
+        await send("act_closing", {});
+        const beat = setInterval(() => {
+          void send("act_closing", {}).catch(() => {});
+        }, ACT_CLOSING_HEARTBEAT_MS);
+        try {
+          const res = await this.closeAct(meta, "forced");
+          if (res.ok) {
+            const { act } = (await res.json()) as { act: ClosedAct };
+            await send("act_closed", { act, forced: true });
+          } else {
+            // Clôture ratée : le joueur doit récupérer la main, l'acte reste
+            // ouvert et la borne dure retentera au tour suivant.
+            await send("act_close_failed", {});
+          }
+        } finally {
+          clearInterval(beat);
         }
       } else if (verdict.suggest) {
         await send("act_close_suggested", { turns: verdict.turns });
@@ -1523,7 +1592,10 @@ export class GameSession extends DurableObject<Env> {
     const canon = await this.ensureCanon(meta.bibleId);
     const inventions =
       (await this.ctx.storage.get<Invention[]>("inventions")) ?? [];
-    const narration = (await this.listTurns(CONTEXT_MESSAGES))
+    // Volontairement NON borné à l'acte : un terme établi il y a deux actes
+    // garde ses sources, sinon sa fiche s'appauvrit à chaque clôture — soit
+    // l'inverse de ce que les actes devaient apporter.
+    const narration = (await this.listAllTurns(undefined, CONTEXT_MESSAGES))
       .filter((t) => t.role === "assistant")
       .map((t) => stripGmTags(t.text).trim());
     const sources = collectLoreSources(canon, inventions, narration, term);
@@ -1741,17 +1813,22 @@ export class GameSession extends DurableObject<Env> {
    * clos ne sont pas purgés : le résumé narré (lot 7.3) est bien meilleur
    * quand il peut relire les tours d'origine.
    */
-  private async listAllTurns(range?: {
-    start: number;
-    end: number;
-  }): Promise<StoredTurn[]> {
+  private async listAllTurns(
+    range?: { start: number; end: number },
+    limit?: number,
+  ): Promise<StoredTurn[]> {
     const map = await this.ctx.storage.list<StoredTurn>({
       prefix: "turn:",
       ...(range
         ? { start: turnKey(range.start), end: turnKey(range.end) }
         : {}),
+      // Sans borne, on désérialiserait tout l'historique de la partie à chaque
+      // appel — et les tours d'un acte clos ne sont jamais purgés. Le journal
+      // et les sources de lore n'en veulent que les derniers.
+      ...(limit ? { reverse: true, limit } : {}),
     });
-    return [...map.values()];
+    const turns = [...map.values()];
+    return limit ? turns.reverse() : turns;
   }
 
   /** Borne basse de la fenêtre de contexte : premier tour de l'acte courant. */

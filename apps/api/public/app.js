@@ -3312,7 +3312,7 @@ function startSessionScreen(id, { fresh = false } = {}) {
   S.streaming = false;
   S.rollShown = false;
   S.writer = null;
-  $("feed").innerHTML = "";
+  $("feed").innerHTML = ""; // emporte aussi le bandeau de clôture en cours
   closeLorePopover();
   loreCache.clear();
   $("finish-msg").textContent = "";
@@ -3658,7 +3658,9 @@ function stopVoice() {
   }
   if (voice.currentBtn) {
     voice.currentBtn.classList.remove("playing");
-    voice.currentBtn.textContent = "🔊";
+    // Les boutons d'acte portent leur propre libellé (« 🔊 Écouter ») : le
+    // remettre à "🔊" les tronquerait jusqu'au prochain rendu de la liste.
+    voice.currentBtn.textContent = voice.currentBtn.dataset.idleLabel || "🔊";
     voice.currentBtn = null;
   }
   $("voice-toggle").classList.remove("speaking");
@@ -3984,6 +3986,23 @@ async function closeActManually() {
   updateActControls();
 }
 
+/**
+ * Bandeau d'attente pendant une clôture forcée. Le tour est déjà écrit et lu ;
+ * ce qui se fabrique derrière, c'est la mémoire de l'acte. Sans ce repère, le
+ * joueur verrait sa saisie rester verrouillée sans explication.
+ */
+function showActClosing(on) {
+  let box = $("act-closing");
+  if (!on) { if (box) box.remove(); return; }
+  if (box) return;
+  box = document.createElement("div");
+  box.id = "act-closing";
+  box.className = "act-closing chunk";
+  box.innerHTML = spin("L'acte se referme, le MJ en garde la mémoire…");
+  $("feed").appendChild(box);
+  scrollFeed(true);
+}
+
 /** Repère visuel dans le fil + mise à jour des compteurs. */
 function onActClosed(act) {
   S.actIndex += 1;
@@ -4007,7 +4026,8 @@ function actCardHtml(act) {
     : '<p class="msg">Le récit de cet acte n\'a pas encore été écrit.</p>';
   const actions =
     '<div class="row act-actions">' +
-    '<button type="button" class="ghost act-narrate" data-index="' + act.act_index + '">' +
+    '<button type="button" class="ghost act-narrate" data-index="' + act.act_index +
+    '" data-force="' + (act.narrated_summary_md ? "1" : "0") + '">' +
     (act.narrated_summary_md ? "↻ Réécrire" : "✍ Écrire le récit") +
     "</button>" +
     (act.narrated_summary_md && voice.ready
@@ -4037,8 +4057,11 @@ async function narrateAct(index, btn) {
   btn.disabled = true;
   msg.innerHTML = spin("Le MJ raconte l'acte " + (index + 1) + "…");
   try {
+    // Sans force, le serveur est idempotent et renvoie le récit existant :
+    // « Réécrire » ne réécrirait rien.
+    const force = btn.dataset.force === "1" ? "?force=1" : "";
     const res = await api(
-      "/sessions/" + S.id + "/acts/" + index + "/narrate",
+      "/sessions/" + S.id + "/acts/" + index + "/narrate" + force,
       jsonPost({}),
     );
     msg.textContent = res.ok ? "" : "Le récit n'a pas pu être écrit.";
@@ -4058,6 +4081,7 @@ function listenAct(index, btn) {
   const audio = new Audio("/api/sessions/" + S.id + "/acts/" + index + "/audio");
   voice.current = audio;
   voice.currentBtn = btn;
+  btn.dataset.idleLabel = "🔊 Écouter";
   btn.classList.add("playing");
   btn.textContent = "⏸ Lecture…";
   const reset = () => {
@@ -4137,7 +4161,12 @@ function runGeneration(sessionId, path, body, retryText = null) {
     },
     // Clôture d'acte (M7). Elle arrive APRÈS le `done` : le tour est déjà
     // validé, le joueur lit pendant que le serveur résume.
-    act_closed: (d) => onActClosed(d.act),
+    act_closing: () => showActClosing(true),
+    act_closed: (d) => {
+      showActClosing(false);
+      onActClosed(d.act);
+    },
+    act_close_failed: () => showActClosing(false),
     act_close_suggested: () => {
       S.actCloseSuggested = true;
       updateActControls();

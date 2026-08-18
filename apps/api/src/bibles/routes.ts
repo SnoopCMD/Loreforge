@@ -9,6 +9,7 @@ import {
   serializeToneProfile,
 } from "./normalize";
 import { purgeBibleIndex, reindexBible } from "../rag/store";
+import { purgeSessionAudio } from "../tts/cartesia";
 import {
   detectFormat,
   ensureExtractedSize,
@@ -242,7 +243,15 @@ bibles.delete("/:id", async (c) => {
     .bind(id)
     .all<{ r2_key: string }>();
 
-  // Enfants d'abord (canon_proposals référence aussi game_sessions).
+  // Sessions de la bible : leurs actes doivent partir avant elles
+  // (session_acts référence game_sessions), et leurs récits audio avec.
+  const { results: bibleSessions } = await c.env.DB.prepare(
+    `SELECT id FROM game_sessions WHERE bible_id = ?`,
+  )
+    .bind(id)
+    .all<{ id: string }>();
+
+  // Enfants d'abord (canon_proposals et session_acts référencent game_sessions).
   await c.env.DB.batch([
     c.env.DB.prepare(
       `DELETE FROM writing_messages WHERE writing_id IN
@@ -252,6 +261,10 @@ bibles.delete("/:id", async (c) => {
     c.env.DB.prepare(`DELETE FROM moodboard_images WHERE bible_id = ?`).bind(id),
     c.env.DB.prepare(`DELETE FROM bible_moodboards WHERE bible_id = ?`).bind(id),
     c.env.DB.prepare(`DELETE FROM canon_proposals WHERE bible_id = ?`).bind(id),
+    c.env.DB.prepare(
+      `DELETE FROM session_acts WHERE session_id IN
+         (SELECT id FROM game_sessions WHERE bible_id = ?)`,
+    ).bind(id),
     c.env.DB.prepare(`DELETE FROM game_sessions WHERE bible_id = ?`).bind(id),
     c.env.DB.prepare(`DELETE FROM characters WHERE bible_id = ?`).bind(id),
     c.env.DB.prepare(`DELETE FROM richness_scores WHERE bible_id = ?`).bind(id),
@@ -269,6 +282,9 @@ bibles.delete("/:id", async (c) => {
         moodboardImages.map((img) => c.env.BUCKET.delete(img.r2_key)),
       ).then(() => {}),
     );
+  }
+  for (const session of bibleSessions) {
+    c.executionCtx.waitUntil(purgeSessionAudio(c.env.BUCKET, session.id));
   }
   c.executionCtx.waitUntil(purgeBibleIndex(c.env, id));
 

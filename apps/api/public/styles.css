@@ -1571,3 +1571,9 @@ button.palette-card:hover { border-color: var(--arcane); }
 @media (prefers-reduced-motion: reduce) {
   .act-break { animation: none; }
 }
+
+.act-closing {
+  display: flex; align-items: center; gap: 0.5rem;
+  margin: 1.6rem 0 0.4rem;
+  color: var(--arcane); font-size: 0.9rem;
+}
