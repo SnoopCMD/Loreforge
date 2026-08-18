@@ -110,6 +110,34 @@ les ajoute **à la fin** des sections visées (jamais d'écrasement ; une
 `section_id` vide crée une section), régénère `canon_md` et relance
 l'indexation RAG — même chemin que l'éditeur et la boucle canon.
 
+### Actes d'une session (M7)
+
+Une partie longue perdait son passé : la fenêtre de contexte s'arrête aux
+derniers tours, et au-delà seuls les faits établis survivaient. Pire, dès que
+cette fenêtre se mettait à glisser, le préfixe envoyé au modèle changeait à
+chaque tour et le cache de prompt décrochait.
+
+Un **acte** borne la mémoire narrative. À sa clôture, l'historique est remplacé
+par une fiche de mémoire dense, la fenêtre repart de zéro, et ce bloc de
+résumés devient l'ancre de cache de l'acte suivant — le préfixe ne bouge plus
+jusqu'à la clôture suivante.
+
+```sh
+POST /api/sessions/<id>/acts/close            # clôt l'acte courant (idempotent)
+GET  /api/sessions/<id>/acts                  # les actes clos et leurs résumés
+POST /api/sessions/<id>/acts/<n>/narrate      # écrit le récit destiné au joueur
+GET  /api/sessions/<id>/acts/<n>/audio        # ce récit, lu (R2, généré une fois)
+```
+
+Trois déclencheurs de clôture, par priorité : le joueur ; une proposition
+quand le MJ émet `<scene_break/>` passé 20 tours ; la clôture forcée à 35
+tours — cette dernière garantit qu'on n'atteint jamais la fenêtre de contexte.
+
+Deux résumés à ne jamais confondre : `context_summary_md` s'adresse au modèle,
+est relu à chaque tour des actes suivants et est plafonné à 2 000 caractères ;
+`narrated_summary_md` s'adresse au joueur, est de la prose, et n'est généré
+qu'à la demande.
+
 ## Qualité
 
 ```sh
@@ -130,12 +158,25 @@ La CI (GitHub Actions) exécute typecheck + tests + dry-run sur chaque PR.
 Le job `deploy` s'active avec la variable de dépôt `ENABLE_DEPLOY=true` et les
 secrets `CLOUDFLARE_API_TOKEN` / `CLOUDFLARE_ACCOUNT_ID`.
 
+## Modèles
+
+| Usage | Modèle |
+|---|---|
+| Narration, résumés, fiches lore, jets | `claude-sonnet-5` |
+| Indice de Richesse (`analyze`) | `claude-opus-4-8` |
+| Tableaux de références (moodboards) | `claude-opus-5` |
+
+Les deux derniers diffèrent aujourd'hui sans raison documentée — à trancher
+avant d'ajouter des appels sur l'un ou l'autre chemin.
+
 ## Milestones
 
 - [x] **M0 — Socle** : monorepo wrangler, Hono, migrations D1, auth magic-link, CI
 - [x] **M1 — Bibles** : import Markdown → `canon_md`, stockage R2
 - [x] **M2 — Richesse** : endpoint analyze, JSON strict, radar UI
-- [ ] **M3 — Moteur** : DO GameSession, SSE, d6 serveur, Souffle
-- [ ] **M4 — UI de session**
-- [ ] **M5 — Boucle canon**
-- [ ] **M6 — RAG (Vectorize)**
+- [x] **M3 — Moteur** : DO GameSession, SSE, d6 serveur, Souffle
+- [x] **M4 — UI de session**
+- [x] **M5 — Boucle canon**
+- [x] **M6 — RAG (Vectorize)**
+- [x] **M7 — Actes** : fenêtre de contexte bornée, résumés de mémoire, récits narrés + audio
+- [ ] **M8 — Table partagée** : membres, WebSocket, état par joueur, lobby, régimes de tour
