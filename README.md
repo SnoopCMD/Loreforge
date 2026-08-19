@@ -173,8 +173,9 @@ de tour est choisi par le MJ, pas par les joueurs :
 ```
 
 En simultané, le tour part quand tous les joueurs connectés ont soumis, au
-délai, ou sur forçage de l'hôte. En séquentiel, une action hors tour est
-refusée — jamais mise en file.
+délai de 90 s, ou sur forçage de l'hôte — un bouton « Résoudre sans attendre »
+apparaît sous le rail dès qu'une action attend un retardataire. En séquentiel,
+une action hors tour est refusée — jamais mise en file.
 
 ## Qualité
 

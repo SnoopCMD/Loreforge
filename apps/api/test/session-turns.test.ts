@@ -229,6 +229,34 @@ describe("lot 8.5 — régime simultané", () => {
     expect(dernier).toContain("Mira : je couvre le couloir");
   });
 
+  it("dit dans l'état qui a déjà soumis, pour un rechargement en plein tour", async () => {
+    const { hote, joueur, sessionId } = await table("rattrapage");
+
+    expect(
+      (
+        await post(hote, `/api/sessions/${sessionId}/turn`, {
+          player_input: "je pousse la porte",
+        })
+      ).status,
+    ).toBe(202);
+
+    // Un joueur qui recharge doit retrouver la table telle qu'elle est : une
+    // action déjà posée, et l'hôte son bouton de forçage.
+    const etat = (await (
+      await get(joueur, `/api/sessions/${sessionId}/state`)
+    ).json()) as { submitted: string[] };
+    expect(etat.submitted).toHaveLength(1);
+
+    mockAnthropicStream(["La porte cède. Et maintenant ?"]);
+    await (await post(hote, `/api/sessions/${sessionId}/turn/resolve`)).text();
+
+    // Tour résolu : plus personne n'est en attente.
+    const apres = (await (
+      await get(joueur, `/api/sessions/${sessionId}/state`)
+    ).json()) as { submitted: string[] };
+    expect(apres.submitted).toEqual([]);
+  });
+
   it("laisse l'hôte forcer la résolution sans attendre les retardataires", async () => {
     const { hote, joueur, sessionId } = await table("forcage");
 

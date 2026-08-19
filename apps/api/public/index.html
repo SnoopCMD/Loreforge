@@ -444,7 +444,12 @@
   </div>
   <!-- Table : présence et Souffle de chacun, masqué en solo (§8.3). -->
   <div class="table-rail hidden" id="table-rail" aria-label="Joueurs à la table"></div>
-  <p class="table-status hidden" id="table-status" aria-live="polite"></p>
+  <div class="table-wait hidden" id="table-wait">
+    <p class="table-status" id="table-status" aria-live="polite"></p>
+    <!-- Filet de l'hôte : passé le délai le serveur résout tout seul, mais
+         personne n'a envie d'attendre un joueur parti chercher un café. -->
+    <button type="button" class="force-turn hidden" id="force-turn">Résoudre sans attendre</button>
+  </div>
   <div class="session-screen" id="session-layout">
     <div class="narration" id="feed" aria-live="polite"></div>
     <aside class="session-rail">

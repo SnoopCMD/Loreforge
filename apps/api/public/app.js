@@ -4018,6 +4018,7 @@ const T = {
   myCharacterId: null,
   turnMode: "simultaneous",
   awaiting: null, // nom du joueur attendu en séquentiel
+  queued: false,  // actions mises en file pendant une narration en cours
 };
 
 const isTable = () => T.mode === "table";
@@ -4096,25 +4097,48 @@ function sameLabel(a, b) {
 }
 
 function renderTableStatus() {
+  const zone = $("table-wait");
   const el = $("table-status");
+  const bouton = $("force-turn");
   if (!isTable()) {
-    el.classList.add("hidden");
+    zone.classList.add("hidden");
+    bouton.classList.add("hidden");
     return;
   }
   let texte = "";
+  let retardataires = 0;
   if (T.turnMode === "sequential" && T.awaiting) {
     texte = "Au tour de " + T.awaiting;
   } else if (T.submitted.size > 0) {
     const attendus = T.members.filter(
       (m) => T.present.has(m.user_id) && !T.submitted.has(m.character_id),
     );
+    retardataires = attendus.length;
     texte = attendus.length
       ? "En attente de " + attendus.map(memberLabel).join(", ")
       : "Résolution du tour…";
   }
   el.textContent = texte;
-  el.classList.toggle("hidden", texte === "");
+  zone.classList.toggle("hidden", texte === "");
+  // Forcer n'a de sens que pour l'hôte, en simultané, quand une action
+  // attend vraiment quelqu'un — et pas pendant une narration en cours.
+  bouton.classList.toggle(
+    "hidden",
+    !(T.role === "host" && retardataires > 0 && !S.streaming && !T.queued),
+  );
 }
+
+/**
+ * L'hôte résout sans attendre les retardataires. Le serveur le ferait seul
+ * au bout de son délai ; ce geste ne fait que ne pas l'attendre.
+ */
+function forceTurn() {
+  if (S.streaming || !isTable() || T.role !== "host") return;
+  $("force-turn").classList.add("hidden");
+  runGeneration(S.id, "/sessions/" + S.id + "/turn/resolve", {});
+}
+
+$("force-turn").addEventListener("click", forceTurn);
 
 const renderTable = () => {
   renderTableRail();
@@ -4213,10 +4237,14 @@ function connectTable(sessionId) {
       },
       turn_waiting: (d) => {
         T.submitted = new Set(d.submitted || []);
+        // File d'attente pendant une narration : rien à forcer, le tour
+        // suivant partira tout seul à la fin de celle-ci.
+        T.queued = Boolean(d.queued);
         renderTable();
       },
       turn_locked: () => {
         T.submitted = new Set();
+        T.queued = false;
         renderTable();
       },
       turn_resolving: () => renderTable(),
@@ -4240,6 +4268,7 @@ function connectTable(sessionId) {
         endRemoteNarration();
         S.turnCount = d.turn;
         T.submitted = new Set();
+        T.queued = false;
         renderTable();
         lockInput(false);
       },
@@ -4282,6 +4311,9 @@ function myStateFrom(state) {
 function applyTableState(state) {
   if (!state) return;
   T.characters = state.characters || {};
+  // Rattrapage : qui a déjà soumis ce tour (rechargement, retour de coupure).
+  T.submitted = new Set(state.submitted || []);
+  T.queued = false;
   const moi = myStateFrom(state);
   S.souffle = moi.souffle;
   S.facts = state.facts || [];
@@ -4806,6 +4838,17 @@ function runGeneration(sessionId, path, body, retryText = null) {
         T.turnMode = "sequential";
         renderTable();
         if (retryText) $("player-input").value = retryText;
+      } else if (
+        err.status === 409 &&
+        err.payload &&
+        (err.payload.error === "no_pending_action" ||
+          err.payload.error === "turn_locked")
+      ) {
+        // Forçage arrivé trop tard : le délai serveur a déjà résolu le tour,
+        // ou une autre action l'a fait partir. Rien n'est perdu, la narration
+        // arrive par la socket — surtout pas de bandeau « interrompu ».
+        gotDone = true;
+        deferred = true;
       } else if (err.status === 409 && err.payload && err.payload.error === "roll_required") {
         // Flux de jeu normal (pas une coupure) : un jet est requis avant ce tour.
         gotDone = true;
@@ -5057,6 +5100,9 @@ async function enterSession(id) {
   S.status = state.status;
   S.souffleMax = state.souffle_max || 3;
   T.characters = state.characters || {};
+  // Rattrapage : qui a déjà soumis ce tour (rechargement, retour de coupure).
+  T.submitted = new Set(state.submitted || []);
+  T.queued = false;
   // Mon état, pas celui du personnage de la session : à une table, ce sont
   // deux choses différentes.
   const moi = myStateFrom(state);

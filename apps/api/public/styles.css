@@ -1605,10 +1605,23 @@ button.palette-card:hover { border-color: var(--arcane); }
 .player-chip.offline { opacity: 0.5; }
 .player-chip .who { max-width: 9rem; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 
+.table-wait {
+  display: flex; align-items: baseline; gap: 0.6rem;
+  flex-wrap: wrap;
+}
 .table-status {
   margin: 0.1rem 0 0.4rem;
   color: var(--arcane); font-size: 0.85rem;
 }
+
+/* Geste d'hôte, pas d'action de jeu : discret tant qu'on ne le cherche pas. */
+.force-turn {
+  margin-bottom: 0.4rem;
+  padding: 0.1rem 0.5rem;
+  background: none; border: 1px solid var(--line); border-radius: 999px;
+  color: var(--arcane); font-size: 0.78rem; cursor: pointer;
+}
+.force-turn:hover { border-color: var(--arcane); color: var(--ink); }
 
 .player-sheet {
   position: fixed; z-index: 60;

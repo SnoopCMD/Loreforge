@@ -823,6 +823,10 @@ export class GameSession extends DurableObject<Env> {
       at: Date.now(),
     });
     await this.ctx.storage.put("pending_actions", actions);
+    // Le snapshot chaud dit qui a soumis : il ment dès qu'une action arrive.
+    // On le purge plutôt que de le réécrire — la prochaine lecture repassera
+    // par le DO, qui le repeuplera.
+    await this.env.CACHE.delete(sessionKvKey(meta.sessionId));
 
     if (await this.lockHeld()) {
       // Une narration est en cours : l'action attend le tour suivant. Elle
@@ -1229,6 +1233,11 @@ export class GameSession extends DurableObject<Env> {
         ]),
       ),
       turn_count: state.turn_count,
+      // Actions déjà soumises pour le tour en cours. Un rechargement en plein
+      // tour simultané doit retrouver qui est prêt — et l'hôte son forçage.
+      submitted: (
+        (await this.ctx.storage.get<PendingAction[]>("pending_actions")) ?? []
+      ).map((a) => stateKey(a.characterId)),
       // Acte courant : son numéro et les tours déjà joués dedans. Le front s'en
       // sert pour situer la partie et proposer la clôture au bon moment.
       act_index: actIndex,
