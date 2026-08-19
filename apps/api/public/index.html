@@ -153,6 +153,9 @@
       <p class="msg">Importer, organiser, analyser et enrichir les bibles de vos univers.</p>
     </a>
   </div>
+  <!-- Un invité arrive d'habitude par le lien de l'hôte ; celui qui n'a que
+       le code n'avait aucune porte d'entrée. -->
+  <p class="msg home-join">Un code d'invitation ? <a href="#/join">Rejoindre une table</a></p>
 </section>
 
 <!-- ── Choix du monde pour jouer ───────────────────────────────────────── -->
@@ -329,6 +332,13 @@
   <div class="row spread">
     <h2>Qui vivra cette session ?</h2>
     <a class="msg" id="embark-back" href="#/">← Retour</a>
+  </div>
+  <!-- Solo ou table : le choix se pose ici parce que c'est le seul passage
+       obligé avant le lancement — « Partir à l'aventure » y mène aussi. -->
+  <div class="row mode-pick" role="radiogroup" aria-label="Type de session">
+    <button type="button" class="mode-opt on" id="mode-solo" role="radio" aria-checked="true">Solo</button>
+    <button type="button" class="mode-opt" id="mode-table" role="radio" aria-checked="false">À plusieurs</button>
+    <span class="msg" id="mode-hint"></span>
   </div>
   <div class="doors">
     <div class="panel door">
@@ -511,7 +521,10 @@
 <!-- ── Rejoindre une table par code ────────────────────────────────────── -->
 <section id="screen-join" class="hidden">
   <div class="app narrow">
-    <h1>Rejoindre une table</h1>
+    <div class="row spread">
+      <h1>Rejoindre une table</h1>
+      <a class="msg" href="#/">← Retour</a>
+    </div>
     <p class="msg">Entrez le code que l'hôte vous a donné.</p>
     <input id="join-code" maxlength="12" autocomplete="off"
       placeholder="XXXXXXXX" aria-label="Code d'invitation" />

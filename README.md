@@ -145,6 +145,11 @@ est une table d'un joueur, et `mode` ne pilote que trois choses — la politique
 de tour (résolution immédiate en solo), l'interface (ni lobby ni rail) et les
 permissions (pas de rôle d'hôte à faire respecter).
 
+Le mode se choisit à l'embarquement (« Solo » / « À plusieurs »), mémorisé par
+bible : une table part alors dans son lobby au lieu de la mise en place. Les
+invités arrivent par le lien de l'hôte, ou par « Rejoindre une table » depuis
+l'accueil s'ils n'ont que le code.
+
 ```sh
 POST   /api/sessions                          # { mode: "solo" | "table" }
 POST   /api/sessions/<id>/invite              # (hôte) → { code, expires_at }

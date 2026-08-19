@@ -2658,7 +2658,37 @@ $("forge-character-btn").addEventListener("click", () => {
 // ── Lancement de session : préférences puis écran « deux portes » ────────
 
 function embarkPref(bibleId) {
-  return store.get("lf:embark:" + bibleId) || { format: "oneshot" };
+  const pref = store.get("lf:embark:" + bibleId) || {};
+  return { format: pref.format || "oneshot", mode: pref.mode || "solo" };
+}
+
+/** Écrit une préférence sans écraser les autres (format et mode cohabitent). */
+function setEmbarkPref(bibleId, patch) {
+  store.set("lf:embark:" + bibleId, { ...embarkPref(bibleId), ...patch });
+}
+
+/**
+ * Solo ou table, mémorisé par bible. Le mode ne change rien à la fiction :
+ * il décide seulement du lobby, des invitations et du rail de présence.
+ */
+function initModePick(bibleId) {
+  const rendre = (mode) => {
+    const table = mode === "table";
+    $("mode-solo").classList.toggle("on", !table);
+    $("mode-table").classList.toggle("on", table);
+    $("mode-solo").setAttribute("aria-checked", String(!table));
+    $("mode-table").setAttribute("aria-checked", String(table));
+    $("mode-hint").textContent = table
+      ? "Vous ouvrez une table : les autres rejoindront par un code."
+      : "Vous seul face au Maître de Jeu.";
+  };
+  const choisir = (mode) => {
+    setEmbarkPref(bibleId, { mode });
+    rendre(mode);
+  };
+  $("mode-solo").onclick = () => choisir("solo");
+  $("mode-table").onclick = () => choisir("table");
+  rendre(embarkPref(bibleId).mode);
 }
 
 /** Recharge la bible si on arrive par refresh direct sur un sous-écran. */
@@ -2669,15 +2699,18 @@ async function ensureBible(id) {
   return currentBible;
 }
 
-async function launchSession(bibleId, characterId, mode, msgEl) {
+async function launchSession(bibleId, characterId, characterMode, msgEl) {
   const pref = embarkPref(bibleId);
   const payload = {
     bible_id: bibleId,
     character_id: characterId || null,
     format: pref.format || "oneshot",
+    // Solo par défaut : le serveur crée alors la session directement en
+    // mise en place, sans lobby ni membres à attendre.
+    mode: pref.mode === "table" ? "table" : "solo",
   };
   // Le fil rouge se pose à l'écran de mise en place, personnage déjà choisi.
-  if (mode) payload.character_mode = mode;
+  if (characterMode) payload.character_mode = characterMode;
   if (msgEl) { msgEl.innerHTML = spin("La session se prépare…"); msgEl.className = "msg"; }
   const res = await api("/sessions", jsonPost(payload));
   const body = await res.json();
@@ -2693,7 +2726,12 @@ async function launchSession(bibleId, characterId, mode, msgEl) {
     ? { id: bibleId, title: currentBible.title }
     : { id: bibleId, title: "" };
   store.set("lf:bible:" + body.session_id, info);
-  location.hash = "#/session/" + body.session_id + "/setup";
+  // Une table se retrouve d'abord dans son lobby : c'est là qu'on invite,
+  // que chacun prend son personnage, et que l'hôte lance.
+  location.hash =
+    body.mode === "table"
+      ? "#/session/" + body.session_id + "/lobby"
+      : "#/session/" + body.session_id + "/setup";
 }
 
 // ── Écran « deux portes » : Incarner / Créer (§6bis) ─────────────────────
@@ -2707,6 +2745,7 @@ async function showEmbark(bibleId) {
   $("create-btn").onclick = () => { location.hash = "#/bible/" + bibleId + "/forge"; };
   $("no-character-btn").onclick = () =>
     launchSession(bibleId, null, null, $("embark-msg"));
+  initModePick(bibleId);
 
   const wrap = $("embark-characters");
   wrap.innerHTML = '<p class="msg">' + spin("Les personnages se réveillent…") + "</p>";
@@ -3212,7 +3251,7 @@ async function loadSessions(bibleId) {
 
 $("new-session-btn").addEventListener("click", () => {
   // Format mémorisé, puis écran « deux portes » (§6bis).
-  store.set("lf:embark:" + currentBible.id, { format: $("new-format").value });
+  setEmbarkPref(currentBible.id, { format: $("new-format").value });
   location.hash = "#/bible/" + currentBible.id + "/embark";
 });
 
