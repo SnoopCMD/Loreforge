@@ -11,6 +11,15 @@ const ANTHROPIC_ORIGIN = "https://api.anthropic.com";
 const queue: Array<(isStream: boolean) => Response> = [];
 let installed = false;
 
+/** Corps de la dernière requête Anthropic, déjà parsé. */
+export interface AnthropicRequest {
+  system?: unknown;
+  messages?: Array<{ role: string; content: unknown }>;
+  [key: string]: unknown;
+}
+
+let lastRequest: AnthropicRequest | null = null;
+
 export function installAnthropicMock(): void {
   if (installed) return;
   installed = true;
@@ -34,9 +43,13 @@ export function installAnthropicMock(): void {
       // alors du SSE, sinon du JSON, quel que soit le mock* utilisé.
       let isStream = false;
       try {
-        isStream =
-          typeof init?.body === "string" &&
-          (JSON.parse(init.body) as { stream?: boolean }).stream === true;
+        if (typeof init?.body === "string") {
+          // Capturé ICI, une fois parsé : vérifier la sortie du MJ ne dit rien
+          // de ce qu'il a REÇU — et c'est exactement là que le multi cassait,
+          // sans qu'aucun test n'échoue.
+          lastRequest = JSON.parse(init.body) as AnthropicRequest;
+          isStream = (lastRequest as { stream?: boolean }).stream === true;
+        }
       } catch {
         /* body non-JSON */
       }
@@ -47,6 +60,37 @@ export function installAnthropicMock(): void {
     }
     return original(input as RequestInfo, init);
   }) as typeof fetch;
+}
+
+/** Dernière requête envoyée au modèle (null si aucune). */
+export function lastAnthropicRequest(): AnthropicRequest | null {
+  return lastRequest;
+}
+
+/**
+ * Tout le texte parti au modèle sur la dernière requête : prompt système ET
+ * messages, aplatis. De quoi affirmer ce que le MJ a sous les yeux.
+ */
+export function lastAnthropicPrompt(): string {
+  const req = lastRequest;
+  if (!req) return "";
+  const flat = (content: unknown): string => {
+    if (typeof content === "string") return content;
+    if (Array.isArray(content)) {
+      return content
+        .map((block) =>
+          block !== null && typeof block === "object" && "text" in block
+            ? String((block as { text: unknown }).text)
+            : "",
+        )
+        .join("\n");
+    }
+    return "";
+  };
+  return [
+    flat(req.system),
+    ...(req.messages ?? []).map((m) => flat(m.content)),
+  ].join("\n");
 }
 
 /** À appeler en afterEach : vérifie que tous les mocks ont été consommés. */

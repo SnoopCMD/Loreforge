@@ -27,6 +27,7 @@ characters.use("*", requireAuth);
 interface CharacterRow {
   id: string;
   bible_id: string;
+  user_id: string;
   name: string;
   sheet_json: string;
   skills_json: string | null;
@@ -45,7 +46,12 @@ function parseSkillsJson(raw: string | null) {
   }
 }
 
-function toPublic(row: CharacterRow) {
+/**
+ * Fiche telle qu'un joueur la voit. `viewerId` n'est passé que là où la
+ * distinction compte (la liste d'un univers partagé) : sans lui, `mine` reste
+ * `undefined` et la réponse est exactement celle d'avant la table partagée.
+ */
+function toPublic(row: CharacterRow, viewerId?: string) {
   return {
     id: row.id,
     bible_id: row.bible_id,
@@ -54,6 +60,9 @@ function toPublic(row: CharacterRow) {
     skills: parseSkillsJson(row.skills_json),
     origin: row.origin,
     is_canon: row.is_canon === 1,
+    // Sans ce drapeau, l'interface ne peut pas distinguer ma fiche de celle
+    // du voisin — or seule la mienne est éditable.
+    mine: viewerId === undefined ? undefined : row.user_id === viewerId,
     created_at: row.created_at,
   };
 }
@@ -212,7 +221,14 @@ characters.put("/:id", async (c) => {
   return c.json(toPublic(row));
 });
 
-// GET /api/characters?bible_id= — persos canon + persos créés par le joueur.
+// GET /api/characters?bible_id= — TOUTES les fiches de l'univers.
+//
+// Les personnages appartiennent à la bible, pas au joueur : filtrer par
+// `user_id` donnait à l'hôte et à l'invité deux listes disjointes du même
+// univers — chacun croyait jouer dans une copie. L'accès reste gardé en amont
+// par findPlayableBible, qui n'ouvre l'univers qu'à son auteur et aux membres
+// de ses tables ; l'ordre, lui, garde le solo intact (canon d'abord, puis mes
+// fiches, puis celles des autres).
 characters.get("/", async (c) => {
   const bibleId = c.req.query("bible_id");
   if (!bibleId) return c.json({ error: "missing_bible_id" }, 400);
@@ -222,13 +238,13 @@ characters.get("/", async (c) => {
   if (!bible) return c.json({ error: "bible_not_found" }, 404);
 
   const { results } = await c.env.DB.prepare(
-    `SELECT * FROM characters WHERE bible_id = ? AND (user_id = ? OR is_canon = 1)
-     ORDER BY is_canon DESC, created_at DESC`,
+    `SELECT * FROM characters WHERE bible_id = ?
+     ORDER BY is_canon DESC, (user_id = ?) DESC, created_at DESC`,
   )
     .bind(bible.id, user.id)
     .all<CharacterRow>();
 
-  return c.json({ characters: results.map(toPublic) });
+  return c.json({ characters: results.map((row) => toPublic(row, user.id)) });
 });
 
 // ── §6bis — Incarner-express : questionnaire éclair ──────────────────────

@@ -1664,6 +1664,9 @@ button.palette-card:hover { border-color: var(--arcane); }
 .char-choices { display: flex; flex-wrap: wrap; gap: 0.5rem; margin: 0.5rem 0; }
 .char-choices .pick-char { min-height: 44px; }
 .char-choices .pick-char.on { border-color: var(--arcane); color: var(--arcane); }
+/* Personnage déjà occupé par un autre joueur : visible, mais hors d'atteinte. */
+.char-choices .pick-char.taken { opacity: 0.45; cursor: not-allowed; }
+.char-choices .pick-char .who { display: block; font-size: 0.75rem; color: var(--parchment-dim); }
 
 .invite-box { margin: 0.5rem 0 1rem; }
 .invite-code {

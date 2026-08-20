@@ -168,6 +168,23 @@ utilise l'API d'hibernation (une partie reste ouverte des heures) et
 s'authentifie **à l'upgrade** — aucun message entrant ne peut redire qui l'on
 est.
 
+Les personnages appartiennent à la **bible**, pas au joueur : `GET
+/api/characters?bible_id=` rend toutes les fiches de l'univers (canon d'abord,
+puis les miennes — signalées par `mine` —, puis celles des autres), et l'accès
+est gardé en amont par l'appartenance. Filtrer par `user_id` donnait à l'hôte et
+à l'invité deux listes disjointes du même univers : chacun croyait jouer dans sa
+copie. On incarne la fiche d'un autre, on ne la réécrit pas — l'édition reste à
+son auteur.
+
+Le **siège est exclusif** : deux joueurs sur la même fiche partageraient un seul
+Souffle et un seul jeu d'acquis, puisque l'état est indexé par `character_id`
+(`409 character_taken`). Et la prise de place **notifie le moteur** : une table
+naît dans son lobby, AVANT que quiconque soit assis, donc le Durable Object
+apprend qui incarne qui au moment du choix, pas à l'init. Les fiches, elles, sont
+relues depuis D1 à chaque tour et voyagent dans `[CONTEXTE DU TOUR]` — jamais
+dans le prompt système, qui est le préfixe mis en cache et doit rester identique
+à l'octet près alors que les joueurs vont et viennent.
+
 Le Souffle, les compétences et les jets appartiennent à un `character_id` ;
 seuls les faits établis et le compteur de tours restent collectifs. Le régime
 de tour est choisi par le MJ, pas par les joueurs :

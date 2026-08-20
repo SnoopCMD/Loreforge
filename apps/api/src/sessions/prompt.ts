@@ -183,9 +183,15 @@ export function buildSystemPrompt(input: SystemPromptInput): string {
     input.toneProfile ??
     "Déduis le ton du canon ; registre par défaut : aventure fantastique, violence modérée, pas de contenu adulte.";
 
-  const character = input.characterName
-    ? `Personnage joueur : ${input.characterName}\nFiche : ${input.characterSheet ?? "{}"}`
-    : "Pas de fiche de personnage : improvise une fiche minimale avec le joueur dès la première scène.";
+  // À une table, les fiches ne peuvent PAS vivre ici : ce bloc est le préfixe
+  // mis en cache et doit rester identique à l'octet près, or les joueurs vont
+  // et viennent. Elles voyagent dans [CONTEXTE DU TOUR], relues à chaque tour.
+  const character = input.multiplayer
+    ? `Les personnages de la table, leurs fiches et leur état sont donnés à
+chaque tour dans [CONTEXTE DU TOUR]. Ne les invente jamais : lis-les.`
+    : input.characterName
+      ? `Personnage joueur : ${input.characterName}\nFiche : ${input.characterSheet ?? "{}"}`
+      : "Pas de fiche de personnage : improvise une fiche minimale avec le joueur dès la première scène.";
 
   // Fil rouge : l'intention que l'auteur pose avant d'ouvrir la scène 1. Il
   // oriente la partie sans devenir un script — le joueur reste libre.
@@ -455,6 +461,8 @@ ${excerptsBlock}[FIN DU CONTEXTE]`;
 export interface TurnCharacter {
   key: string;
   name: string | null;
+  /** Fiche JSON, à une table seulement : en solo elle est déjà au système. */
+  sheet?: string | null;
   state: CharacterState;
 }
 
@@ -466,7 +474,9 @@ function describeCharacter(character: TurnCharacter, withName: boolean): string 
         .join("\n")
     : "- (aucune pour l'instant)";
   const entete = withName && character.name ? `${character.name} —\n` : "";
-  return `${entete}Souffle : ${st.souffle}/${SOUFFLE_MAX}
+  // Sans fiche fournie (solo), la sortie reste identique à l'octet près.
+  const fiche = character.sheet ? `Fiche : ${character.sheet}\n` : "";
+  return `${entete}${fiche}Souffle : ${st.souffle}/${SOUFFLE_MAX}
 Compétences acquises (nom — palier) :
 ${skills}`;
 }
@@ -474,11 +484,16 @@ ${skills}`;
 /** Roster prêt pour le contexte de tour, dans l'ordre donné. */
 export function turnCharacters(
   state: GameState,
-  members: Array<{ characterId: string | null; name: string | null }>,
+  members: Array<{
+    characterId: string | null;
+    name: string | null;
+    sheet?: string | null;
+  }>,
 ): TurnCharacter[] {
   return members.map((m) => ({
     key: stateKey(m.characterId),
     name: m.name,
+    ...(m.sheet ? { sheet: m.sheet } : {}),
     state: characterState(state, m.characterId),
   }));
 }

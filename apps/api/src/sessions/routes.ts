@@ -500,14 +500,31 @@ sessions.put("/:id/members/me", async (c) => {
     return c.json({ error: "invalid_character_id" }, 400);
   }
 
-  // La fiche doit appartenir au joueur ET à l'univers joué : on ne s'assoit
-  // pas à une table avec le personnage d'un autre monde.
+  // La fiche doit appartenir à l'UNIVERS joué, plus au joueur : à une table on
+  // incarne un personnage de la bible, fût-il écrit par quelqu'un d'autre. On
+  // ne s'assoit toujours pas avec le personnage d'un autre monde.
   const character = await c.env.DB.prepare(
-    `SELECT id FROM characters WHERE id = ? AND user_id = ? AND bible_id = ?`,
+    `SELECT id FROM characters WHERE id = ? AND bible_id = ?`,
   )
-    .bind(characterId, c.get("user").id, found.row.bible_id)
+    .bind(characterId, found.row.bible_id)
     .first();
   if (!character) return c.json({ error: "character_not_found" }, 404);
+
+  // …mais le siège est exclusif. Le moteur indexe l'état par character_id :
+  // deux joueurs sur une même fiche partageraient un seul Souffle, un seul
+  // jeu d'acquis, un seul jet.
+  const occupant = await c.env.DB.prepare(
+    `SELECT user_id FROM session_members
+     WHERE session_id = ? AND character_id = ? AND user_id != ?`,
+  )
+    .bind(found.row.id, characterId, c.get("user").id)
+    .first<{ user_id: string }>();
+  if (occupant) {
+    return c.json(
+      { error: "character_taken", user_id: occupant.user_id },
+      409,
+    );
+  }
 
   await c.env.DB.prepare(
     `UPDATE session_members SET character_id = ?
@@ -516,8 +533,41 @@ sessions.put("/:id/members/me", async (c) => {
     .bind(characterId, found.row.id, c.get("user").id)
     .run();
 
+  await seatCharacter(c, found.row.id, c.get("user").id, characterId);
+
   return c.json({ ok: true, character_id: characterId });
 });
+
+/**
+ * Prévient le moteur qu'un joueur vient de s'asseoir.
+ *
+ * Sans ça, le DO garde la composition figée à l'init — or une table naît dans
+ * son lobby, AVANT que quiconque soit assis : le MJ improvisait des fiches
+ * minimales pendant que deux joueurs venaient d'écrire les leurs.
+ *
+ * L'échec ne fait PAS échouer la prise de place : la ligne de membre est déjà
+ * écrite et le roster est de toute façon relu depuis D1 à chaque tour. Seuls
+ * l'event temps réel et l'amorçage des compétences seraient perdus.
+ */
+async function seatCharacter(
+  c: Context<AppEnv>,
+  sessionId: string,
+  userId: string,
+  characterId: string,
+): Promise<void> {
+  try {
+    const res = await stubFor(c, sessionId).fetch("https://do/seat", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ userId, characterId }),
+    });
+    if (!res.ok) {
+      console.error(`[sessions] /seat refusé pour ${sessionId}: ${res.status}`);
+    }
+  } catch (err) {
+    console.error(`[sessions] /seat échoué pour ${sessionId}:`, err);
+  }
+}
 
 sessions.post("/:id/trame", proxy("/trame", { host: true }));
 sessions.post("/:id/setup", proxy("/setup", { host: true }));

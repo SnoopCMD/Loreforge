@@ -5,7 +5,7 @@
 import { Hono } from "hono";
 import type { AppEnv } from "../env";
 import { requireAuth } from "../auth/middleware";
-import { findOwnedBible } from "../bibles/db";
+import { findPlayableBible } from "../bibles/db";
 import { latestSheetSchema } from "./db";
 
 export const sheetRoutes = new Hono<AppEnv>();
@@ -13,8 +13,11 @@ export const sheetRoutes = new Hono<AppEnv>();
 sheetRoutes.use("*", requireAuth);
 
 // GET /api/bibles/:id/sheet-schema — dernier schéma généré à l'analyse.
+//
+// Playable et non « owned » : sans ça, la forge s'ouvre vide pour un invité —
+// il n'a pas le formulaire de fiche de l'univers dans lequel il joue.
 sheetRoutes.get("/:id/sheet-schema", async (c) => {
-  const bible = await findOwnedBible(
+  const bible = await findPlayableBible(
     c.env.DB,
     c.req.param("id"),
     c.get("user").id,
@@ -28,7 +31,7 @@ sheetRoutes.get("/:id/sheet-schema", async (c) => {
 
 // GET /api/bibles/:id/playable — personnages canon incarnables.
 sheetRoutes.get("/:id/playable", async (c) => {
-  const bible = await findOwnedBible(
+  const bible = await findPlayableBible(
     c.env.DB,
     c.req.param("id"),
     c.get("user").id,

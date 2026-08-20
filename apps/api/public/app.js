@@ -4058,6 +4058,7 @@ const T = {
   turnMode: "simultaneous",
   awaiting: null, // nom du joueur attendu en séquentiel
   queued: false,  // actions mises en file pendant une narration en cours
+  lobbyBible: null, // bible du lobby affiché, pour re-rendre les fiches
 };
 
 const isTable = () => T.mode === "table";
@@ -4191,7 +4192,12 @@ const renderTable = () => {
  */
 function refreshTableViews() {
   renderTable();
-  if (!$("screen-lobby").classList.contains("hidden")) renderLobbyPlayers();
+  if (!$("screen-lobby").classList.contains("hidden")) {
+    renderLobbyPlayers();
+    // Un siège vient peut-être d'être pris : la liste des fiches se regrise
+    // sans que personne ait à recharger la page.
+    if (T.lobbyBible) renderLobbyMine(S.id, T.lobbyBible);
+  }
 }
 
 /**
@@ -4264,6 +4270,9 @@ function connectTable(sessionId) {
       // seulement la présence — il faut la relire.
       member_joined: () => loadMembers(sessionId).then(refreshTableViews),
       member_left: () => loadMembers(sessionId).then(refreshTableViews),
+      // Quelqu'un s'est assis : son personnage n'est plus disponible pour
+      // les autres, et le lobby doit le montrer tout seul.
+      member_seated: () => loadMembers(sessionId).then(refreshTableViews),
       session_started: () => {
         if (location.hash.includes("/lobby")) {
           location.hash = "#/session/" + sessionId;
@@ -4539,7 +4548,25 @@ function renderLobbyPlayers() {
     .join("");
 }
 
-/** Mon choix de personnage : les fiches de cet univers, ou en créer une. */
+/** Qui d'autre occupe ce personnage à la table, s'il est déjà pris. */
+function seatOccupant(characterId) {
+  return T.members.find(
+    (m) =>
+      m.character_id === characterId &&
+      !(currentUser && m.user_id === currentUser.id),
+  );
+}
+
+/** Nom du compte d'un membre (et non de son personnage : c'est la personne). */
+const accountLabel = (m) =>
+  m.display_name || (m.email || "").split("@")[0] || "un autre joueur";
+
+/**
+ * Mon choix de personnage : les fiches de cet univers — toutes, désormais, y
+ * compris celles des autres joueurs — ou en créer une. Un personnage déjà
+ * occupé est grisé : le serveur le refuserait de toute façon (409), autant le
+ * dire avant le clic.
+ */
 async function renderLobbyMine(sessionId, bibleId) {
   const box = $("lobby-mine");
   if (!bibleId) {
@@ -4551,6 +4578,7 @@ async function renderLobbyMine(sessionId, bibleId) {
     }
   }
   if (!bibleId) { box.innerHTML = ""; return; }
+  T.lobbyBible = bibleId;
 
   const res = await api("/characters?bible_id=" + encodeURIComponent(bibleId));
   if (!res.ok) { box.innerHTML = ""; return; }
@@ -4561,12 +4589,20 @@ async function renderLobbyMine(sessionId, bibleId) {
     (characters.length
       ? '<div class="char-choices">' +
         characters
-          .map(
-            (c) =>
+          .map((c) => {
+            const pris = seatOccupant(c.id);
+            return (
               '<button type="button" class="ghost pick-char' +
               (c.id === T.myCharacterId ? " on" : "") +
-              '" data-id="' + esc(c.id) + '">' + esc(c.name) + "</button>",
-          )
+              (pris ? " taken" : "") +
+              '"' + (pris ? " disabled" : "") +
+              ' data-id="' + esc(c.id) + '">' + esc(c.name) +
+              (pris
+                ? '<span class="who">' + esc(accountLabel(pris)) + "</span>"
+                : "") +
+              "</button>"
+            );
+          })
           .join("") +
         "</div>"
       : '<p class="msg">Aucune fiche dans cet univers pour l\u2019instant.</p>') +
@@ -4580,11 +4616,22 @@ async function renderLobbyMine(sessionId, bibleId) {
         headers: { "content-type": "application/json" },
         body: JSON.stringify({ character_id: btn.dataset.id }),
       });
-      if (res2.ok) {
-        await loadMembers(sessionId);
-        renderLobbyPlayers();
-        await renderLobbyMine(sessionId, bibleId);
+      // Le clic échouait en silence : un refus doit se voir, et la liste
+      // repart à jour (quelqu'un a pu s'asseoir entre-temps).
+      if (!res2.ok) {
+        const err = await res2.json().catch(() => ({}));
+        $("lobby-msg").textContent =
+          err.error === "character_taken"
+            ? "Ce personnage est déjà pris par un autre joueur."
+            : err.error === "character_already_chosen"
+              ? "La partie a commencé : on ne change plus de personnage."
+              : "Impossible de s\u2019asseoir avec ce personnage.";
+      } else {
+        $("lobby-msg").textContent = "";
       }
+      await loadMembers(sessionId);
+      renderLobbyPlayers();
+      await renderLobbyMine(sessionId, bibleId);
     }),
   );
 }

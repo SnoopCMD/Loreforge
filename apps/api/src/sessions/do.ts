@@ -345,6 +345,8 @@ export class GameSession extends DurableObject<Env> {
   private rosterCache: Array<{
     characterId: string | null;
     name: string | null;
+    /** Fiche du personnage (mode table uniquement, cf. roster()). */
+    sheet?: string | null;
   }> | null = null;
 
   /**
@@ -420,6 +422,9 @@ export class GameSession extends DurableObject<Env> {
       }
       if (request.method === "POST" && path === "/start") {
         return await this.start(meta);
+      }
+      if (request.method === "POST" && path === "/seat") {
+        return await this.seat(meta, await readJson(request));
       }
       if (request.method === "POST" && path === "/turn/resolve") {
         return await this.forceResolve(meta);
@@ -620,6 +625,70 @@ export class GameSession extends DurableObject<Env> {
     const questions =
       (await this.ctx.storage.get<string[]>("setup_questions")) ?? [];
     return json({ status: meta.status, setup_questions: questions });
+  }
+
+  // ── Prise de place (lot 8.6) ──────────────────────────────────────────
+
+  /**
+   * Un joueur vient de choisir son personnage. Le Worker a déjà écrit la ligne
+   * de membre ; le moteur, lui, l'ignorait jusqu'ici — une table naît dans son
+   * lobby, AVANT que quiconque soit assis, et le prompt partait donc avec
+   * « pas de fiche de personnage » pendant que les joueurs venaient d'écrire
+   * les leurs.
+   */
+  private async seat(meta: SessionMeta, body: unknown): Promise<Response> {
+    const { userId, characterId } = (body ?? {}) as {
+      userId?: unknown;
+      characterId?: unknown;
+    };
+    if (typeof userId !== "string" || typeof characterId !== "string") {
+      return json({ error: "invalid_seat" }, 400);
+    }
+
+    // La composition de la table vient de changer.
+    this.forgetRoster();
+
+    const character = await this.env.DB.prepare(
+      `SELECT name, sheet_json, skills_json FROM characters WHERE id = ?`,
+    )
+      .bind(characterId)
+      .first<{ name: string; sheet_json: string; skills_json: string | null }>();
+    if (!character) return json({ error: "character_not_found" }, 404);
+
+    const state = await this.loadState(meta);
+    // Amorçage à la PREMIÈRE assise seulement — testé AVANT characterState(),
+    // qui créerait l'entrée au passage. Ensuite, l'état de la session en cours
+    // fait foi : le recharger effacerait ce qui vient d'être gagné.
+    const premiere = !state.characters?.[stateKey(characterId)];
+    const cs = characterState(state, characterId);
+    if (premiere) {
+      try {
+        cs.skills = sanitizeSkills(JSON.parse(character.skills_json ?? "[]"));
+      } catch {
+        cs.skills = [];
+      }
+    }
+
+    // En SOLO uniquement, la fiche du prompt système suit le changement :
+    // changer de personnage avant la scène 1 doit s'y refléter, sinon le MJ
+    // narre pour celui qu'on vient d'abandonner. À une table, les fiches
+    // voyagent dans [CONTEXTE DU TOUR] — le prompt système, lui, est en cache
+    // ephemeral et doit rester identique à l'octet près.
+    if ((meta.mode ?? "solo") !== "table") {
+      meta.characterId = characterId;
+      meta.characterName = character.name;
+      meta.characterSheet = character.sheet_json;
+    }
+
+    await this.ctx.storage.put({ meta, state });
+    await this.syncKV(meta, state);
+    this.broadcast("member_seated", {
+      user_id: userId,
+      character_id: characterId,
+      character_name: character.name,
+    });
+
+    return json({ ok: true });
   }
 
   // ── Fil rouge → questions recentrées ──────────────────────────────────
@@ -2353,25 +2422,40 @@ export class GameSession extends DurableObject<Env> {
    */
   private async roster(
     meta: SessionMeta,
-  ): Promise<Array<{ characterId: string | null; name: string | null }>> {
+  ): Promise<
+    Array<{
+      characterId: string | null;
+      name: string | null;
+      sheet?: string | null;
+    }>
+  > {
     // Mémoïsé pour la durée du tour : il était relu deux fois par tour (une
     // pour assembler les actions, une pour le contexte), y compris en solo où
     // la réponse tient en une ligne et ne change jamais.
     if (this.rosterCache) return this.rosterCache;
     const { results } = await this.env.DB.prepare(
-      `SELECT sm.character_id, ch.name
+      `SELECT sm.character_id, ch.name, ch.sheet_json
        FROM session_members sm
        LEFT JOIN characters ch ON ch.id = sm.character_id
        WHERE sm.session_id = ? ORDER BY sm.joined_at`,
     )
       .bind(meta.sessionId)
-      .all<{ character_id: string | null; name: string | null }>();
+      .all<{
+        character_id: string | null;
+        name: string | null;
+        sheet_json: string | null;
+      }>();
+    // La fiche est relue ICI, à chaque tour, jamais figée à l'init : c'est
+    // tout le point. En solo elle est déjà dans le prompt système — la
+    // répéter changerait le message de tour pour rien.
+    const table = (meta.mode ?? "solo") === "table";
     this.rosterCache =
       results.length === 0
         ? [{ characterId: meta.characterId, name: meta.characterName }]
         : results.map((r) => ({
             characterId: r.character_id,
             name: r.name,
+            ...(table ? { sheet: r.sheet_json } : {}),
           }));
     return this.rosterCache;
   }
