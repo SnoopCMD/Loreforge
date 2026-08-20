@@ -546,6 +546,41 @@ describe("M8 — défauts relevés en relecture", () => {
   });
 });
 
+describe("le flux ne reste jamais muet", () => {
+  // Le client coupe un flux silencieux au bout de 20 s. Or rien ne partait
+  // entre les en-têtes et le PREMIER MOT du MJ : tout l'intervalle de
+  // réflexion du modèle était à découvert. Sur une bible volumineuse, la
+  // scène 1 était coupée avant d'exister — sans erreur nulle part, donc
+  // sans rien à corriger. Le signe de vie part maintenant AVANT l'appel.
+  it("annonce sa vie avant que le narrateur n'ait dit un mot", async () => {
+    const cookie = await login("battement@example.com");
+    const bibleRes = await post(cookie, "/api/bibles", {
+      markdown: "# Univers\n\nDu lore.",
+    });
+    const { id: bibleId } = (await bibleRes.json()) as { id: string };
+    const createRes = await post(cookie, "/api/sessions", {
+      bible_id: bibleId,
+      format: "oneshot",
+    });
+    const { session_id } = (await createRes.json()) as { session_id: string };
+
+    mockAnthropicStream(["Scène 1. Que fais-tu ?"]);
+    const res = await post(cookie, `/api/sessions/${session_id}/setup`, {
+      answers: [],
+    });
+    const flux = await res.text();
+
+    // Un commentaire SSE, et il arrive AVANT la première narration.
+    expect(flux).toContain(": attente du narrateur");
+    expect(flux.indexOf(": attente du narrateur")).toBeLessThan(
+      flux.indexOf("event: narration"),
+    );
+    // Et il ne perturbe rien : le tour se termine normalement.
+    expect(flux).toContain("Scène 1.");
+    expect(flux).toContain("event: done");
+  });
+});
+
 describe("une génération ratée dit POURQUOI", () => {
   // Le bandeau « Génération interrompue » était le même pour une coupure
   // réseau, une clé API absente et un quota dépassé. Depuis un téléphone,

@@ -5006,6 +5006,11 @@ function runGeneration(sessionId, path, body, retryText = null) {
           redirected = true;
           location.hash = "#/session/" + sessionId + "/end";
         }
+      } else if (err.message === "stream_timeout") {
+        // Le flux s'est ouvert puis n'a plus rien dit pendant 20 s. Le serveur
+        // envoie pourtant un signe de vie tant que le MJ réfléchit : si l'on
+        // arrive ici, c'est la connexion elle-même qui est en cause.
+        failure = { timeout: true };
       } else if (!err.interrupted && err.status) {
         // Le serveur a répondu et refusé : 503 narrateur non configuré, 502
         // génération ratée, 500… Ce n'est pas une coupure, et le joueur doit
@@ -5050,6 +5055,9 @@ function runGeneration(sessionId, path, body, retryText = null) {
  */
 function failureMessage(f) {
   if (!f) return null;
+  if (f.timeout) {
+    return "Le narrateur n\u2019a plus donné signe de vie pendant 20 secondes : la connexion a été coupée de ce côté-ci.";
+  }
   if (f.error === "narrator_not_configured") {
     return "Le narrateur n\u2019est pas configuré côté serveur : la clé API Anthropic manque.";
   }

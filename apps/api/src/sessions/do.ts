@@ -134,6 +134,14 @@ const MAX_ACT_SUMMARY_TOKENS = 1024;
 // client (20 s côté transport) : sans lui, le flux serait coupé en plein
 // résumé et l'event de clôture n'arriverait jamais.
 const ACT_CLOSING_HEARTBEAT_MS = 5000;
+/**
+ * Signe de vie tant que le modèle n'a pas dit son premier mot. Le client coupe
+ * un flux muet au bout de 20 s (SSE_IDLE_TIMEOUT_MS, transport.js) : sans ça,
+ * une bible volumineuse — prompt système long, cache froid — voyait sa scène 1
+ * coupée AVANT d'avoir commencé, et le joueur n'obtenait qu'un « Génération
+ * interrompue » sans erreur nulle part, parce qu'il n'y en avait aucune.
+ */
+const FIRST_TOKEN_HEARTBEAT_MS = 5000;
 // Tour simultané : au-delà de ce délai sans que tout le monde ait soumis, on
 // résout avec ce qu'on a. Un joueur parti chercher un café ne doit pas geler
 // la table — et l'hôte peut toujours forcer avant.
@@ -2072,11 +2080,24 @@ export class GameSession extends DurableObject<Env> {
   ): Promise<void> {
     const writer = writable.getWriter();
     const encoder = new TextEncoder();
+
+    // Commentaire SSE : le parser du client l'ignore (ni `event:` ni `data:`),
+    // mais il repousse son timeout d'inactivité — c'est tout ce qu'on demande.
+    let battement: ReturnType<typeof setInterval> | null = null;
+    const stopBattement = () => {
+      if (battement === null) return;
+      clearInterval(battement);
+      battement = null;
+    };
+    const signeDeVie = () =>
+      writer.write(encoder.encode(`: attente du narrateur\n\n`));
     // Un seul geste, deux transports : le SSE pour l'auteur du tour (qui tient
     // la requête ouverte) et le WebSocket pour le reste de la table. L'auteur
     // est exclu de la diffusion, sinon il verrait tout en double s'il a aussi
     // un socket ouvert.
     const send = (event: string, data: unknown) => {
+      // Le flux parle : plus besoin de le tenir éveillé à la main.
+      stopBattement();
       this.broadcast(event, data, { excludeUser: actor.userId });
       return writer.write(
         encoder.encode(`event: ${event}\ndata: ${JSON.stringify(data)}\n\n`),
@@ -2084,6 +2105,14 @@ export class GameSession extends DurableObject<Env> {
     };
 
     try {
+      // Le tout premier octet part AVANT l'appel au modèle : le client arme son
+      // timeout dès les en-têtes, or rien ne lui parvenait jusqu'au premier
+      // mot du MJ. C'est tout l'intervalle de réflexion qui n'était pas couvert.
+      await signeDeVie();
+      battement = setInterval(() => {
+        void signeDeVie().catch(() => {});
+      }, FIRST_TOKEN_HEARTBEAT_MS);
+
       this.broadcast("turn_resolving", {
         characters: actingCharacters.map((c) => c.key),
       });
@@ -2353,6 +2382,7 @@ export class GameSession extends DurableObject<Env> {
         // flux déjà fermé côté client
       }
     } finally {
+      stopBattement();
       // Le verrou tombe au succès comme à l'échec : une génération ratée ne
       // doit pas geler la table pour toujours.
       await this.releaseLock();

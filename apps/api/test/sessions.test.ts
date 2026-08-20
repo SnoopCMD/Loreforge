@@ -62,7 +62,10 @@ async function readSse(res: Response): Promise<SseEvent[]> {
   const text = await res.text();
   return text
     .split("\n\n")
-    .filter((block) => block.trim() !== "")
+    // Un bloc commençant par ':' est un COMMENTAIRE SSE — le signe de vie
+    // envoyé tant que le narrateur n'a pas parlé. Le parser du front l'ignore
+    // (ni `event:` ni `data:`), le nôtre doit en faire autant.
+    .filter((block) => block.trim() !== "" && !block.trimStart().startsWith(":"))
     .map((block) => {
       const event = /^event: (.+)$/m.exec(block)?.[1];
       const data = /^data: (.+)$/m.exec(block)?.[1];

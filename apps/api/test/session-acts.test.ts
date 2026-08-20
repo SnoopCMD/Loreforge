@@ -124,7 +124,9 @@ async function readSse(
   const text = await res.text();
   return text
     .split("\n\n")
-    .filter((b) => b.trim() !== "")
+    // Les commentaires SSE (signe de vie avant le premier mot du MJ) ne sont
+    // pas des events : le front les ignore, ce helper aussi.
+    .filter((b) => b.trim() !== "" && !b.trimStart().startsWith(":"))
     .map((b) => ({
       event: /^event: (.+)$/m.exec(b)![1],
       data: JSON.parse(/^data: (.+)$/m.exec(b)![1]),

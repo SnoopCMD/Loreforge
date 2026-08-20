@@ -160,6 +160,36 @@ describe("openSseStream", () => {
     expect(err.interrupted).toBe(true);
   });
 
+  it("tient sur un flux qui ne dit que des signes de vie", async () => {
+    // Le cas réel : le MJ réfléchit plus longtemps que le timeout avant son
+    // premier mot. Le serveur envoie des commentaires SSE ; le parser les
+    // ignore (ni `event:` ni `data:`) mais le timeout, lui, repart à zéro.
+    const seen: string[] = [];
+    await openSseStream(
+      "/x",
+      {},
+      { narration: (d: { text: string }) => seen.push(d.text) },
+      {
+        idleTimeoutMs: 60,
+        fetchImpl: async (_url: string, init: RequestInit) =>
+          sseResponse(
+            [
+              ": attente du narrateur\n\n",
+              ": attente du narrateur\n\n",
+              ": attente du narrateur\n\n",
+              frame("narration", { text: "La brume s'ouvre." }),
+              frame("done", { turn: 1 }),
+            ],
+            { delayMs: 30, signal: init.signal as AbortSignal },
+          ),
+      },
+    );
+
+    // 5 chunks à 30 ms = 150 ms de flux, largement au-delà des 60 ms tolérées
+    // entre deux chunks : sans les signes de vie, ce test lèverait stream_timeout.
+    expect(seen).toEqual(["La brume s'ouvre."]);
+  });
+
   it("garde le défaut d'inactivité historique de 20 s", () => {
     expect(SSE_IDLE_TIMEOUT_MS).toBe(20000);
   });
