@@ -19,6 +19,7 @@ import {
   lastAnthropicPrompt,
   lastAnthropicRequest,
   mockAnthropicStream,
+  mockAnthropicText,
 } from "./anthropic-mock";
 import { buildSystemPrompt, buildTurnContext } from "../src/sessions/prompt";
 import { initialGameState } from "../src/sessions/rules";
@@ -289,6 +290,57 @@ describe("le siège est exclusif", () => {
     const lance = await post(hote, `/api/sessions/${sessionId}/start`);
     expect(lance.status).toBe(200);
     expect(((await lance.json()) as { status: string }).status).toBe("setup");
+  });
+});
+
+describe("la forge ouverte depuis la table", () => {
+  it("l'invité écrit sa fiche dans l'univers de l'hôte, puis prend sa place", async () => {
+    const { hote, joueur, sessionId, bibleId } = await tableEnLobby("forge-table");
+
+    // Le parcours exact de l'écran de forge, dans l'ordre. Chaque appel était
+    // réservé au propriétaire de la bible : l'invité n'avait aucune porte, et
+    // « Créer un personnage » l'envoyait sur l'embarquement — la création
+    // d'une session sur la bible d'un autre, qui répond bible_not_found.
+    const schema = await get(joueur, `/api/bibles/${bibleId}/sheet-schema`);
+    expect(schema.status).toBe(200);
+
+    mockAnthropicText(JSON.stringify({ value: "Entend le chant des failles" }));
+    const suggest = await post(joueur, "/api/characters/suggest", {
+      bible_id: bibleId,
+      field_key: "pouvoir",
+      sheet: { name: "Nera" },
+    });
+    expect(suggest.status).toBe(200);
+
+    mockAnthropicText(JSON.stringify({ issues: [] }));
+    const validate = await post(joueur, "/api/characters/validate", {
+      bible_id: bibleId,
+      sheet: { name: "Nera", pouvoir: "Entend le chant des failles" },
+    });
+    expect(validate.status).toBe(200);
+
+    const nera = await creerFiche(joueur, bibleId, "Nera", {
+      pouvoir: "Entend le chant des failles",
+    });
+
+    // …et la forge ramène à la table : le siège se prend dans la foulée.
+    expect((await assoir(joueur, sessionId, nera)).status).toBe(200);
+    expect((await post(hote, `/api/sessions/${sessionId}/start`)).status).toBe(200);
+  });
+
+  it("l'embarquement, lui, reste fermé à qui n'est pas l'auteur", async () => {
+    const { joueur, bibleId } = await tableEnLobby("embarquement");
+
+    // C'est la raison d'être de la forge ouverte : ce chemin-là ne peut pas
+    // marcher pour un invité, et n'a pas à être ouvert.
+    const res = await post(joueur, "/api/sessions", {
+      bible_id: bibleId,
+      format: "oneshot",
+    });
+    expect(res.status).toBe(404);
+    expect(((await res.json()) as { error: string }).error).toBe(
+      "bible_not_found",
+    );
   });
 });
 

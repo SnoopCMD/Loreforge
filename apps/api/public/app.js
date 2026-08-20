@@ -205,6 +205,7 @@ function route() {
   if (parts[0] === "session" && parts[1]) {
     if (parts[2] === "setup") return showSetup(parts[1]);
     if (parts[2] === "lobby") return showLobby(parts[1]);
+    if (parts[2] === "forge") return showTableForge(parts[1]);
     if (parts[2] === "end") return showEnd(parts[1]);
     return enterSession(parts[1]);
   }
@@ -2971,9 +2972,37 @@ async function showQuiz(bibleId) {
 
 // ── Forge : fiche à champs dérivés de la bible (§6bis) ───────────────────
 
-async function showForge(bibleId) {
+/**
+ * Table à laquelle la forge ouverte doit ramener, ou null (forge ordinaire).
+ * C'est la seule différence entre les deux : les champs, la relecture et la
+ * création sont exactement les mêmes.
+ */
+let forgeTable = null;
+
+/**
+ * La forge ouverte depuis le lobby — et qui y ramène.
+ *
+ * Sans elle, « Créer un personnage » envoyait l'invité sur l'embarquement :
+ * un écran de création de session, sur une bible qui n'est pas la sienne, qui
+ * lui répond bible_not_found. Il quittait la table pour un cul-de-sac.
+ */
+async function showTableForge(sessionId) {
+  const res = await api("/sessions/" + sessionId + "/state");
+  if (!res.ok) { location.hash = "#/"; return; }
+  const { bible_id: bibleId } = await res.json();
+  // Sans univers, il n'y a rien à forger : on rend la main à la table.
+  if (!bibleId) { location.hash = "#/session/" + sessionId + "/lobby"; return; }
+  return showForge(bibleId, { sessionId });
+}
+
+async function showForge(bibleId, opts = {}) {
+  forgeTable = opts.sessionId || null;
   showScreen("screen-forge");
-  $("forge-back").href = "#/bible/" + bibleId + "/embark";
+  // Depuis une table, la sortie de secours est la table — jamais
+  // l'embarquement, qui ouvrirait une AUTRE partie sur la bible d'un autre.
+  $("forge-back").href = forgeTable
+    ? "#/session/" + forgeTable + "/lobby"
+    : "#/bible/" + bibleId + "/embark";
   $("forge-form").dataset.bibleId = bibleId;
   $("forge-msg").textContent = "";
   $("forge-msg").className = "msg";
@@ -3186,6 +3215,34 @@ $("forge-form").addEventListener("submit", async (e) => {
     $("forge-msg").className = "msg error";
     return;
   }
+  // Forge ouverte depuis le lobby : on s'assoit avec la fiche qu'on vient
+  // d'écrire, puis on retourne à la table. Proposer « partir en session »
+  // ici n'aurait aucun sens — la partie existe déjà, on en revient.
+  if (forgeTable) {
+    const sessionId = forgeTable;
+    const assis = await api("/sessions/" + sessionId + "/members/me", {
+      method: "PUT",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ character_id: body.id }),
+    });
+    if (!assis.ok) {
+      // La fiche EST créée : on ne ramène pas le joueur à la table sans lui
+      // dire pourquoi le siège a été refusé — il repartirait sans comprendre.
+      const err = await assis.json().catch(() => ({}));
+      $("forge-msg").innerHTML =
+        "Personnage forgé, mais la place n\u2019a pas été prise (" +
+        esc(err.error || String(assis.status)) +
+        '). <a href="#/session/' + esc(sessionId) +
+        '/lobby">Retour à la table</a>';
+      $("forge-msg").className = "msg error";
+      e.target.reset();
+      return;
+    }
+    e.target.reset();
+    location.hash = "#/session/" + sessionId + "/lobby";
+    return;
+  }
+
   $("forge-msg").innerHTML =
     'Personnage forgé. <a href="#/bible/' + esc(bibleId) + '">Retour à la bible</a>';
   $("forge-msg").className = "msg";
@@ -4606,8 +4663,8 @@ async function renderLobbyMine(sessionId, bibleId) {
           .join("") +
         "</div>"
       : '<p class="msg">Aucune fiche dans cet univers pour l\u2019instant.</p>') +
-    '<div class="row"><a class="ghost" href="#/bible/' + esc(bibleId) +
-    '/embark">Créer un personnage</a></div>';
+    '<div class="row"><a class="ghost" href="#/session/' + esc(sessionId) +
+    '/forge">Créer un personnage</a></div>';
 
   box.querySelectorAll(".pick-char").forEach((btn) =>
     btn.addEventListener("click", async () => {

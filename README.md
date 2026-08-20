@@ -150,6 +150,11 @@ bible : une table part alors dans son lobby au lieu de la mise en place. Les
 invités arrivent par le lien de l'hôte, ou par « Rejoindre une table » depuis
 l'accueil s'ils n'ont que le code.
 
+Depuis le lobby, « Créer un personnage » ouvre la forge **de la table**
+(`#/session/<id>/forge`) : mêmes champs, même relecture, mais elle ramène à la
+table et prend le siège dans la foulée. L'embarquement, lui, reste fermé à qui
+n'est pas l'auteur de la bible — c'est une création de session, pas de fiche.
+
 ```sh
 POST   /api/sessions                          # { mode: "solo" | "table" }
 POST   /api/sessions/<id>/invite              # (hôte) → { code, expires_at }
