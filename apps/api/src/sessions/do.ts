@@ -299,6 +299,19 @@ async function readJson(request: Request): Promise<unknown> {
   }
 }
 
+/**
+ * Ce qu'on peut dire au joueur d'une génération ratée : le statut HTTP rendu
+ * par le fournisseur et son message, borné. Ni la clé ni le prompt n'y
+ * figurent — un message d'erreur Anthropic ne porte que le motif du refus.
+ */
+function failureReason(err: unknown): { status: number | null; reason: string } {
+  const status = (err as { status?: unknown })?.status;
+  return {
+    status: typeof status === "number" ? status : null,
+    reason: (err instanceof Error ? err.message : String(err)).slice(0, 200),
+  };
+}
+
 function json(body: unknown, status = 200): Response {
   return new Response(JSON.stringify(body), {
     status,
@@ -2332,7 +2345,10 @@ export class GameSession extends DurableObject<Env> {
     } catch (err) {
       console.error(`[game-session] génération ${meta.sessionId} :`, err);
       try {
-        await send("error", { error: "generation_failed" });
+        // La RAISON voyage avec l'erreur. Sans elle, une clé absente, un quota
+        // dépassé et une coupure réseau donnent au joueur le même bandeau
+        // muet — indiagnosticable depuis un téléphone, et donc jamais corrigé.
+        await send("error", { error: "generation_failed", ...failureReason(err) });
       } catch {
         // flux déjà fermé côté client
       }

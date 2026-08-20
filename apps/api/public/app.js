@@ -4921,6 +4921,7 @@ function runGeneration(sessionId, path, body, retryText = null) {
   let gotDone = false; // un event `done` = tour validé côté serveur
   let redirected = false;
   let deferred = false; // tour accepté mais pas encore résolu (table)
+  let failure = null;   // panne serveur explicite (event `error` ou HTTP)
 
   // À une table, le tour ne part pas forcément tout de suite : le serveur
   // répond 202 tant que tout le monde n'a pas soumis. Ce n'est ni une erreur
@@ -4961,8 +4962,9 @@ function runGeneration(sessionId, path, body, retryText = null) {
       updateActControls();
     },
     // Erreur serveur (génération échouée) : traitée comme une interruption
-    // (gotDone reste faux) → bandeau + Régénérer dans le finally.
-    error: () => {},
+    // (gotDone reste faux) → bandeau + Régénérer dans le finally. On garde la
+    // raison : c'est tout ce qui distingue une panne d'une coupure réseau.
+    error: (d) => { failure = d || {}; },
   })
     .catch((err) => {
       if (err.status === 202 || (err.payload && err.payload.status)) {
@@ -5004,8 +5006,13 @@ function runGeneration(sessionId, path, body, retryText = null) {
           redirected = true;
           location.hash = "#/session/" + sessionId + "/end";
         }
+      } else if (!err.interrupted && err.status) {
+        // Le serveur a répondu et refusé : 503 narrateur non configuré, 502
+        // génération ratée, 500… Ce n'est pas une coupure, et le joueur doit
+        // savoir laquelle — sinon il clique « Régénérer » indéfiniment.
+        failure = { status: err.status, ...(err.payload || {}) };
       }
-      // Sinon (interrupted / réseau / 5xx) : gotDone reste faux → interruption.
+      // Sinon (interrupted / réseau) : gotDone reste faux → interruption.
     })
     .finally(() => {
       // Voix activée : on lit le reliquat AVANT de retirer les options de la
@@ -5022,7 +5029,7 @@ function runGeneration(sessionId, path, body, retryText = null) {
         // qu'au succès). On annule les patchs optimistes et on propose de
         // régénérer le même tour, sans avancer l'état deux fois.
         S.pendingRoll = null;
-        showInterruption(ctx, writer.el);
+        showInterruption(ctx, writer.el, failure);
         updateRail();
         return;
       }
@@ -5037,15 +5044,42 @@ function runGeneration(sessionId, path, body, retryText = null) {
 
 // — Reprise après coupure réseau (§7) —
 
+/**
+ * Message lisible d'une panne serveur. `null` = vraie coupure (réseau, onglet
+ * suspendu), le seul cas où « Génération interrompue » dit la vérité.
+ */
+function failureMessage(f) {
+  if (!f) return null;
+  if (f.error === "narrator_not_configured") {
+    return "Le narrateur n\u2019est pas configuré côté serveur : la clé API Anthropic manque.";
+  }
+  const s = f.status;
+  if (s === 401 || s === 403) {
+    return "Le narrateur a refusé la requête : clé API invalide ou sans accès au modèle.";
+  }
+  if (s === 429) return "Le narrateur est saturé (quota atteint). Réessayez dans un instant.";
+  if (s === 400) {
+    return "Le narrateur a rejeté la requête" + (f.reason ? " : " + f.reason : ".");
+  }
+  if (f.reason) return "Le narrateur a échoué : " + f.reason;
+  if (s) return "Le serveur a répondu " + s + ".";
+  return null;
+}
+
 // État visuel « interrompu » sous le texte tronqué + bouton Régénérer.
-function showInterruption(ctx, gmEl) {
+function showInterruption(ctx, gmEl, failure) {
   lockInput(true); // on force la résolution par Régénérer
   renderActionChips(null);
   const box = document.createElement("div");
   box.className = "interrupted chunk";
+  const detail = failureMessage(failure);
   box.innerHTML =
-    '<span class="warn">⚠ Génération interrompue</span>' +
+    '<span class="warn">⚠ ' +
+    (detail ? "La génération a échoué" : "Génération interrompue") +
+    "</span>" +
+    (detail ? '<span class="why"></span>' : "") +
     '<button type="button" class="regen">↻ Régénérer</button>';
+  if (detail) box.querySelector(".why").textContent = detail;
   box.querySelector(".regen").addEventListener("click", () => {
     box.remove();
     regenerate(ctx, gmEl);

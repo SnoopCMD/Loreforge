@@ -10,6 +10,7 @@ import { afterEach, beforeAll, describe, expect, it } from "vitest";
 import {
   assertAnthropicMockConsumed,
   installAnthropicMock,
+  mockAnthropicError,
   mockAnthropicStream,
   mockAnthropicText,
 } from "./anthropic-mock";
@@ -542,5 +543,68 @@ describe("M8 — défauts relevés en relecture", () => {
       `/api/sessions/${sessionId}/acts/0/narrate?force=1`,
     );
     expect(force.status).toBe(403);
+  });
+});
+
+describe("une génération ratée dit POURQUOI", () => {
+  // Le bandeau « Génération interrompue » était le même pour une coupure
+  // réseau, une clé API absente et un quota dépassé. Depuis un téléphone,
+  // c'était indiagnosticable — donc jamais corrigé.
+  it("transmet le statut et le motif du fournisseur", async () => {
+    const cookie = await login("panne@example.com");
+    const bibleRes = await post(cookie, "/api/bibles", {
+      markdown: "# Univers\n\nDu lore.",
+    });
+    const { id: bibleId } = (await bibleRes.json()) as { id: string };
+    const createRes = await post(cookie, "/api/sessions", {
+      bible_id: bibleId,
+      format: "oneshot",
+    });
+    const { session_id } = (await createRes.json()) as { session_id: string };
+
+    // Le SDK ne retente pas un 401 : un seul mock suffit.
+    mockAnthropicError(401, "invalid x-api-key");
+    const res = await post(cookie, `/api/sessions/${session_id}/setup`, {
+      answers: [],
+    });
+    const flux = await res.text();
+
+    expect(flux).toContain("event: error");
+    expect(flux).toContain('"error":"generation_failed"');
+    expect(flux).toContain('"status":401');
+    expect(flux).toContain("invalid x-api-key");
+
+    // Et la session reste rejouable : une scène 1 ratée ne la fige pas.
+    const state = (await (
+      await get(cookie, `/api/sessions/${session_id}/state`)
+    ).json()) as { status: string };
+    expect(state.status).toBe("setup");
+  });
+
+  it("refuse proprement quand la clé n'est pas configurée du tout", async () => {
+    const cookie = await login("sans-cle@example.com");
+    const bibleRes = await post(cookie, "/api/bibles", {
+      markdown: "# Univers\n\nDu lore.",
+    });
+    const { id: bibleId } = (await bibleRes.json()) as { id: string };
+    const createRes = await post(cookie, "/api/sessions", {
+      bible_id: bibleId,
+      format: "oneshot",
+    });
+    const { session_id } = (await createRes.json()) as { session_id: string };
+
+    const cle = env.ANTHROPIC_API_KEY;
+    (env as { ANTHROPIC_API_KEY?: string }).ANTHROPIC_API_KEY = "";
+    try {
+      const res = await post(cookie, `/api/sessions/${session_id}/setup`, {
+        answers: [],
+      });
+      expect(res.status).toBe(503);
+      expect(((await res.json()) as { error: string }).error).toBe(
+        "narrator_not_configured",
+      );
+    } finally {
+      (env as { ANTHROPIC_API_KEY?: string }).ANTHROPIC_API_KEY = cle;
+    }
   });
 });

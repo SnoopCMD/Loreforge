@@ -122,6 +122,23 @@ export function mockAnthropicText(text: string): void {
   );
 }
 
+/**
+ * Prochain appel : une erreur du fournisseur (clé invalide, quota, panne).
+ * Le SDK ne retente ni sur 400 ni sur 401 — un seul mock suffit pour ceux-là.
+ */
+export function mockAnthropicError(status: number, message: string): void {
+  queue.push(
+    () =>
+      new Response(
+        JSON.stringify({
+          type: "error",
+          error: { type: "authentication_error", message },
+        }),
+        { status, headers: { "content-type": "application/json" } },
+      ),
+  );
+}
+
 /** Prochaine réponse streamée : chaque delta devient un text_delta SSE. */
 export function mockAnthropicStream(deltas: string[]): void {
   queue.push(() => sseResponse(deltas));

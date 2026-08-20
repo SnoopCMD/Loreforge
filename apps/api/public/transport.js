@@ -40,6 +40,7 @@ export const TABLE_EVENTS = Object.freeze([
   "presence",
   "member_joined",
   "member_left",
+  "member_seated",
   "session_started",
   "turn_mode_changed",
   "turn_waiting",

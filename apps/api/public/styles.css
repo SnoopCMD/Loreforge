@@ -607,6 +607,13 @@ svg .score-label { fill: var(--spirit); font-family: "JetBrains Mono", monospace
   background: rgba(249, 115, 22, 0.07);
 }
 .interrupted .warn { color: var(--ember); font-size: 0.9rem; }
+/* La raison de la panne : sur sa propre ligne, avant le bouton. */
+.interrupted .why {
+  flex-basis: 100%; order: 1;
+  color: var(--parchment-dim); font-size: 0.85rem; line-height: 1.4;
+  overflow-wrap: anywhere;
+}
+.interrupted .regen { order: 2; }
 .interrupted .regen {
   margin-left: auto;
   border: 1px solid var(--spirit); color: var(--spirit); background: transparent;
