@@ -1614,7 +1614,8 @@ button.palette-card:hover { border-color: var(--arcane); }
   color: var(--parchment-dim); font-size: 0.85rem; cursor: pointer;
 }
 .player-chip.me { border-color: var(--arcane); color: var(--parchment); }
-.player-chip.ready { box-shadow: inset 0 0 0 1px var(--arcane); }
+.player-chip.ready { border-color: var(--spirit); background: rgba(103, 232, 249, 0.10); }
+.player-chip .tick { color: var(--spirit); font-weight: 700; margin-left: 0.15rem; }
 .player-chip.playing { border-color: var(--arcane); background: rgba(124, 58, 237, 0.16); }
 .player-chip .dot {
   width: 8px; height: 8px; border-radius: 50%;

@@ -546,6 +546,57 @@ describe("M8 — défauts relevés en relecture", () => {
   });
 });
 
+describe("la continuation d'un jet ne se met pas en file", () => {
+  it("rend la suite au joueur qui vient de lancer, sans attendre la table", async () => {
+    const { hote, joueur, sessionId } = await table("continuation");
+
+    // Les deux agissent ; le MJ réclame un jet à Mira seule.
+    expect(
+      (
+        await post(hote, `/api/sessions/${sessionId}/turn`, {
+          player_input: "je couvre le couloir",
+        })
+      ).status,
+    ).toBe(202);
+    mockAnthropicStream([
+      'Mira scrute la membrane. <roll reason="repérer la créature" character="Mira" difficulty="normal" stance="neutral" dice="1" bonuses=""/>',
+    ]);
+    await (
+      await post(joueur, `/api/sessions/${sessionId}/turn`, {
+        player_input: "je scrute",
+      })
+    ).text();
+
+    // Elle lance ses dés…
+    const jet = await post(joueur, `/api/sessions/${sessionId}/roll`);
+    expect(jet.status).toBe(200);
+    expect(((await jet.json()) as { reason: string }).reason).toBe(
+      "repérer la créature",
+    );
+
+    // …et la narration reprend TOUT DE SUITE. Mise en file, elle attendait un
+    // tour que personne ne devait jouer : le joueur qui venait de lancer ses
+    // dés n'obtenait jamais son résultat raconté.
+    mockAnthropicStream(["La créature n'est plus seule. Que fais-tu ?"]);
+    const suite = await post(joueur, `/api/sessions/${sessionId}/turn`, {
+      player_input: "",
+    });
+    expect(suite.status).toBe(200);
+    expect(suite.headers.get("content-type")).toContain("text/event-stream");
+    expect(await suite.text()).toContain("La créature n'est plus seule.");
+  });
+
+  it("laisse un tour ordinaire attendre la table, lui", async () => {
+    // Le garde-fou du test précédent : seule la continuation coupe la file.
+    const { joueur, sessionId } = await table("file-normale");
+    const res = await post(joueur, `/api/sessions/${sessionId}/turn`, {
+      player_input: "j'avance",
+    });
+    expect(res.status).toBe(202);
+    expect(((await res.json()) as { status: string }).status).toBe("waiting");
+  });
+});
+
 describe("le flux ne reste jamais muet", () => {
   // Le client coupe un flux silencieux au bout de 20 s. Or rien ne partait
   // entre les en-têtes et le PREMIER MOT du MJ : tout l'intervalle de

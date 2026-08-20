@@ -883,7 +883,15 @@ export class GameSession extends DurableObject<Env> {
     }
 
     // ── Simultané : on attend que tout le monde ait soumis ───────────────
-    return this.submitAndMaybeResolve(meta, actor, input, { resolveNow: false });
+    //
+    // …sauf la CONTINUATION d'un jet. Le MJ doit la suite de CE jet, et les
+    // autres joueurs n'ont rien à soumettre pour l'obtenir : mise en file, elle
+    // attendait un tour que personne ne devait jouer — et le joueur qui venait
+    // de lancer ses dés n'obtenait jamais son résultat raconté.
+    const continuation = input.trim() === "" && Boolean(me.last_roll);
+    return this.submitAndMaybeResolve(meta, actor, input, {
+      resolveNow: continuation,
+    });
   }
 
   /**

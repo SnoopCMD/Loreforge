@@ -11,6 +11,7 @@ import {
   normalizeRoll,
   paletteCssVars,
   paletteVar,
+  patchIsMine,
   rollBonusText,
   rollPoolSize,
   // @ts-expect-error — module JS servi tel quel au front, sans types.
@@ -285,5 +286,33 @@ describe("palettes d'ambiance", () => {
     // Tout ou rien : une seule couleur invalide et l'ambiance d'origine reste.
     expect(paletteCssVars(palette({ arcane: "rouge" }))).toEqual([]);
     expect(paletteCssVars(palette({ arcane: "#12" }))).toEqual([]);
+  });
+});
+
+describe("patchIsMine — à qui s'adresse un patch d'état", () => {
+  // Le serveur adresse chaque patch à un personnage. L'auteur d'un tour les
+  // recevait par SSE et se les appliquait TOUS : on lui réclamait le jet d'un
+  // autre, et la poignée se calculait sur SA fiche — trois dés annoncés, un
+  // seul lancé, et le joueur concerné restait bloqué avec son jet en attente.
+  it("à une table, ne retient que les patchs de MON personnage", () => {
+    const moi = { myCharacterId: "siss", table: true };
+    expect(patchIsMine({ character_id: "siss", souffle: 2 }, moi)).toBe(true);
+    expect(patchIsMine({ character_id: "mo", pending_roll: "…" }, moi)).toBe(false);
+  });
+
+  it("garde les patchs collectifs, qui ne visent personne", () => {
+    // Les faits établis n'appartiennent à aucun personnage.
+    expect(
+      patchIsMine({ facts: ["Karnos existe."] }, { myCharacterId: "siss", table: true }),
+    ).toBe(true);
+  });
+
+  it("en solo, tout est à moi — y compris la clé @solo", () => {
+    // Une partie sans fiche s'indexe sur « @solo » : ce n'est pas un
+    // character_id, et le rapprocher du mien écarterait mes propres patchs.
+    expect(patchIsMine({ character_id: "@solo", souffle: 1 }, {})).toBe(true);
+    expect(
+      patchIsMine({ character_id: "kael" }, { myCharacterId: null, table: false }),
+    ).toBe(true);
   });
 });

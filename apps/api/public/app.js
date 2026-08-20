@@ -7,8 +7,8 @@ import {
   GENERIC_FIELDS, OUTCOME_LABELS, PALETTE_KEYS, PALETTE_LABELS, STANCE_LABELS,
   STATUS_LABELS,
   createSpeechSegmenter, esc, extractActionChips, labelFor, mdInline,
-  mdToHtml, normalizeRoll, paletteCssVars, paletteVar, rollBonusText,
-  rollPoolSize, stripLore,
+  mdToHtml, normalizeRoll, paletteCssVars, paletteVar, patchIsMine,
+  rollBonusText, rollPoolSize, stripLore,
 } from "/core.js";
 import { openSseStream, openTableSocket } from "/transport.js";
 
@@ -4180,6 +4180,11 @@ function renderTableRail() {
         '<span class="dot" aria-hidden="true"></span>' +
         '<span class="who">' + esc(memberLabel(m)) + "</span>" +
         souffleOrbs(souffle) +
+        // Qui a déjà répondu, en un coup d'œil : l'ancien liseré d'un pixel
+        // était invisible sur un téléphone, et se confondait avec « moi ».
+        (T.submitted.has(m.character_id)
+          ? '<span class="tick" aria-label="a déjà répondu">✓</span>'
+          : "") +
         "</button>"
       );
     })
@@ -4441,7 +4446,7 @@ function applyStatePatch(d) {
     if ("pending_roll" in d) cs.pending_roll = d.pending_roll;
   }
   // Ce qui me concerne alimente aussi le rail principal.
-  if (!d.character_id || d.character_id === T.myCharacterId) {
+  if (patchIsMine(d, { myCharacterId: T.myCharacterId, table: isTable() })) {
     if (typeof d.souffle === "number") S.souffle = d.souffle;
     if ("pending_roll" in d) S.pendingRoll = d.pending_roll;
     if (Array.isArray(d.skills)) S.skills = d.skills;
@@ -4936,13 +4941,10 @@ function runGeneration(sessionId, path, body, retryText = null) {
       if (S.rollShown) { S.rollShown = false; return; }
       addRollBlock(d);
     },
-    state_patch: (d) => {
-      if (typeof d.souffle === "number") S.souffle = d.souffle;
-      if ("pending_roll" in d) S.pendingRoll = d.pending_roll;
-      if (Array.isArray(d.skills)) S.skills = d.skills;
-      if (Array.isArray(d.facts)) S.facts = d.facts;
-      updateRail();
-    },
+    // MÊME routage que par socket : un patch porte le personnage qu'il vise.
+    // L'ignorer faisait tout absorber à l'auteur du tour — c'est lui qu'on
+    // sommait de lancer les dés d'un autre, avec SA fiche pour poignée.
+    state_patch: (d) => applyStatePatch(d),
     scene_break: () => addSceneSep(),
     done: (d) => {
       gotDone = true;

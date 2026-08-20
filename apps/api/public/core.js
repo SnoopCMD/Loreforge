@@ -202,6 +202,23 @@ export const GENERIC_FIELDS = [
  * complètes et appelle onEvent(event, data). Les frontières de chunks
  * peuvent tomber n'importe où, y compris au milieu d'une frame.
  */
+/**
+ * Un patch d'état me concerne-t-il ?
+ *
+ * Le serveur adresse chaque patch à un personnage (`character_id`). L'auteur
+ * d'un tour recevait les siens par SSE et les appliquait TOUS à lui-même : on
+ * lui réclamait le jet d'un autre, et le serveur calculait la poignée sur SA
+ * fiche — trois dés annoncés, un seul lancé.
+ *
+ * En solo, la clé d'état peut ne pas être un character_id (« @solo » quand la
+ * partie n'a pas de fiche) : il n'y a personne d'autre, tout est à moi.
+ */
+export function patchIsMine(patch, { myCharacterId = null, table = false } = {}) {
+  if (!table) return true;
+  if (!patch || !patch.character_id) return true;
+  return patch.character_id === myCharacterId;
+}
+
 export function createSseParser(onEvent) {
   let buf = "";
   return {
