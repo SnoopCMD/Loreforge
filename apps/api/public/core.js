@@ -384,6 +384,63 @@ export function choiceLabel(line) {
   return m ? m[1].replace(/\s*[;.]$/, "") : null;
 }
 
+/** En-tête d'un bloc d'options : « Mira : » — court, sans ponctuation. */
+const NAME_HEADER = /^([^:\n]{1,40}?)\s*:$/;
+
+const normName = (x) =>
+  String(x).normalize("NFD").replace(/[\u0300-\u036f]/g, "").toLowerCase().trim();
+
+/**
+ * Les blocs d'options de fin de tour, groupés par personnage quand le MJ les
+ * a nommés. À une table, chacun doit recevoir SES options — pas la liste de
+ * tout le monde, où l'on cherchait sa ligne parmi celles des autres.
+ *
+ * Un bloc sans nom (le cas du solo) sort avec `name: null`.
+ */
+export function extractActionGroups(text) {
+  const lines = stripLore(String(text)).trimEnd().split(/\r?\n/);
+  const groups = [];
+  let chips = [];
+  for (let i = lines.length - 1; i >= 0; i--) {
+    const line = lines[i].trim();
+    if (line === "") {
+      if (chips.length) break; // bloc sans nom : il s'arrête là
+      if (groups.length) continue; // simple séparateur entre deux blocs
+      continue; // blancs de fin
+    }
+    const label = choiceLabel(line);
+    if (label !== null) {
+      chips.unshift(label);
+      continue;
+    }
+    const m = line.match(NAME_HEADER);
+    if (m && chips.length) {
+      groups.unshift({ name: m[1].trim(), chips });
+      chips = [];
+      continue;
+    }
+    break;
+  }
+  if (chips.length) groups.unshift({ name: null, chips });
+
+  const total = groups.reduce((n, g) => n + g.chips.length, 0);
+  return total >= 2 && total <= 12 ? groups : [];
+}
+
+/**
+ * Mes options à moi. Sans bloc nommé (solo, ou MJ qui n'a pas groupé), on
+ * rend tout : le comportement d'avant la table, à l'identique.
+ */
+export function extractActionChipsFor(text, name) {
+  const groups = extractActionGroups(text);
+  if (!groups.length) return [];
+  const nommes = groups.filter((g) => g.name);
+  if (!nommes.length) return groups[0].chips;
+  if (!name) return [];
+  const mien = nommes.find((g) => normName(g.name) === normName(name));
+  return mien ? mien.chips : [];
+}
+
 export function extractActionChips(text) {
   const lines = stripLore(String(text)).trimEnd().split(/\r?\n/);
   const chips = [];

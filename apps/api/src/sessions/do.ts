@@ -929,19 +929,40 @@ export class GameSession extends DurableObject<Env> {
         submitted: actions.map((a) => stateKey(a.characterId)),
         queued: true,
       });
-      return json({ status: "queued", submitted: actions.length }, 202);
+      // L'âge du verrou est le seul moyen de distinguer « ça arrive » d'une
+      // narration morte en vol (DO évincé) : sans lui, les deux donnent le
+      // même 202 muet, et le joueur ne peut rien en faire.
+      return json(
+        {
+          status: "queued",
+          submitted: actions.length,
+          reason: "narration_en_cours",
+          lock_age_ms: await this.lockAgeMs(),
+        },
+        202,
+      );
     }
 
-    if (!opts.resolveNow && !(await this.everyoneSubmitted(meta, actions))) {
+    const manquants = opts.resolveNow ? [] : await this.stillAwaited(meta, actions);
+    if (manquants.length > 0) {
       this.broadcast("turn_waiting", {
         submitted: actions.map((a) => stateKey(a.characterId)),
         queued: false,
+        awaiting: manquants.map((m) => m.name),
       });
       // On attend, et on attend VRAIMENT : le tour ne part que lorsque tout
       // le monde a soumis, ou quand l'hôte le décide. Un délai qui résolvait
       // tout seul faisait narrer sans les réponses de joueurs encore en train
       // d'écrire — c'est la table qui mène le rythme, pas un chronomètre.
-      return json({ status: "waiting", submitted: actions.length }, 202);
+      return json(
+        {
+          status: "waiting",
+          submitted: actions.length,
+          reason: "il_manque_des_joueurs",
+          awaiting: manquants.map((m) => m.name),
+        },
+        202,
+      );
     }
 
     return this.resolveTurn(meta, actor);
@@ -960,20 +981,52 @@ export class GameSession extends DurableObject<Env> {
     meta: SessionMeta,
     actions: PendingAction[],
   ): Promise<boolean> {
-    let attendus = new Set(this.presence().map((p) => p.user_id));
-    if (attendus.size === 0) {
-      const { results } = await this.env.DB.prepare(
-        `SELECT user_id FROM session_members WHERE session_id = ?`,
-      )
-        .bind(meta.sessionId)
-        .all<{ user_id: string }>();
-      attendus = new Set(results.map((r) => r.user_id));
-    }
+    return (await this.stillAwaited(meta, actions)).length === 0;
+  }
+
+  /**
+   * Qui n'a pas encore soumis, nommé. Le tour ne partant plus sur un délai,
+   * « on attend » doit pouvoir se lire : sans le nom de qui l'on attend, un
+   * 202 est indiscernable d'une panne — c'est ce qui rendait les blocages de
+   * la table introuvables.
+   */
+  private async stillAwaited(
+    meta: SessionMeta,
+    actions: PendingAction[],
+  ): Promise<Array<{ user_id: string; name: string }>> {
+    // La présence WebSocket fait foi ; sans aucun socket ouvert, on retombe
+    // sur la liste des membres.
+    const presents = new Set(this.presence().map((p) => p.user_id));
+    const { results } = await this.env.DB.prepare(
+      `SELECT sm.user_id, ch.name AS character_name, u.display_name, u.email
+       FROM session_members sm
+       JOIN users u ON u.id = sm.user_id
+       LEFT JOIN characters ch ON ch.id = sm.character_id
+       WHERE sm.session_id = ?`,
+    )
+      .bind(meta.sessionId)
+      .all<{
+        user_id: string;
+        character_name: string | null;
+        display_name: string | null;
+        email: string;
+      }>();
+
     const soumis = new Set(actions.map((a) => a.userId));
-    for (const userId of attendus) {
-      if (!soumis.has(userId)) return false;
-    }
-    return true;
+    return results
+      .filter((r) => (presents.size === 0 || presents.has(r.user_id)))
+      .filter((r) => !soumis.has(r.user_id))
+      .map((r) => ({
+        user_id: r.user_id,
+        name:
+          r.character_name ?? r.display_name ?? r.email.split("@")[0] ?? "Joueur",
+      }));
+  }
+
+  /** Depuis combien de temps une narration tient le verrou, s'il est tenu. */
+  private async lockAgeMs(): Promise<number | null> {
+    const posed = await this.ctx.storage.get<number>("turn_lock");
+    return posed ? Date.now() - posed : null;
   }
 
   /**
@@ -1021,7 +1074,12 @@ export class GameSession extends DurableObject<Env> {
     const actions =
       (await this.ctx.storage.get<PendingAction[]>("pending_actions")) ?? [];
     if (actions.length === 0) return json({ error: "no_pending_action" }, 409);
-    if (await this.lockHeld()) return json({ error: "turn_locked" }, 409);
+    if (await this.lockHeld()) {
+      return json(
+        { error: "turn_locked", lock_age_ms: await this.lockAgeMs() },
+        409,
+      );
+    }
     return this.resolveTurn(meta, { userId: null, characterId: null });
   }
 

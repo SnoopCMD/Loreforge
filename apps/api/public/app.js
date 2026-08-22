@@ -6,8 +6,9 @@ import {
   AXES, AXIS_LABELS, DEFAULT_PALETTE_COLORS, DIFFICULTY_LABELS, FORMAT_LABELS,
   GENERIC_FIELDS, OUTCOME_LABELS, PALETTE_KEYS, PALETTE_LABELS, STANCE_LABELS,
   STATUS_LABELS,
-  createSpeechSegmenter, esc, extractActionChips, labelFor, mdInline,
-  choiceLabel, mdToHtml, normalizeRoll, paletteCssVars, paletteVar, patchIsMine,
+  choiceLabel, createSpeechSegmenter, esc, extractActionChipsFor,
+  extractActionGroups, labelFor, mdInline,
+  mdToHtml, normalizeRoll, paletteCssVars, paletteVar, patchIsMine,
   rollBonusText, rollPoolSize, stripLore,
 } from "/core.js";
 import { openSseStream, openTableSocket } from "/transport.js";
@@ -4043,21 +4044,45 @@ function renderActionChips(choices) {
 
 // Choix suggérés cliquables (§8.3) : les options de fin de tour sont retirées
 // de la prose et rendues en boutons ; cliquer joue l'action.
+/** Le nom de MON personnage, pour ne recevoir que mes options. */
+function myCharacterName() {
+  const moi = T.members.find((m) => currentUser && m.user_id === currentUser.id);
+  return (moi && moi.character_name) || (S.character && S.character.name) || null;
+}
+
 function renderChoices(gmEl, gmText) {
   if (!gmEl || S.status !== "playing") return;
-  const choices = extractActionChips(gmText);
-  if (!choices.length) return;
-  // Retire les paragraphes devenus boutons — et EUX SEULS. On les reconnaît à
-  // leur libellé, pas à leur allure : l'ancien test sur le marqueur emportait
-  // aussi les répliques de dialogue, qui commencent par un tiret cadratin.
-  const restants = new Set(choices);
+  // Mes options seulement : à une table, le MJ propose un bloc par personnage.
+  const choices = extractActionChipsFor(gmText, myCharacterName());
+  const groupes = extractActionGroups(gmText);
+  if (!groupes.length) return;
+
+  // Le bloc d'options quitte la prose EN ENTIER — le mien comme celui des
+  // autres : la scène doit finir sur le récit, pas sur une liste de courses.
+  // On ne retire que ce qu'on a réellement reconnu, jamais un dialogue.
+  const labels = new Set(groupes.flatMap((g) => g.chips));
+  const noms = new Set(
+    groupes
+      .filter((g) => g.name)
+      .map((g) => g.name.normalize("NFD").replace(/[\u0300-\u036f]/g, "").toLowerCase()),
+  );
+  const estEntete = (texte) => {
+    const m = texte.trim().match(/^([^:\n]{1,40}?)\s*:$/);
+    return Boolean(
+      m && noms.has(m[1].normalize("NFD").replace(/[\u0300-\u036f]/g, "").toLowerCase().trim()),
+    );
+  };
   const paras = [...gmEl.querySelectorAll("p")];
-  for (let i = paras.length - 1; i >= 0 && restants.size; i--) {
-    const label = choiceLabel(paras[i].textContent);
-    if (label === null || !restants.has(label)) break;
-    restants.delete(label);
-    paras[i].remove();
+  for (let i = paras.length - 1; i >= 0; i--) {
+    const texte = paras[i].textContent;
+    const label = choiceLabel(texte);
+    if ((label !== null && labels.has(label)) || estEntete(texte)) {
+      paras[i].remove();
+      continue;
+    }
+    break;
   }
+  if (!choices.length) return;
   const wrap = document.createElement("div");
   wrap.className = "choices";
   for (const action of choices) {
@@ -4120,6 +4145,8 @@ const T = {
   awaiting: null, // nom du joueur attendu en séquentiel
   queued: false,  // actions mises en file pendant une narration en cours
   lobbyBible: null, // bible du lobby affiché, pour re-rendre les fiches
+  awaitingNames: [], // qui le SERVEUR dit attendre (simultané)
+  pending: null,     // sa dernière explication de 202 : { status, reason, … }
 };
 
 const isTable = () => T.mode === "table";
@@ -4215,6 +4242,20 @@ function renderTableStatus() {
   let retardataires = 0;
   if (T.turnMode === "sequential" && T.awaiting) {
     texte = "Au tour de " + T.awaiting;
+  } else if (T.queued) {
+    // Une narration tient le verrou : l'action partira juste après. Si elle
+    // dure anormalement, on le DIT — c'est ce silence-là qui faisait croire
+    // à une partie morte.
+    const age = T.pending && T.pending.lock_age_ms;
+    texte =
+      age && age > 60000
+        ? "Narration en cours depuis " + Math.round(age / 1000) +
+          " s — si rien ne vient, l’hôte peut relancer."
+        : "Narration en cours — ton action part juste après.";
+  } else if (T.awaitingNames.length) {
+    // Le serveur nomme lui-même qui manque : il tient compte de la présence.
+    retardataires = T.awaitingNames.length;
+    texte = "En attente de " + T.awaitingNames.join(", ");
   } else if (T.submitted.size > 0) {
     const attendus = T.members.filter(
       (m) => T.present.has(m.user_id) && !T.submitted.has(m.character_id),
@@ -4354,11 +4395,14 @@ function connectTable(sessionId) {
         // File d'attente pendant une narration : rien à forcer, le tour
         // suivant partira tout seul à la fin de celle-ci.
         T.queued = Boolean(d.queued);
+        T.awaitingNames = d.awaiting || [];
         renderTable();
       },
       turn_locked: () => {
         T.submitted = new Set();
         T.queued = false;
+        T.awaitingNames = [];
+        T.pending = null;
         renderTable();
       },
       turn_resolving: () => renderTable(),
@@ -4383,6 +4427,8 @@ function connectTable(sessionId) {
         S.turnCount = d.turn;
         T.submitted = new Set();
         T.queued = false;
+        T.awaitingNames = [];
+        T.pending = null;
         renderTable();
         lockInput(false);
       },
@@ -4975,9 +5021,12 @@ function runGeneration(sessionId, path, body, retryText = null) {
     .catch((err) => {
       if (err.status === 202 || (err.payload && err.payload.status)) {
         // Action enregistrée, résolution différée : on rend la main sans rien
-        // annoncer d'alarmant, et le rail dit qui l'on attend.
+        // annoncer d'alarmant, et le rail dit qui l'on attend — avec les mots
+        // du serveur, seul à savoir s'il attend un joueur ou une narration.
         gotDone = true;
         deferred = true;
+        T.pending = err.payload || null;
+        T.awaitingNames = (err.payload && err.payload.awaiting) || [];
         T.submitted.add(T.myCharacterId);
         renderTable();
       } else if (err.status === 409 && err.payload && err.payload.error === "not_your_turn") {

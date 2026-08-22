@@ -13,6 +13,8 @@ import {
   paletteVar,
   patchIsMine,
   choiceLabel,
+  extractActionChipsFor,
+  extractActionGroups,
   rollBonusText,
   rollPoolSize,
   // @ts-expect-error — module JS servi tel quel au front, sans types.
@@ -354,5 +356,55 @@ describe("choiceLabel — une réplique n'est pas une option", () => {
       "Forcer le passage",
       "Écouter derrière",
     ]);
+  });
+});
+
+describe("options par personnage — chacun reçoit les siennes", () => {
+  const scene = [
+    "La membrane palpite.",
+    "",
+    "Mira :",
+    "- écouter derrière la porte",
+    "- reculer sans bruit",
+    "",
+    "Kaelen :",
+    "- forcer le passage",
+    "- couvrir Mira",
+  ].join("\n");
+
+  it("groupe les options sous le nom qui les porte", () => {
+    expect(extractActionGroups(scene)).toEqual([
+      { name: "Mira", chips: ["écouter derrière la porte", "reculer sans bruit"] },
+      { name: "Kaelen", chips: ["forcer le passage", "couvrir Mira"] },
+    ]);
+  });
+
+  it("ne rend à chacun que son bloc", () => {
+    expect(extractActionChipsFor(scene, "Kaelen")).toEqual([
+      "forcer le passage",
+      "couvrir Mira",
+    ]);
+    // Accents et casse ne doivent pas priver un joueur de ses options.
+    expect(extractActionChipsFor(scene, "mira")).toEqual([
+      "écouter derrière la porte",
+      "reculer sans bruit",
+    ]);
+    // Un spectateur sans personnage n'a rien à cliquer.
+    expect(extractActionChipsFor(scene, null)).toEqual([]);
+  });
+
+  it("le solo est inchangé : pas de bloc nommé, tout est à moi", () => {
+    const solo = ["La porte cède.", "", "- Forcer", "- Écouter"].join("\n");
+    expect(extractActionGroups(solo)).toEqual([
+      { name: null, chips: ["Forcer", "Écouter"] },
+    ]);
+    expect(extractActionChipsFor(solo, null)).toEqual(["Forcer", "Écouter"]);
+    expect(extractActionChipsFor(solo, "Kael")).toEqual(["Forcer", "Écouter"]);
+  });
+
+  it("une scène qui finit en dialogue ne propose toujours rien", () => {
+    const dialogue = ["— Ne regarde pas.", "— Trop tard."].join("\n");
+    expect(extractActionGroups(dialogue)).toEqual([]);
+    expect(extractActionChipsFor(dialogue, "Mira")).toEqual([]);
   });
 });

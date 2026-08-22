@@ -199,6 +199,11 @@ de tour est choisi par le MJ, pas par les joueurs :
 <turn_mode value="sequential" order="Kaelen,Mira"/>    combat, tension
 ```
 
+Chaque tour se termine sur un bloc d'options **par personnage** (`Mira :` puis
+ses puces) : chacun ne reçoit que le sien, et le bloc entier quitte la prose.
+Un `202` dit toujours ce qu'il attend — `il_manque_des_joueurs` avec les noms,
+ou `narration_en_cours` avec l'âge du verrou.
+
 En simultané, le tour part quand tous les joueurs connectés ont soumis, ou sur
 forçage de l'hôte — un bouton « Résoudre sans attendre » apparaît au-dessus de
 la saisie dès qu'une action attend un retardataire. **Aucun délai ne résout à

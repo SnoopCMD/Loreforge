@@ -574,6 +574,69 @@ describe("la table attend ses joueurs", () => {
   });
 });
 
+describe("un 202 dit POURQUOI il attend", () => {
+  // « En attente » et « narration en cours » donnaient le même 202 muet. Sur
+  // un téléphone, une table bloquée était donc indiscernable d'une panne —
+  // c'est ce qui a rendu les blocages introuvables pendant deux sessions.
+  it("nomme le joueur qu'il manque", async () => {
+    const { hote, joueur, sessionId } = await table("pourquoi-attente");
+
+    const res = await post(hote, `/api/sessions/${sessionId}/turn`, {
+      player_input: "je couvre le couloir",
+    });
+    expect(res.status).toBe(202);
+    const body = (await res.json()) as {
+      status: string;
+      reason: string;
+      awaiting: string[];
+    };
+    expect(body.status).toBe("waiting");
+    expect(body.reason).toBe("il_manque_des_joueurs");
+    // Le nom du PERSONNAGE, celui que la table connaît.
+    expect(body.awaiting).toEqual(["Mira"]);
+
+    // Et une fois tout le monde passé, plus personne n'est attendu.
+    mockAnthropicStream(["La porte cède. Que faites-vous ?"]);
+    const suite = await post(joueur, `/api/sessions/${sessionId}/turn`, {
+      player_input: "je scrute",
+    });
+    expect(suite.status).toBe(200);
+    await suite.text();
+  });
+
+  it("distingue une narration en cours, et dit depuis quand", async () => {
+    const { hote, sessionId } = await table("pourquoi-verrou");
+    // Verrou posé il y a deux minutes : une narration morte en vol ressemble
+    // trait pour trait à une narration qui vient de partir.
+    await runInDurableObject(
+      env.GAME_SESSIONS.get(env.GAME_SESSIONS.idFromString(sessionId)),
+      async (_i, state) => {
+        await state.storage.put("turn_lock", Date.now() - 120_000);
+      },
+    );
+
+    const res = await post(hote, `/api/sessions/${sessionId}/turn`, {
+      player_input: "j'attends",
+    });
+    expect(res.status).toBe(202);
+    const body = (await res.json()) as {
+      status: string;
+      reason: string;
+      lock_age_ms: number;
+    };
+    expect(body.status).toBe("queued");
+    expect(body.reason).toBe("narration_en_cours");
+    expect(body.lock_age_ms).toBeGreaterThan(100_000);
+
+    // Le forçage de l'hôte dit la même chose plutôt qu'un 409 nu.
+    const force = await post(hote, `/api/sessions/${sessionId}/turn/resolve`);
+    expect(force.status).toBe(409);
+    const refus = (await force.json()) as { error: string; lock_age_ms: number };
+    expect(refus.error).toBe("turn_locked");
+    expect(refus.lock_age_ms).toBeGreaterThan(100_000);
+  });
+});
+
 describe("la continuation d'un jet ne se met pas en file", () => {
   it("rend la suite au joueur qui vient de lancer, sans attendre la table", async () => {
     const { hote, joueur, sessionId } = await table("continuation");
