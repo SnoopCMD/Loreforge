@@ -162,6 +162,7 @@ POST   /api/sessions/join                     # { code } → rejoint la table
 GET    /api/sessions/<id>/members             # qui est là, avec quel personnage
 PUT    /api/sessions/<id>/members/me          # { character_id } — je m'assois
 DELETE /api/sessions/<id>/members/<userId>    # (hôte, ou soi-même)
+POST   /api/sessions/<id>/trame/suggest       # (hôte) deux fils rouges proposés
 POST   /api/sessions/<id>/start               # (hôte) lance depuis le lobby
 POST   /api/sessions/<id>/turn/resolve        # (hôte) force la résolution
 GET    /api/sessions/<id>/ws                  # la table en direct (WebSocket)

@@ -8,6 +8,7 @@ import { requireAuth } from "../auth/middleware";
 import { findOwnedBible } from "../bibles/db";
 import { parsePalette, serializePalette } from "../bibles/palette";
 import { loreKvPrefix, normalizeTrame, sessionKvKey } from "./do";
+import { suggestTrames } from "./trame";
 import { purgeSessionAudio } from "../tts/cartesia";
 import {
   generateInviteCode,
@@ -568,6 +569,47 @@ async function seatCharacter(
     console.error(`[sessions] /seat échoué pour ${sessionId}:`, err);
   }
 }
+
+// POST /api/sessions/:id/trame/suggest (hôte) — deux fils rouges possibles.
+//
+// À la demande, jamais à l'ouverture de l'écran : la mise en place ne doit
+// coûter un appel au modèle que si on le réclame. Le champ libre reste la voie
+// principale — ces propositions ne servent qu'à sortir de la page blanche.
+sessions.post("/:id/trame/suggest", async (c) => {
+  if (!c.env.ANTHROPIC_API_KEY) {
+    return c.json({ error: "trame_ai_not_configured" }, 503);
+  }
+  const found = await access(c, { host: true });
+  if (denied(found)) return found;
+  if (found.row.status !== "setup") {
+    return c.json({ error: "invalid_status", status: found.row.status }, 409);
+  }
+
+  const bible = await c.env.DB.prepare(
+    `SELECT title, canon_md FROM bibles WHERE id = ?`,
+  )
+    .bind(found.row.bible_id)
+    .first<{ title: string; canon_md: string | null }>();
+  if (!bible?.canon_md) return c.json({ error: "empty_bible" }, 400);
+
+  // Les personnages déjà assis : un fil rouge qui ne leur donne rien à faire
+  // ne sert à personne.
+  const members = await listMembers(c.env.DB, found.row.id);
+  try {
+    const trames = await suggestTrames(c.env.ANTHROPIC_API_KEY, {
+      bibleTitle: bible.title,
+      canonMd: bible.canon_md,
+      format: found.row.format,
+      characters: members
+        .map((m) => m.character_name)
+        .filter((n): n is string => Boolean(n)),
+    });
+    return c.json({ trames });
+  } catch (err) {
+    console.error(`[sessions] fils rouges échoués pour ${found.row.id} :`, err);
+    return c.json({ error: "trame_suggest_failed" }, 502);
+  }
+});
 
 sessions.post("/:id/trame", proxy("/trame", { host: true }));
 sessions.post("/:id/setup", proxy("/setup", { host: true }));

@@ -3330,6 +3330,7 @@ async function showSetup(sessionId) {
   $("setup-msg").textContent = "";
   $("setup-msg").className = "msg";
   $("setup-trame").value = "";
+  $("trame-choices").innerHTML = "";
   $("setup-trame-form").dataset.sessionId = sessionId;
   $("setup-trame-form").classList.remove("hidden");
   $("setup-questions").classList.add("hidden");
@@ -3355,6 +3356,45 @@ function renderSetupPalettes() {
     if (await adoptPalette(palette, $("setup-msg"))) renderSetupPalettes();
   });
 }
+
+/**
+ * Deux fils rouges proposés, à la demande. Cliquer en remplit le champ libre
+ * sans le valider : c'est un point de départ, pas un choix imposé — l'auteur
+ * garde la main sur sa formulation.
+ */
+$("trame-suggest").addEventListener("click", async () => {
+  const sessionId = $("setup-trame-form").dataset.sessionId;
+  const btn = $("trame-suggest");
+  const box = $("trame-choices");
+  btn.disabled = true;
+  box.innerHTML = '<p class="msg">' + spin("Le MJ cherche deux pistes…") + "</p>";
+
+  const res = await api("/sessions/" + sessionId + "/trame/suggest", jsonPost({}));
+  btn.disabled = false;
+  if (!res.ok) {
+    const err = await res.json().catch(() => ({}));
+    box.innerHTML = "";
+    $("setup-msg").textContent =
+      err.error === "trame_ai_not_configured"
+        ? "Les suggestions ne sont pas configurées côté serveur."
+        : "Aucune piste pour l’instant — écrivez la vôtre.";
+    $("setup-msg").className = "msg";
+    return;
+  }
+  const { trames } = await res.json();
+  box.innerHTML = "";
+  for (const trame of trames || []) {
+    const carte = document.createElement("button");
+    carte.type = "button";
+    carte.className = "pick-trame";
+    carte.textContent = trame;
+    carte.addEventListener("click", () => {
+      $("setup-trame").value = trame;
+      $("setup-trame").focus();
+    });
+    box.appendChild(carte);
+  }
+});
 
 $("setup-trame-form").addEventListener("submit", async (e) => {
   e.preventDefault();

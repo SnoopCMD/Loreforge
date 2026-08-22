@@ -406,6 +406,12 @@
         <textarea id="setup-trame" rows="2" maxlength="500"
           placeholder="Ex. : retrouver la trace de la Garde Blanche et découvrir ce qu’elle cache."></textarea>
       </label>
+      <!-- Page blanche : deux pistes tirées du canon, à la demande. Le champ
+           libre reste la voie principale — on ne fait qu'aider à démarrer. -->
+      <div class="row">
+        <button type="button" class="ghost" id="trame-suggest">✨ Proposer des fils rouges</button>
+      </div>
+      <div class="trame-choices" id="trame-choices"></div>
       <button type="submit">Continuer</button>
     </form>
     <div id="setup-questions" class="hidden">
