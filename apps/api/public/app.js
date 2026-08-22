@@ -4044,6 +4044,22 @@ function renderActionChips(choices) {
 
 // Choix suggérés cliquables (§8.3) : les options de fin de tour sont retirées
 // de la prose et rendues en boutons ; cliquer joue l'action.
+/**
+ * Fin de tour côté interface, COMMUNE aux deux transports.
+ *
+ * Le flux SSE (l'auteur du tour) et la socket (tous les autres) doivent
+ * conclure de la même façon : le jet à lancer s'il y en a un, sinon les
+ * options. Les avoir écrits deux fois est ce qui a privé de fin de tour tout
+ * joueur qui n'était pas l'auteur — jet invisible, options absentes, et une
+ * table qui attendait un lancer que personne ne pouvait faire.
+ */
+function concludeTurn(gmEl, gmText) {
+  if (S.pendingRoll) addRollNeeded();
+  else if (gmEl) renderChoices(gmEl, gmText);
+  updateRail();
+  lockInput(false);
+}
+
 /** Le nom de MON personnage, pour ne recevoir que mes options. */
 function myCharacterName() {
   const moi = T.members.find((m) => currentUser && m.user_id === currentUser.id);
@@ -4423,14 +4439,19 @@ function connectTable(sessionId) {
       state_patch: (d) => applyStatePatch(d),
       scene_break: () => addSceneSep(),
       done: (d) => {
-        endRemoteNarration();
+        const narration = endRemoteNarration();
         S.turnCount = d.turn;
         T.submitted = new Set();
         T.queued = false;
         T.awaitingNames = [];
         T.pending = null;
         renderTable();
-        lockInput(false);
+        // MÊME fin de tour que par SSE. Sans ça, le joueur qui reçoit la
+        // narration par socket — c'est-à-dire tout le monde sauf l'auteur du
+        // tour — n'avait NI son jet à lancer NI ses options : il fallait
+        // recharger la page pour les voir apparaître, et la table attendait
+        // pendant ce temps un jet que personne ne pouvait lancer.
+        concludeTurn(narration && narration.el, narration && narration.text);
       },
       act_closing: () => showActClosing(true),
       act_closed: (d) => {
@@ -4509,20 +4530,29 @@ function applyStatePatch(d) {
 // Narration reçue par socket : on réutilise le même écrivain que le SSE, pour
 // que le rendu (et la voix) soient identiques quel que soit l'auteur du tour.
 let remoteWriter = null;
+let remoteText = "";
 function remoteNarration(text) {
   if (!remoteWriter) {
     stopVoice();
     lockInput(true);
     remoteWriter = newGmWriter();
+    remoteText = "";
   }
+  // Le texte est conservé : la fin de tour (jet, options) se décide dessus,
+  // exactement comme le fait le flux SSE de l'auteur du tour.
+  remoteText += text;
   remoteWriter.write(text);
   if (voice.enabled) feedVoice(text);
 }
+/** Clôt la narration reçue par socket et rend de quoi conclure le tour. */
 function endRemoteNarration() {
-  if (!remoteWriter) return;
+  if (!remoteWriter) return null;
   if (voice.enabled) flushVoice();
   remoteWriter.end();
+  const fin = { el: remoteWriter.el, text: remoteText };
   remoteWriter = null;
+  remoteText = "";
+  return fin;
 }
 
 /** Recharge l'état après une coupure : les events manqués ne sont pas rejoués. */
@@ -5093,10 +5123,7 @@ function runGeneration(sessionId, path, body, retryText = null) {
         updateRail();
         return;
       }
-      if (S.pendingRoll) addRollNeeded();
-      else renderChoices(writer.el, gmText);
-      updateRail();
-      lockInput(false);
+      concludeTurn(writer.el, gmText);
       // Sur tactile, focus() ouvrirait le clavier en pleine lecture.
       if (!COARSE_POINTER && !S.pendingRoll) $("player-input").focus();
     });
