@@ -12,6 +12,7 @@ import {
   paletteCssVars,
   paletteVar,
   patchIsMine,
+  choiceLabel,
   rollBonusText,
   rollPoolSize,
   // @ts-expect-error — module JS servi tel quel au front, sans types.
@@ -314,5 +315,44 @@ describe("patchIsMine — à qui s'adresse un patch d'état", () => {
     expect(
       patchIsMine({ character_id: "kael" }, { myCharacterId: null, table: false }),
     ).toBe(true);
+  });
+});
+
+describe("choiceLabel — une réplique n'est pas une option", () => {
+  // En français, un dialogue s'ouvre sur un tiret cadratin. Le confondre avec
+  // une puce d'options faisait disparaître de l'écran les dernières répliques
+  // de chaque scène : « fins de phrase manquantes », sans rien dans les logs.
+  it("refuse le tiret cadratin et le tiret demi-cadratin", () => {
+    expect(choiceLabel("— Tu ne devrais pas être là.")).toBeNull();
+    expect(choiceLabel("– Personne ne revient d'là-bas.")).toBeNull();
+  });
+
+  it("reconnaît les vraies options du MJ", () => {
+    expect(choiceLabel("- Forcer la porte")).toBe("Forcer la porte");
+    expect(choiceLabel("1. Reculer sans bruit.")).toBe("Reculer sans bruit");
+    expect(choiceLabel("• Appeler Siss")).toBe("Appeler Siss");
+  });
+
+  it("n'extrait aucune option d'une scène qui finit en dialogue", () => {
+    const scene = [
+      "La membrane palpite.",
+      "",
+      "— Ne regarde pas trop longtemps.",
+      "— Trop tard.",
+    ].join("\n");
+    expect(extractActionChips(scene)).toEqual([]);
+  });
+
+  it("extrait toujours les options quand ce sont vraiment les siennes", () => {
+    const scene = [
+      "La porte cède d'un cran.",
+      "",
+      "- Forcer le passage",
+      "- Écouter derrière",
+    ].join("\n");
+    expect(extractActionChips(scene)).toEqual([
+      "Forcer le passage",
+      "Écouter derrière",
+    ]);
   });
 });

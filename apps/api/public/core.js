@@ -195,13 +195,8 @@ export const GENERIC_FIELDS = [
   { key: "hook", label: "Accroche narrative", type: "text", required: false, options: [], suggestions: [], hint: "Ce que le personnage veut, fuit ou cache." },
 ];
 
-// ── Parseur de frames SSE (POST + ReadableStream, pas d'EventSource) ─────
+// ── Adressage de l'état par personnage (table partagée) ──────────────────
 
-/**
- * Parseur incrémental : `push(texte)` découpe les frames `event:/data:`
- * complètes et appelle onEvent(event, data). Les frontières de chunks
- * peuvent tomber n'importe où, y compris au milieu d'une frame.
- */
 /**
  * Un patch d'état me concerne-t-il ?
  *
@@ -219,6 +214,13 @@ export function patchIsMine(patch, { myCharacterId = null, table = false } = {})
   return patch.character_id === myCharacterId;
 }
 
+// ── Parseur de frames SSE (POST + ReadableStream, pas d'EventSource) ─────
+
+/**
+ * Parseur incrémental : `push(texte)` découpe les frames `event:/data:`
+ * complètes et appelle onEvent(event, data). Les frontières de chunks
+ * peuvent tomber n'importe où, y compris au milieu d'une frame.
+ */
 export function createSseParser(onEvent) {
   let buf = "";
   return {
@@ -369,6 +371,19 @@ export function mdToHtml(md) {
  * extrait les puces/numéros de FIN de narration pour les proposer en chips.
  * Heuristique volontairement stricte — au moindre doute, pas de chips.
  */
+/**
+ * Libellé d'une ligne d'options, ou null si ce n'en est pas une.
+ *
+ * Les marqueurs acceptés sont ceux que le MJ emploie pour LISTER : « - », une
+ * puce, un numéro. Surtout PAS le tiret cadratin « — », qui ouvre un dialogue
+ * en français : le confondre avec une option faisait disparaître de l'écran
+ * les dernières répliques de chaque scène.
+ */
+export function choiceLabel(line) {
+  const m = String(line).trim().match(/^(?:[-•*]|\d+[).])\s+(.{3,200})$/);
+  return m ? m[1].replace(/\s*[;.]$/, "") : null;
+}
+
 export function extractActionChips(text) {
   const lines = stripLore(String(text)).trimEnd().split(/\r?\n/);
   const chips = [];
@@ -380,9 +395,9 @@ export function extractActionChips(text) {
     }
     // Une option concrète : puce/numéro + libellé (jusqu'à 200 car., le
     // **gras** compris) ; on tolère jusqu'à 6 options pour n'en perdre aucune.
-    const m = line.match(/^(?:[-•*]|\d+[).])\s+(.{3,200})$/);
-    if (!m) break;
-    chips.unshift(m[1].replace(/\s*[;.]$/, ""));
+    const label = choiceLabel(line);
+    if (label === null) break;
+    chips.unshift(label);
   }
   return chips.length >= 2 && chips.length <= 6 ? chips : [];
 }
@@ -390,9 +405,9 @@ export function extractActionChips(text) {
 // ── Segmentation de la narration pour la lecture vocale (§8.3) ────────────
 
 // Une ligne d'options concrètes de fin de tour (puce ou numéro) : jamais lue.
-const SPEECH_CHOICE_LINE = /^(?:[-–—•*]|\d{1,2}[.)])\s+\S/;
+const SPEECH_CHOICE_LINE = /^(?:[-•*]|\d{1,2}[.)])\s+\S/;
 // Début de ligne qui pourrait encore devenir une puce (marqueur incomplet).
-const SPEECH_MAYBE_CHOICE = /^(?:[-–—•*]|\d{1,2}[.)]?)\s*$/;
+const SPEECH_MAYBE_CHOICE = /^(?:[-•*]|\d{1,2}[.)]?)\s*$/;
 
 /** Position après la dernière phrase COMPLÈTE de `text` (ponctuation + blanc). */
 function sentenceCut(text) {

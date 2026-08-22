@@ -546,6 +546,34 @@ describe("M8 — défauts relevés en relecture", () => {
   });
 });
 
+describe("la table attend ses joueurs", () => {
+  it("n'arme aucun chronomètre qui résoudrait sans les retardataires", async () => {
+    const { joueur, sessionId } = await table("sans-chrono");
+
+    const res = await post(joueur, `/api/sessions/${sessionId}/turn`, {
+      player_input: "je réfléchis",
+    });
+    expect(res.status).toBe(202);
+
+    // Le tour partait tout seul 90 s plus tard, en ignorant les réponses de
+    // ceux qui étaient encore en train d'écrire. C'est la table qui mène le
+    // rythme : l'hôte garde « Résoudre sans attendre », le serveur n'a plus
+    // de chronomètre.
+    await runInDurableObject(
+      env.GAME_SESSIONS.get(env.GAME_SESSIONS.idFromString(sessionId)),
+      async (_i, state) => {
+        expect(await state.storage.getAlarm()).toBeNull();
+      },
+    );
+
+    // L'action reste en attente, elle n'est pas perdue.
+    const etat = (await (
+      await get(joueur, `/api/sessions/${sessionId}/state`)
+    ).json()) as { submitted: string[] };
+    expect(etat.submitted.length).toBe(1);
+  });
+});
+
 describe("la continuation d'un jet ne se met pas en file", () => {
   it("rend la suite au joueur qui vient de lancer, sans attendre la table", async () => {
     const { hote, joueur, sessionId } = await table("continuation");

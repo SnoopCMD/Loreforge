@@ -454,12 +454,6 @@
   </div>
   <!-- Table : présence et Souffle de chacun, masqué en solo (§8.3). -->
   <div class="table-rail hidden" id="table-rail" aria-label="Joueurs à la table"></div>
-  <div class="table-wait hidden" id="table-wait">
-    <p class="table-status" id="table-status" aria-live="polite"></p>
-    <!-- Filet de l'hôte : passé le délai le serveur résout tout seul, mais
-         personne n'a envie d'attendre un joueur parti chercher un café. -->
-    <button type="button" class="force-turn hidden" id="force-turn">Résoudre sans attendre</button>
-  </div>
   <div class="session-screen" id="session-layout">
     <div class="narration" id="feed" aria-live="polite"></div>
     <aside class="session-rail">
@@ -482,6 +476,14 @@
   </div>
   <button class="jump-bottom hidden" id="jump-bottom">⬇ Reprendre le fil</button>
   <div class="playbar" id="playbar">
+    <!-- Qui l'on attend, JUSTE au-dessus de la saisie : en tête de page, sous
+         le rail, l'information était hors écran dès qu'on lisait la scène. -->
+    <div class="table-wait hidden" id="table-wait">
+      <p class="table-status" id="table-status" aria-live="polite"></p>
+      <!-- Le tour n'est plus résolu par un chronomètre : quand quelqu'un ne
+           revient pas, c'est l'hôte qui tranche. -->
+      <button type="button" class="force-turn hidden" id="force-turn">Résoudre sans attendre</button>
+    </div>
     <div class="action-chips" id="action-chips"></div>
     <div class="inner">
       <textarea id="player-input" rows="1" placeholder="Que fais-tu ?" aria-label="Votre action"></textarea>

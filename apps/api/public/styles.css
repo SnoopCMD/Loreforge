@@ -1625,12 +1625,15 @@ button.palette-card:hover { border-color: var(--arcane); }
 .player-chip.offline { opacity: 0.5; }
 .player-chip .who { max-width: 9rem; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 
+/* Dans la barre de jeu, au ras de la saisie : c'est là que se pose la
+   question « est-ce qu'on m'attend ? ». */
 .table-wait {
-  display: flex; align-items: baseline; gap: 0.6rem;
+  display: flex; align-items: center; gap: 0.6rem;
   flex-wrap: wrap;
+  padding: 0.35rem 0.15rem 0;
 }
 .table-status {
-  margin: 0.1rem 0 0.4rem;
+  margin: 0;
   color: var(--arcane); font-size: 0.85rem;
 }
 

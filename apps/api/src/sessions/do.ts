@@ -142,10 +142,6 @@ const ACT_CLOSING_HEARTBEAT_MS = 5000;
  * interrompue » sans erreur nulle part, parce qu'il n'y en avait aucune.
  */
 const FIRST_TOKEN_HEARTBEAT_MS = 5000;
-// Tour simultané : au-delà de ce délai sans que tout le monde ait soumis, on
-// résout avec ce qu'on a. Un joueur parti chercher un café ne doit pas geler
-// la table — et l'hôte peut toujours forcer avant.
-const TURN_WAIT_MS = 90_000;
 // Un verrou plus vieux que ça est réputé mort : le DO a pu être évincé en
 // pleine génération, et une table gelée pour toujours est pire qu'un tour
 // résolu deux fois. Large devant la durée d'une narration (quelques dizaines
@@ -941,8 +937,10 @@ export class GameSession extends DurableObject<Env> {
         submitted: actions.map((a) => stateKey(a.characterId)),
         queued: false,
       });
-      // Filet : si quelqu'un ne revient pas, le tour part quand même.
-      await this.ctx.storage.setAlarm(Date.now() + TURN_WAIT_MS);
+      // On attend, et on attend VRAIMENT : le tour ne part que lorsque tout
+      // le monde a soumis, ou quand l'hôte le décide. Un délai qui résolvait
+      // tout seul faisait narrer sans les réponses de joueurs encore en train
+      // d'écrire — c'est la table qui mène le rythme, pas un chronomètre.
       return json({ status: "waiting", submitted: actions.length }, 202);
     }
 
@@ -1133,26 +1131,18 @@ export class GameSession extends DurableObject<Env> {
   }
 
   /**
-   * Filet du régime simultané : le délai a expiré, on résout avec ce qu'on a.
-   * Personne ne tient de flux SSE ici — la table reçoit tout par WebSocket.
+   * Alarme du Durable Object.
+   *
+   * Elle résolvait le tour sans attendre les retardataires, 90 s après la
+   * première action. Retiré : le MJ narrait sans les réponses de joueurs qui
+   * étaient encore en train d'écrire. Une table attend ses joueurs ; l'hôte
+   * garde « Résoudre sans attendre » quand quelqu'un ne revient pas.
+   *
+   * Le handler reste en place, inerte : des sessions déployées avant ce
+   * changement peuvent avoir une alarme encore armée.
    */
   async alarm(): Promise<void> {
-    const meta = await this.ctx.storage.get<SessionMeta>("meta");
-    if (!meta || meta.status !== "playing") return;
-    const actions =
-      (await this.ctx.storage.get<PendingAction[]>("pending_actions")) ?? [];
-    if (actions.length === 0) return;
-    if (await this.lockHeld()) {
-      // Une narration est en cours : on repasse plus tard plutôt que
-      // d'abandonner ces actions à un réveil qui n'aura jamais lieu.
-      await this.ctx.storage.setAlarm(Date.now() + TURN_WAIT_MS);
-      return;
-    }
-
-    const res = await this.resolveTurn(meta, { userId: null, characterId: null });
-    // Le flux n'a pas de lecteur : on le draine pour que la génération aille
-    // jusqu'au bout et que le verrou soit bien levé.
-    void res.body?.pipeTo(new WritableStream());
+    return;
   }
 
   /** Régime de tour courant ; simultané tant que le MJ n'a rien dit. */
@@ -2419,7 +2409,6 @@ export class GameSession extends DurableObject<Env> {
         submitted: actions.map((a) => stateKey(a.characterId)),
         queued: false,
       });
-      await this.ctx.storage.setAlarm(Date.now() + TURN_WAIT_MS);
       return;
     }
     const res = await this.resolveTurn(meta, {

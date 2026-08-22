@@ -199,9 +199,11 @@ de tour est choisi par le MJ, pas par les joueurs :
 <turn_mode value="sequential" order="Kaelen,Mira"/>    combat, tension
 ```
 
-En simultané, le tour part quand tous les joueurs connectés ont soumis, au
-délai de 90 s, ou sur forçage de l'hôte — un bouton « Résoudre sans attendre »
-apparaît sous le rail dès qu'une action attend un retardataire. En séquentiel,
+En simultané, le tour part quand tous les joueurs connectés ont soumis, ou sur
+forçage de l'hôte — un bouton « Résoudre sans attendre » apparaît au-dessus de
+la saisie dès qu'une action attend un retardataire. **Aucun délai ne résout à
+la place de la table** : un chronomètre de 90 s le faisait, et le MJ narrait
+sans les réponses de joueurs encore en train d'écrire. En séquentiel,
 une action hors tour est refusée — jamais mise en file.
 
 ## Qualité

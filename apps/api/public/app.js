@@ -7,7 +7,7 @@ import {
   GENERIC_FIELDS, OUTCOME_LABELS, PALETTE_KEYS, PALETTE_LABELS, STANCE_LABELS,
   STATUS_LABELS,
   createSpeechSegmenter, esc, extractActionChips, labelFor, mdInline,
-  mdToHtml, normalizeRoll, paletteCssVars, paletteVar, patchIsMine,
+  choiceLabel, mdToHtml, normalizeRoll, paletteCssVars, paletteVar, patchIsMine,
   rollBonusText, rollPoolSize, stripLore,
 } from "/core.js";
 import { openSseStream, openTableSocket } from "/transport.js";
@@ -4040,7 +4040,6 @@ function renderActionChips(choices) {
 }
 
 // Une ligne d'options concrètes de fin de tour (puce ou numéro).
-const CHOICE_LINE_RE = /^(?:[-–—•*]|\d{1,2}[.)])\s+/;
 
 // Choix suggérés cliquables (§8.3) : les options de fin de tour sont retirées
 // de la prose et rendues en boutons ; cliquer joue l'action.
@@ -4048,11 +4047,16 @@ function renderChoices(gmEl, gmText) {
   if (!gmEl || S.status !== "playing") return;
   const choices = extractActionChips(gmText);
   if (!choices.length) return;
-  // Retire les paragraphes d'options en fin de bloc (ils redeviennent boutons).
+  // Retire les paragraphes devenus boutons — et EUX SEULS. On les reconnaît à
+  // leur libellé, pas à leur allure : l'ancien test sur le marqueur emportait
+  // aussi les répliques de dialogue, qui commencent par un tiret cadratin.
+  const restants = new Set(choices);
   const paras = [...gmEl.querySelectorAll("p")];
-  for (let i = paras.length - 1; i >= 0; i--) {
-    if (CHOICE_LINE_RE.test(paras[i].textContent.trim())) paras[i].remove();
-    else break;
+  for (let i = paras.length - 1; i >= 0 && restants.size; i--) {
+    const label = choiceLabel(paras[i].textContent);
+    if (label === null || !restants.has(label)) break;
+    restants.delete(label);
+    paras[i].remove();
   }
   const wrap = document.createElement("div");
   wrap.className = "choices";
