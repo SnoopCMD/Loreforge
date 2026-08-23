@@ -1353,6 +1353,13 @@ button.armed, .card-delete.armed {
   padding: 0.6rem 0.7rem; color: var(--parchment); line-height: 1.6;
 }
 
+/* Où l'élément canonisé a atterri (il est fondu, donc invisible sans ça). */
+.prop-landing {
+  margin: 0.5rem 0 0; padding-left: 0.7rem;
+  border-left: 2px solid var(--spirit); font-size: 0.82rem;
+}
+.prop-landing.error { border-left-color: var(--ember); }
+
 .comment-btn {
   min-height: 0; padding: 0.15rem 0.5rem; font-size: 0.85rem;
   background: transparent; border: 1px solid var(--line); border-radius: 8px;
