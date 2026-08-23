@@ -233,6 +233,39 @@ export const WEAVE_RULES = `- Le texte est INSÉRÉ à l'endroit qui le porte : 
   titre inséré au fil du texte.
 - Ne renvoie AUCUNE section que le texte ne touche pas.`;
 
+/** Borne de sécurité sur un corps de section renvoyé par le client. */
+export const MAX_SECTION_BODY_CHARS = 40_000;
+
+/**
+ * Valide les corps relus par l'auteur avant écriture : la section doit exister
+ * dans SA bible et pouvoir recevoir du texte (jamais un dossier), le corps ne
+ * peut être ni vide ni démesuré. Plusieurs éditions visant la même section se
+ * fondent sur la dernière. Pure, donc testable — les deux flux de relecture
+ * (zone floue, canonisation) partagent ces règles.
+ */
+export function validateEdits(
+  rows: SectionRow[],
+  raw: unknown,
+):
+  | { updates: Map<string, string> }
+  | { error: "invalid_edits" | "unknown_section" } {
+  if (!Array.isArray(raw) || raw.length === 0) return { error: "invalid_edits" };
+  const byId = new Map(rows.map((r) => [r.id, r]));
+  const updates = new Map<string, string>();
+  for (const item of raw) {
+    const e = (item ?? {}) as { section_id?: unknown; content_md?: unknown };
+    const target =
+      typeof e.section_id === "string" ? byId.get(e.section_id) : undefined;
+    if (!target || target.kind === "folder") return { error: "unknown_section" };
+    const content = typeof e.content_md === "string" ? e.content_md.trim() : "";
+    if (content === "" || content.length > MAX_SECTION_BODY_CHARS) {
+      return { error: "invalid_edits" };
+    }
+    updates.set(target.id, content);
+  }
+  return { updates };
+}
+
 /**
  * Appelle le modèle et valide sa sortie. Lève `weave_*` en cas de refus, de
  * troncature ou de sortie inexploitable : l'appelant se replie alors sur

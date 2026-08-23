@@ -1485,14 +1485,23 @@ $("gap-insert").addEventListener("click", async () => {
   renderGapEdits();
 });
 
-/** Cartes de relecture : une par section réécrite, corps éditable + avant/après. */
-function renderGapEdits() {
-  const host = $("gap-edits");
+// ── Relecture d'un tissage (partagée : zones floues et canonisation) ───────
+//
+// Les deux flux proposent la même chose — le corps réécrit des sections
+// touchées — et demandent le même verdict. Une seule fabrique de cartes, pour
+// qu'ils ne divergent pas.
+
+/**
+ * Rend les cartes de relecture dans `host` : une par section réécrite, corps
+ * éditable et version actuelle dépliable. `edits` est muté en place (édition,
+ * retrait) ; `onApply` reçoit le tableau au moment du verdict.
+ * Renvoie les identifiants des éléments d'action, pour les piloter ensuite.
+ */
+function renderWeaveCards(host, edits, { emptyText, onApply, idPrefix }) {
   host.innerHTML = "";
-  if (!gapEdits) return;
-  if (gapEdits.length === 0) {
-    host.innerHTML =
-      '<p class="msg">Aucune section à réécrire pour cette réponse.</p>';
+  if (!edits) return;
+  if (edits.length === 0) {
+    host.innerHTML = '<p class="msg">' + esc(emptyText) + "</p>";
     return;
   }
 
@@ -1502,7 +1511,10 @@ function renderGapEdits() {
     "Relisez : ces corps REMPLACENT ceux des sections. Corrigez ce qui doit l'être, puis appliquez.";
   host.appendChild(head);
 
-  gapEdits.forEach((edit, i) => {
+  const rerender = () =>
+    renderWeaveCards(host, edits, { emptyText, onApply, idPrefix });
+
+  edits.forEach((edit, i) => {
     const card = document.createElement("div");
     card.className = "wr-draft";
 
@@ -1515,8 +1527,8 @@ function renderGapEdits() {
     drop.className = "ghost";
     drop.textContent = "Retirer";
     drop.addEventListener("click", () => {
-      gapEdits.splice(i, 1);
-      renderGapEdits();
+      edits.splice(i, 1);
+      rerender();
     });
     bar.append(name, drop);
 
@@ -1530,7 +1542,7 @@ function renderGapEdits() {
     const sum = document.createElement("summary");
     sum.textContent = "Voir la version actuelle";
     const pre = document.createElement("pre");
-    pre.textContent = edit.previous_md.trim() || "(section vide)";
+    pre.textContent = (edit.previous_md || "").trim() || "(section vide)";
     before.append(sum, pre);
 
     card.append(bar, ta, before);
@@ -1541,25 +1553,37 @@ function renderGapEdits() {
   actions.className = "row wr-draft-actions";
   const apply = document.createElement("button");
   apply.type = "button";
-  apply.id = "gap-apply";
+  apply.id = idPrefix + "-apply";
   apply.textContent =
-    "Appliquer à " + gapEdits.length +
-    (gapEdits.length > 1 ? " sections" : " section");
-  apply.addEventListener("click", applyGapEdits);
+    "Appliquer à " + edits.length + (edits.length > 1 ? " sections" : " section");
+  apply.addEventListener("click", onApply);
   const msg = document.createElement("span");
   msg.className = "msg";
-  msg.id = "gap-apply-msg";
+  msg.id = idPrefix + "-apply-msg";
   actions.append(apply, msg);
   host.appendChild(actions);
+}
+
+/** Corps relus, prêts à partir au serveur (les vidés sont écartés). */
+function weavePayload(edits) {
+  return edits
+    .map((e) => ({ section_id: e.section_id, content_md: e.content_md.trim() }))
+    .filter((e) => e.content_md !== "");
+}
+
+function renderGapEdits() {
+  renderWeaveCards($("gap-edits"), gapEdits, {
+    emptyText: "Aucune section à réécrire pour cette réponse.",
+    onApply: applyGapEdits,
+    idPrefix: "gap",
+  });
 }
 
 /** Écrit les réécritures relues, puis marque la lacune comblée. */
 async function applyGapEdits() {
   if (!activeGap || !gapEdits || gapEdits.length === 0) return;
   const gap = activeGap;
-  const edits = gapEdits
-    .map((e) => ({ section_id: e.section_id, content_md: e.content_md.trim() }))
-    .filter((e) => e.content_md !== "");
+  const edits = weavePayload(gapEdits);
   if (edits.length === 0) return;
 
   $("gap-apply").disabled = true;
@@ -2134,18 +2158,22 @@ function proposalItem(p, bibleId, { onAccepted } = {}) {
   const reject = document.createElement("button");
   reject.className = "ghost";
   reject.textContent = "Rejeter";
-  const decide = async (action) => {
-    // Récupère le texte édité éventuel avant d'envoyer.
+  const lock = (on) => {
+    accept.disabled = reject.disabled = edit.disabled = on;
+  };
+  /** Écrit le verdict et referme la proposition. `edits` = corps relus. */
+  const decide = async (action, edits) => {
     const ta = div.querySelector(".prop-edit");
     const editedContent = ta ? ta.value.trim() : null;
-    accept.disabled = reject.disabled = edit.disabled = true;
+    lock(true);
     const payload = { action };
     if (action === "accept" && editedContent) payload.content_md = editedContent;
+    if (edits) payload.edits = edits;
     const res = await api("/bibles/" + bibleId + "/proposals/" + p.id, jsonPost(payload));
     const body = await res.json();
     if (!res.ok && body.error !== "already_decided") {
-      accept.disabled = reject.disabled = edit.disabled = false;
-      return;
+      lock(false);
+      return false;
     }
     const status = res.ok ? body.proposal.status : body.status;
     setDecided(status);
@@ -2153,14 +2181,116 @@ function proposalItem(p, bibleId, { onAccepted } = {}) {
     // on dit où il a atterri, sinon l'auteur ne sait pas ce qui a bougé.
     if (res.ok && status === "accepted") showLanding(body.woven);
     if (status === "accepted" && onAccepted) onAccepted(res.ok ? body.canon_md : null);
+    return true;
   };
-  accept.addEventListener("click", () => decide("accept"));
+  // Canoniser passe par la relecture : le tissage réécrit des sections
+  // existantes, l'auteur doit voir quoi avant que ce soit écrit.
+  accept.addEventListener("click", async () => {
+    const ta = div.querySelector(".prop-edit");
+    lock(true);
+    await openCanonPanel(
+      p, bibleId, ta ? ta.value.trim() : "", decide, () => lock(false),
+    );
+  });
   reject.addEventListener("click", () => decide("reject"));
   actions.insertBefore(reject, actions.firstChild);
   actions.insertBefore(edit, reject);
   actions.insertBefore(accept, edit);
   return div;
 }
+
+// ── Relecture d'une canonisation ──────────────────────────────────────────
+//
+// Canoniser réécrit des sections existantes : l'auteur voit d'abord ce que le
+// tissage propose, corrige, puis applique. Même contrat que les zones floues.
+
+let canonEdits = null;
+let canonDecide = null;
+let canonCancel = null; // rend la main à la proposition si on referme sans écrire
+
+function closeCanonPanel() {
+  $("canon-modal").classList.add("hidden");
+  $("canon-edits").innerHTML = "";
+  const cancel = canonCancel;
+  canonEdits = null;
+  canonDecide = null;
+  canonCancel = null;
+  if (cancel) cancel(); // fermeture sans verdict : la proposition redevient active
+}
+
+/**
+ * Demande la réécriture puis ouvre la relecture. `unlock` rend la main à la
+ * proposition si l'auteur referme sans trancher.
+ */
+async function openCanonPanel(p, bibleId, editedContent, decide, unlock) {
+  $("canon-axis").textContent = "Axe " + (AXIS_LABELS[p.axis] || p.axis);
+  $("canon-axis").className = "axis-badge";
+  $("canon-content").textContent = editedContent || p.content_md;
+  $("canon-edits").innerHTML = "";
+  $("canon-msg").innerHTML = spin("Réécriture des sections concernées…");
+  $("canon-msg").className = "msg";
+  $("canon-modal").classList.remove("hidden");
+  canonEdits = null;
+  canonDecide = decide;
+  canonCancel = unlock;
+
+  const res = await api(
+    "/bibles/" + bibleId + "/proposals/" + p.id + "/weave",
+    jsonPost(editedContent ? { content_md: editedContent } : {}),
+  );
+  if (!res.ok) {
+    // Sans réécriture possible (clé absente, aucune section candidate), la
+    // canonisation reste faisable : le serveur se replie sur l'ajout en fin
+    // de section. Rien à relire, donc rien à montrer.
+    canonCancel = null;
+    closeCanonPanel();
+    await decide("accept");
+    return;
+  }
+  const body = await res.json();
+  canonEdits = (body.edits || []).map((e) => ({
+    section_id: e.section_id,
+    title: e.title,
+    content_md: e.content_md,
+    previous_md: e.previous_md || "",
+  }));
+  $("canon-msg").textContent = body.summary || "";
+  $("canon-msg").className = body.degraded ? "msg error" : "msg";
+  renderCanonEdits();
+}
+
+function renderCanonEdits() {
+  renderWeaveCards($("canon-edits"), canonEdits, {
+    emptyText: "Aucune section à réécrire pour cet élément.",
+    onApply: applyCanonEdits,
+    idPrefix: "canon",
+  });
+}
+
+/** Écrit les corps relus et marque la proposition canonisée. */
+async function applyCanonEdits() {
+  if (!canonEdits || !canonDecide) return;
+  const edits = weavePayload(canonEdits);
+  if (edits.length === 0) return;
+  const decide = canonDecide;
+
+  $("canon-apply").disabled = true;
+  $("canon-apply-msg").innerHTML = spin("Écriture dans la bible…");
+  const ok = await decide("accept", edits);
+  if (!ok) {
+    $("canon-apply-msg").textContent = "L'écriture a échoué.";
+    $("canon-apply-msg").className = "msg error";
+    $("canon-apply").disabled = false;
+    return;
+  }
+  canonCancel = null; // verdict rendu : ne pas réactiver la proposition
+  closeCanonPanel();
+}
+
+$("canon-close").addEventListener("click", closeCanonPanel);
+$("canon-modal").addEventListener("click", (e) => {
+  if (e.target === $("canon-modal")) closeCanonPanel();
+});
 
 async function loadProposals(bibleId) {
   const panel = $("proposals-panel");

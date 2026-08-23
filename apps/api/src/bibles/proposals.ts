@@ -15,6 +15,8 @@ import {
   regenerateCanon,
 } from "./sections";
 import { weaveCanonized } from "./canonize";
+import { appendEdit, selectWeaveCandidates, validateEdits } from "./weave";
+import type { Context } from "hono";
 import { suggestFromComment } from "../richness/suggest";
 import type { Env } from "../env";
 import type { BibleRow } from "./db";
@@ -259,10 +261,81 @@ proposals.post("/:id/proposals/from-feedback", async (c) => {
   return c.json({ noted: true, proposal });
 });
 
+/** Proposition possédée et encore en attente, sinon la réponse d'erreur. */
+async function pendingProposal(c: Context<AppEnv>) {
+  const bible = await findOwnedBible(
+    c.env.DB,
+    c.req.param("id") ?? "",
+    c.get("user").id,
+  );
+  if (!bible) return { error: c.json({ error: "not_found" }, 404) } as const;
+  const row = await c.env.DB.prepare(
+    `SELECT * FROM canon_proposals WHERE id = ? AND bible_id = ?`,
+  )
+    .bind(c.req.param("pid"), bible.id)
+    .first<ProposalRow>();
+  if (!row) return { error: c.json({ error: "not_found" }, 404) } as const;
+  if (row.status !== "pending") {
+    return {
+      error: c.json({ error: "already_decided", status: row.status }, 409),
+    } as const;
+  }
+  return { bible, row } as const;
+}
+
+// POST /api/bibles/:id/proposals/:pid/weave — { content_md? } → la réécriture
+// des sections concernées, telle que l'auteur va la relire. RIEN n'est écrit :
+// il tranche, puis rappelle /:pid avec { action: 'accept', edits }.
+proposals.post("/:id/proposals/:pid/weave", async (c) => {
+  if (!c.env.ANTHROPIC_API_KEY) return c.json({ error: "not_configured" }, 503);
+  const ctx = await pendingProposal(c);
+  if ("error" in ctx) return ctx.error;
+
+  let body: { content_md?: unknown } = {};
+  try {
+    body = await c.req.json();
+  } catch {
+    /* corps facultatif : la proposition telle quelle */
+  }
+  // Édition avant relecture : c'est le texte de l'auteur qui part au tissage.
+  const edited =
+    typeof body.content_md === "string" && body.content_md.trim() !== ""
+      ? body.content_md.trim()
+      : ctx.row.content_md;
+
+  await ensureSections(c.env.DB, ctx.bible, { useAi: false });
+  const sections = await listSections(c.env.DB, ctx.bible.id);
+  const candidates = selectWeaveCandidates(sections, ctx.row.axis);
+  if (candidates.length === 0) return c.json({ error: "no_section" }, 409);
+
+  try {
+    const woven = await weaveCanonized(
+      c.env.ANTHROPIC_API_KEY,
+      ctx.bible.title,
+      ctx.row.axis,
+      edited,
+      sections,
+    );
+    return c.json(woven);
+  } catch (err) {
+    // Repli : plutôt que de bloquer la canonisation, on propose l'ancien
+    // chemin — ajout marqué en fin de section — que l'auteur peut retravailler.
+    console.error(`[canon] réécriture ${ctx.row.id} :`, err);
+    const target =
+      candidates.find((s) => s.axis === ctx.row.axis) ?? candidates[0];
+    return c.json({
+      summary:
+        "Réécriture indisponible — l'élément est proposé en fin de section, à relire.",
+      degraded: true,
+      edits: [appendEdit(target, `**Canonisé en session :** ${edited}`)],
+    });
+  }
+});
+
 // POST /api/bibles/:id/proposals/:pid — { action: 'accept' | 'reject',
 // content_md? } — content_md permet d'éditer la proposition avant de la canoniser.
 proposals.post("/:id/proposals/:pid", async (c) => {
-  let body: { action?: unknown; content_md?: unknown };
+  let body: { action?: unknown; content_md?: unknown; edits?: unknown };
   try {
     body = await c.req.json();
   } catch {
@@ -321,9 +394,32 @@ proposals.post("/:id/proposals/:pid", async (c) => {
   // « Canonisé en session » si elle a été supprimée) quand le modèle est
   // indisponible — une acceptation ne perd jamais son texte.
   await ensureSections(c.env.DB, bible, { useAi: false });
-  const woven = c.env.ANTHROPIC_API_KEY
-    ? await weaveIntoSections(c.env, bible, row.axis, row.content_md)
-    : null;
+  // Chemin normal (interface) : l'auteur a relu la réécriture proposée par
+  // /weave, et ce sont SES corps qui sont écrits. Sans `edits` (appel direct
+  // de l'API), on tisse ici même — puis, si ça échoue, l'ancien ajout.
+  let woven: { summary: string; sections: string[] } | null = null;
+  if (body.edits !== undefined) {
+    const rows = await listSections(c.env.DB, bible.id);
+    const checked = validateEdits(rows, body.edits);
+    if ("error" in checked) return c.json({ error: checked.error }, 400);
+    const now = Date.now();
+    await c.env.DB.batch(
+      [...checked.updates].map(([id, content]) =>
+        c.env.DB.prepare(
+          `UPDATE bible_sections SET content_md = ?, updated_at = ? WHERE id = ?`,
+        ).bind(content, now, id),
+      ),
+    );
+    const byId = new Map(rows.map((r) => [r.id, r]));
+    woven = {
+      summary: "",
+      sections: [...checked.updates.keys()].map(
+        (id) => byId.get(id)?.title ?? "",
+      ),
+    };
+  } else if (c.env.ANTHROPIC_API_KEY) {
+    woven = await weaveIntoSections(c.env, bible, row.axis, row.content_md);
+  }
   if (!woven) {
     const routed = await appendToAxisSection(
       c.env.DB,

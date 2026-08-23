@@ -123,24 +123,40 @@ est **tissé** : le modèle réécrit les sections qu'il touche pour l'y fondre,
 tranche sur place les notes ouvertes (« À développer… », « Piste… ») auxquelles
 il répond.
 
+Comme le tissage réécrit du texte existant, il passe par une relecture — même
+contrat que les zones floues : le serveur propose, l'auteur tranche.
+
 ```sh
+# 1. proposer — la réécriture des sections concernées. Rien n'est écrit, la
+#    proposition reste à trancher. { content_md } si l'auteur l'a éditée.
+curl -X POST http://localhost:8787/api/bibles/<id>/proposals/<pid>/weave \
+  -H 'content-type: application/json' -H 'cookie: lf_session=<token>' -d '{}'
+# → { "summary": "…", "edits": [ { "section_id", "title", "content_md",
+#                                  "previous_md", "mode": "rewrite" } ] }
+# (modèle indisponible → "degraded": true et mode "append")
+
+# 2. canoniser — les corps relus par l'auteur remplacent ceux des sections.
 curl -X POST http://localhost:8787/api/bibles/<id>/proposals/<pid> \
   -H 'content-type: application/json' -H 'cookie: lf_session=<token>' \
-  -d '{"action":"accept"}'
+  -d '{"action":"accept","edits":[{"section_id":"<sec>","content_md":"…"}]}'
 # → { "proposal": {...}, "canon_md": "…",
 #     "woven": { "summary": "…", "sections": ["Géographie & lieux"] } }
 ```
 
-`woven` dit dans quelle(s) section(s) l'élément a été fondu — l'interface
-l'affiche sous la proposition, sans quoi la modification serait invisible.
-`woven: null` signale le repli (modèle indisponible, ou réécriture refusée par
-les garde-fous) : l'ancien chemin s'applique alors, ajout marqué en fin de
-section de l'axe, ou section « Canonisé en session » si celle de l'axe a été
-supprimée. Une acceptation ne perd jamais son texte.
+`edits` est facultatif : un `accept` sans lui (appel direct de l'API) tisse
+côté serveur, sans relecture. `woven` dit dans quelle(s) section(s) l'élément a
+été fondu — l'interface l'affiche sous la proposition, sans quoi la
+modification serait invisible. `woven: null` signale le repli (modèle
+indisponible, ou réécriture refusée par les garde-fous) : l'ancien chemin
+s'applique alors, ajout marqué en fin de section de l'axe, ou section
+« Canonisé en session » si celle de l'axe a été supprimée. Une acceptation ne
+perd jamais son texte.
 
 La mécanique commune aux deux flux — choix des sections candidates, appel du
-modèle, validation de la sortie et garde-fous anti-perte — vit dans
-`apps/api/src/bibles/weave.ts` ; chaque flux n'apporte que son cadrage.
+modèle, validation de la sortie, garde-fous anti-perte et validation des corps
+relus — vit dans `apps/api/src/bibles/weave.ts` ; chaque flux n'apporte que son
+cadrage. Côté interface, les deux relectures partagent la même fabrique de
+cartes (`renderWeaveCards`).
 
 ### Session d'écriture assistée
 

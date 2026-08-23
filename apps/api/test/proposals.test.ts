@@ -289,6 +289,121 @@ describe("boucle canon", () => {
     expect(lastAnthropicPrompt()).toContain("La cité-pont de Vhal, RÉÉCRITE par l'auteur.");
   });
 
+  it("weave propose la réécriture sans rien écrire, accept écrit les corps relus", async () => {
+    const cookie = await login("canonweave@example.com");
+    const bibleId = await createBible(cookie);
+    await playSessionWithInventions(cookie, bibleId);
+    const { proposals } = (await (
+      await get(cookie, `/api/bibles/${bibleId}/proposals`)
+    ).json()) as { proposals: Proposal[] };
+    const geo = proposals.find((p) => p.axis === "geography")!;
+    const geoSection = (await sectionsOf(cookie, bibleId)).find(
+      (s) => s.axis === "geography",
+    )!;
+
+    mockAnthropicText(
+      JSON.stringify({
+        summary: "Vhal entre dans la géographie.",
+        edits: [
+          { section_id: geoSection.id, content_md: "La cité-pont de Vhal enjambe la faille." },
+        ],
+      }),
+    );
+    const preview = await post(
+      cookie,
+      `/api/bibles/${bibleId}/proposals/${geo.id}/weave`,
+      {},
+    );
+    expect(preview.status).toBe(200);
+    const woven = (await preview.json()) as {
+      summary: string;
+      edits: Array<{ section_id: string; title: string; content_md: string; previous_md: string }>;
+    };
+    expect(woven.edits).toHaveLength(1);
+    expect(woven.edits[0].title).toBe("Géographie & lieux");
+
+    // Rien n'est écrit, et la proposition reste à trancher.
+    const stillPending = (await (
+      await get(cookie, `/api/bibles/${bibleId}/proposals?status=pending`)
+    ).json()) as { proposals: Proposal[] };
+    expect(stillPending.proposals.map((p) => p.id)).toContain(geo.id);
+    expect(
+      (await sectionsOf(cookie, bibleId)).find((s) => s.id === geoSection.id)!.content_md,
+    ).toBe(geoSection.content_md);
+
+    // L'auteur corrige avant d'appliquer : c'est SON texte qui est écrit,
+    // et aucun appel au modèle n'a lieu à l'accept.
+    const accepted = await post(cookie, `/api/bibles/${bibleId}/proposals/${geo.id}`, {
+      action: "accept",
+      edits: [
+        { section_id: geoSection.id, content_md: "Vhal enjambe la faille, et prélève son péage." },
+      ],
+    });
+    expect(accepted.status).toBe(200);
+    const body = (await accepted.json()) as {
+      canon_md: string;
+      woven: { sections: string[] } | null;
+    };
+    expect(body.woven?.sections).toEqual(["Géographie & lieux"]);
+    expect(body.canon_md).toContain("prélève son péage");
+    expect(body.canon_md).not.toContain("Canonisé en session");
+  });
+
+  it("weave refuse une proposition déjà tranchée, et la bible d'un autre", async () => {
+    const cookie = await login("canonweave2@example.com");
+    const other = await login("canonweave3@example.com");
+    const bibleId = await createBible(cookie);
+    await playSessionWithInventions(cookie, bibleId);
+    const { proposals } = (await (
+      await get(cookie, `/api/bibles/${bibleId}/proposals`)
+    ).json()) as { proposals: Proposal[] };
+    const geo = proposals.find((p) => p.axis === "geography")!;
+
+    // Aucun appel au modèle : ces refus se tranchent avant le tissage.
+    const foreign = await post(
+      other,
+      `/api/bibles/${bibleId}/proposals/${geo.id}/weave`,
+      {},
+    );
+    expect(foreign.status).toBe(404);
+
+    await post(cookie, `/api/bibles/${bibleId}/proposals/${geo.id}`, {
+      action: "reject",
+    });
+    const decided = await post(
+      cookie,
+      `/api/bibles/${bibleId}/proposals/${geo.id}/weave`,
+      {},
+    );
+    expect(decided.status).toBe(409);
+    expect(((await decided.json()) as { error: string }).error).toBe(
+      "already_decided",
+    );
+  });
+
+  it("accept refuse un corps relu qui ne vise pas une section de la bible", async () => {
+    const cookie = await login("canonedits@example.com");
+    const bibleId = await createBible(cookie);
+    await playSessionWithInventions(cookie, bibleId);
+    const { proposals } = (await (
+      await get(cookie, `/api/bibles/${bibleId}/proposals`)
+    ).json()) as { proposals: Proposal[] };
+    const geo = proposals.find((p) => p.axis === "geography")!;
+
+    const bad = await post(cookie, `/api/bibles/${bibleId}/proposals/${geo.id}`, {
+      action: "accept",
+      edits: [{ section_id: "sec-etrangere", content_md: "Texte." }],
+    });
+    expect(bad.status).toBe(400);
+    expect(await bad.json()).toEqual({ error: "unknown_section" });
+
+    // Refusée, la proposition reste à trancher.
+    const pending = (await (
+      await get(cookie, `/api/bibles/${bibleId}/proposals?status=pending`)
+    ).json()) as { proposals: Proposal[] };
+    expect(pending.proposals.map((p) => p.id)).toContain(geo.id);
+  });
+
   it("modèle indisponible : repli sur l'ajout en fin de section, rien n'est perdu", async () => {
     const cookie = await login("weavefail@example.com");
     const bibleId = await createBible(cookie);

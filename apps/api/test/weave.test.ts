@@ -6,7 +6,9 @@ import { describe, expect, it } from "vitest";
 import {
   describeCandidates,
   describeContext,
+  MAX_SECTION_BODY_CHARS,
   selectWeaveCandidates,
+  validateEdits,
 } from "../src/bibles/weave";
 import { buildCanonizePrompt } from "../src/bibles/canonize";
 import type { SectionRow } from "../src/bibles/sections";
@@ -92,5 +94,42 @@ describe("selectWeaveCandidates", () => {
       "geo",
       "ton",
     ]);
+  });
+});
+
+describe("validateEdits", () => {
+  const rows = [
+    section(),
+    section({ id: "dossier", title: "Lieux", kind: "folder" }),
+  ];
+
+  it("garde les corps relus, fusionnés par section", () => {
+    const out = validateEdits(rows, [
+      { section_id: "geo", content_md: "  Premier.  " },
+      { section_id: "geo", content_md: "Dernier mot." },
+    ]);
+    expect("updates" in out && [...out.updates]).toEqual([["geo", "Dernier mot."]]);
+  });
+
+  it("refuse une section inconnue ou un dossier — jamais d'écriture au hasard", () => {
+    expect(validateEdits(rows, [{ section_id: "ailleurs", content_md: "x" }])).toEqual({
+      error: "unknown_section",
+    });
+    expect(validateEdits(rows, [{ section_id: "dossier", content_md: "x" }])).toEqual({
+      error: "unknown_section",
+    });
+  });
+
+  it("refuse un corps vide, démesuré, ou une liste vide", () => {
+    expect(validateEdits(rows, [{ section_id: "geo", content_md: "   " }])).toEqual({
+      error: "invalid_edits",
+    });
+    expect(
+      validateEdits(rows, [
+        { section_id: "geo", content_md: "x".repeat(MAX_SECTION_BODY_CHARS + 1) },
+      ]),
+    ).toEqual({ error: "invalid_edits" });
+    expect(validateEdits(rows, [])).toEqual({ error: "invalid_edits" });
+    expect(validateEdits(rows, "pas un tableau")).toEqual({ error: "invalid_edits" });
   });
 });
