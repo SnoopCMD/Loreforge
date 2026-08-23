@@ -1322,6 +1322,21 @@ button.armed, .card-delete.armed {
 #gap-proposal { min-height: 0; }
 .gap-actions { justify-content: flex-end; margin-top: 1rem; gap: 0.6rem; }
 
+/* Réécritures proposées : mêmes cartes que l'atelier, plus l'avant/après. */
+#gap-edits { margin-top: 1rem; }
+#gap-edits .wr-draft-bar strong { color: var(--parchment); }
+.gap-before { margin-top: 0.5rem; }
+.gap-before summary {
+  cursor: pointer; font-size: 0.78rem; color: var(--parchment-dim);
+  text-transform: uppercase; letter-spacing: 0.08em;
+}
+.gap-before pre {
+  margin: 0.5rem 0 0; padding: 0.6rem 0.7rem; max-height: 14rem; overflow: auto;
+  border: 1px solid var(--line); border-radius: 8px; background: var(--nebula);
+  color: var(--parchment-dim); font-size: 0.82rem; line-height: 1.6;
+  white-space: pre-wrap; word-break: break-word;
+}
+
 /* ── Propositions : badge de source, édition, commentaires ────────────────── */
 .src-badge {
   font-family: "JetBrains Mono", monospace; font-size: 0.6rem;

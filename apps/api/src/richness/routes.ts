@@ -1,9 +1,14 @@
 import { Hono } from "hono";
+import type { Context } from "hono";
 import { streamSSE } from "hono/streaming";
 import type { AppEnv, Env } from "../env";
 import { requireAuth } from "../auth/middleware";
 import { findOwnedBible } from "../bibles/db";
+import { ensureSections } from "../bibles/classify";
+import { listSections, regenerateCanon } from "../bibles/sections";
 import { loadMoodboardAnnex } from "../bibles/moodboard-context";
+import { reindexBible } from "../rag/store";
+import { appendEdit, fillGap, selectGapCandidates } from "./gap-fill";
 import { computeRichness } from "./analyze";
 import { computeGlobal, type Axis, type RichnessResult } from "./logic";
 
@@ -358,4 +363,145 @@ richness.patch("/:id/gaps/:gapId", async (c) => {
     .bind(JSON.stringify(gaps), bible.id)
     .run();
   return c.json({ gap });
+});
+
+// ── Comblement d'une zone floue ───────────────────────────────────────────
+//
+// Deux temps, comme l'atelier d'écriture : /fill propose la réécriture des
+// sections concernées (rien n'est écrit), /apply enregistre ce que l'auteur a
+// relu, régénère le canon et marque la lacune comblée.
+
+/** Au-delà, la réponse n'est plus une réponse : c'est une section entière. */
+const MAX_GAP_ANSWER_CHARS = 8_000;
+/** Borne de sécurité sur un corps de section renvoyé par le client. */
+const MAX_SECTION_BODY_CHARS = 40_000;
+
+/** Charge la bible possédée, ses sections et la lacune visée. */
+async function loadGapContext(c: Context<AppEnv>) {
+  const bible = await findOwnedBible(
+    c.env.DB,
+    c.req.param("id") ?? "",
+    c.get("user").id,
+  );
+  if (!bible) return { error: c.json({ error: "not_found" }, 404) } as const;
+
+  const row = await c.env.DB.prepare(
+    `SELECT gaps_json FROM richness_scores WHERE bible_id = ?`,
+  )
+    .bind(bible.id)
+    .first<{ gaps_json: string }>();
+  if (!row) return { error: c.json({ error: "not_analyzed" }, 404) } as const;
+
+  const gaps = normalizeGaps(JSON.parse(row.gaps_json));
+  const gap = gaps.find((g) => g.id === c.req.param("gapId"));
+  if (!gap) return { error: c.json({ error: "gap_not_found" }, 404) } as const;
+  return { bible, gaps, gap } as const;
+}
+
+// POST /api/bibles/:id/gaps/:gapId/fill — { answer } → réécriture proposée.
+richness.post("/:id/gaps/:gapId/fill", async (c) => {
+  if (!c.env.ANTHROPIC_API_KEY) return c.json({ error: "not_configured" }, 503);
+  const ctx = await loadGapContext(c);
+  if ("error" in ctx) return ctx.error;
+
+  let body: { answer?: unknown };
+  try {
+    body = await c.req.json();
+  } catch {
+    return c.json({ error: "invalid_json" }, 400);
+  }
+  const answer = typeof body.answer === "string" ? body.answer.trim() : "";
+  if (answer === "" || answer.length > MAX_GAP_ANSWER_CHARS) {
+    return c.json({ error: "invalid_answer" }, 400);
+  }
+
+  await ensureSections(c.env.DB, ctx.bible, { useAi: false });
+  const sections = await listSections(c.env.DB, ctx.bible.id);
+  const candidates = selectGapCandidates(sections, ctx.gap.axis);
+  if (candidates.length === 0) return c.json({ error: "no_section" }, 409);
+
+  try {
+    const fill = await fillGap(
+      c.env.ANTHROPIC_API_KEY,
+      ctx.bible.title,
+      ctx.gap,
+      answer,
+      sections,
+    );
+    return c.json(fill);
+  } catch (err) {
+    // Repli : plutôt que de perdre la réponse, on la propose en ajout de fin
+    // de section — l'auteur voit le mode « append » et peut la retravailler.
+    console.error(`[gap] réécriture ${ctx.gap.id} :`, err);
+    const target =
+      candidates.find((s) => s.axis === ctx.gap.axis) ?? candidates[0];
+    return c.json({
+      summary:
+        "Réécriture indisponible — la réponse est proposée en fin de section, à relire.",
+      degraded: true,
+      edits: [appendEdit(target, answer)],
+    });
+  }
+});
+
+// POST /api/bibles/:id/gaps/:gapId/apply — { edits: [{ section_id, content_md }] }
+// Le corps relu par l'auteur REMPLACE celui de la section (c'est une
+// réécriture, pas un ajout), le canon est régénéré puis réindexé, et la
+// lacune passe à comblée.
+richness.post("/:id/gaps/:gapId/apply", async (c) => {
+  const ctx = await loadGapContext(c);
+  if ("error" in ctx) return ctx.error;
+
+  let body: { edits?: unknown };
+  try {
+    body = await c.req.json();
+  } catch {
+    return c.json({ error: "invalid_json" }, 400);
+  }
+  if (!Array.isArray(body.edits) || body.edits.length === 0) {
+    return c.json({ error: "invalid_edits" }, 400);
+  }
+
+  const rows = await listSections(c.env.DB, ctx.bible.id);
+  const byId = new Map(rows.map((r) => [r.id, r]));
+  const updates = new Map<string, string>();
+  for (const item of body.edits) {
+    const e = (item ?? {}) as { section_id?: unknown; content_md?: unknown };
+    const target =
+      typeof e.section_id === "string" ? byId.get(e.section_id) : undefined;
+    const content =
+      typeof e.content_md === "string" ? e.content_md.trim() : "";
+    if (!target || target.kind === "folder") {
+      return c.json({ error: "unknown_section" }, 400);
+    }
+    if (content === "" || content.length > MAX_SECTION_BODY_CHARS) {
+      return c.json({ error: "invalid_edits" }, 400);
+    }
+    updates.set(target.id, content);
+  }
+
+  const now = Date.now();
+  await c.env.DB.batch([
+    ...[...updates].map(([id, content]) =>
+      c.env.DB.prepare(
+        `UPDATE bible_sections SET content_md = ?, updated_at = ? WHERE id = ?`,
+      ).bind(content, now, id),
+    ),
+  ]);
+
+  const canon = await regenerateCanon(c.env.DB, ctx.bible.id, ctx.bible.title);
+  ctx.gap.resolved = true;
+  await c.env.DB.prepare(
+    `UPDATE richness_scores SET gaps_json = ? WHERE bible_id = ?`,
+  )
+    .bind(JSON.stringify(ctx.gaps), ctx.bible.id)
+    .run();
+  c.executionCtx.waitUntil(reindexBible(c.env, ctx.bible.id, canon));
+
+  return c.json({
+    ok: true,
+    applied: updates.size,
+    gap: ctx.gap,
+    sections: [...updates.keys()],
+  });
 });
