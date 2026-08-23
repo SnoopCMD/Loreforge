@@ -9,6 +9,7 @@ import { listSections, regenerateCanon } from "../bibles/sections";
 import { loadMoodboardAnnex } from "../bibles/moodboard-context";
 import { reindexBible } from "../rag/store";
 import { appendEdit, fillGap, selectGapCandidates } from "./gap-fill";
+import { validateEdits } from "../bibles/weave";
 import { computeRichness } from "./analyze";
 import { computeGlobal, type Axis, type RichnessResult } from "./logic";
 
@@ -373,8 +374,6 @@ richness.patch("/:id/gaps/:gapId", async (c) => {
 
 /** Au-delà, la réponse n'est plus une réponse : c'est une section entière. */
 const MAX_GAP_ANSWER_CHARS = 8_000;
-/** Borne de sécurité sur un corps de section renvoyé par le client. */
-const MAX_SECTION_BODY_CHARS = 40_000;
 
 /** Charge la bible possédée, ses sections et la lacune visée. */
 async function loadGapContext(c: Context<AppEnv>) {
@@ -458,27 +457,10 @@ richness.post("/:id/gaps/:gapId/apply", async (c) => {
   } catch {
     return c.json({ error: "invalid_json" }, 400);
   }
-  if (!Array.isArray(body.edits) || body.edits.length === 0) {
-    return c.json({ error: "invalid_edits" }, 400);
-  }
-
   const rows = await listSections(c.env.DB, ctx.bible.id);
-  const byId = new Map(rows.map((r) => [r.id, r]));
-  const updates = new Map<string, string>();
-  for (const item of body.edits) {
-    const e = (item ?? {}) as { section_id?: unknown; content_md?: unknown };
-    const target =
-      typeof e.section_id === "string" ? byId.get(e.section_id) : undefined;
-    const content =
-      typeof e.content_md === "string" ? e.content_md.trim() : "";
-    if (!target || target.kind === "folder") {
-      return c.json({ error: "unknown_section" }, 400);
-    }
-    if (content === "" || content.length > MAX_SECTION_BODY_CHARS) {
-      return c.json({ error: "invalid_edits" }, 400);
-    }
-    updates.set(target.id, content);
-  }
+  const checked = validateEdits(rows, body.edits);
+  if ("error" in checked) return c.json({ error: checked.error }, 400);
+  const updates = checked.updates;
 
   const now = Date.now();
   await c.env.DB.batch([
