@@ -409,7 +409,35 @@ export function choiceLabel(line) {
 const NAME_HEADER = /^([^:\n]{1,40}?)\s*:$/;
 
 const normName = (x) =>
-  String(x).normalize("NFD").replace(/[\u0300-\u036f]/g, "").toLowerCase().trim();
+  String(x)
+    .normalize("NFD")
+    .replace(/[\u0300-\u036f]/g, "")
+    .toLowerCase()
+    // Les surnoms entre guillemets ne font pas partie du nom : « Yumi
+    // « Croc-Léger » Takahashi » doit se reconnaître dans « Yumi ».
+    .replace(/[«»"'’]/g, " ")
+    .replace(/\s+/g, " ")
+    .trim();
+
+/**
+ * Le MJ abrège les noms — il écrit « Yuna : » pour « Yuna Thao ». Exiger
+ * l'égalité stricte privait TOUS les joueurs de leurs options : personne ne
+ * s'appelle exactement comme le MJ l'écrit.
+ *
+ * L'égalité l'emporte ; à défaut, le prénom suffit. En cas d'ambiguïté (deux
+ * personnages au même prénom), on rend la main plutôt que de donner à
+ * quelqu'un les options d'un autre.
+ */
+export function matchCharacterName(groupes, nom) {
+  const cible = normName(nom);
+  if (!cible) return null;
+  const exact = groupes.filter((g) => normName(g.name) === cible);
+  if (exact.length === 1) return exact[0];
+
+  const prenom = (x) => normName(x).split(" ")[0];
+  const proches = groupes.filter((g) => prenom(g.name) === prenom(nom));
+  return proches.length === 1 ? proches[0] : null;
+}
 
 /**
  * Les blocs d'options de fin de tour, groupés par personnage quand le MJ les
@@ -458,7 +486,7 @@ export function extractActionChipsFor(text, name) {
   const nommes = groups.filter((g) => g.name);
   if (!nommes.length) return groups[0].chips;
   if (!name) return [];
-  const mien = nommes.find((g) => normName(g.name) === normName(name));
+  const mien = matchCharacterName(nommes, name);
   return mien ? mien.chips : [];
 }
 

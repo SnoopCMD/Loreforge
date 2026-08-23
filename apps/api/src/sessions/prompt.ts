@@ -411,7 +411,8 @@ Kaelen :
 - couvrir Mira
 
 Le nom seul suivi de deux-points, puis ses options à puces : chaque joueur ne
-reçoit QUE le bloc à son nom. Une seule liste commune obligerait chacun à
+reçoit QUE le bloc à son nom. Écris ce nom EXACTEMENT comme le CONTEXTE DU TOUR
+te le donne — c'est lui qui décide à qui vont les options. Une seule liste commune obligerait chacun à
 chercher sa ligne parmi celles des autres. Une question ouverte adressée à
 toute la table reste possible à la place — mais jamais un mélange des deux.
 

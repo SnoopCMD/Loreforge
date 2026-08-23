@@ -16,6 +16,7 @@ import {
   choiceLabel,
   extractActionChipsFor,
   extractActionGroups,
+  matchCharacterName,
   rollBonusText,
   rollPoolSize,
   // @ts-expect-error — module JS servi tel quel au front, sans types.
@@ -434,5 +435,69 @@ describe("playerEntryText — le joueur relit ses phrases, pas le prompt", () =>
 
   it("rend vide un tour de continuation, qui n'a rien à montrer", () => {
     expect(playerEntryText("")).toBe("");
+  });
+});
+
+describe("matchCharacterName — le MJ abrège les noms", () => {
+  // Relevé en session : le MJ écrit « Yuna : » et « Yumi : », les fiches
+  // s'appellent « Yuna Thao » et « Yumi « Croc-Léger » Takahashi ». L'égalité
+  // stricte ne reconnaissait personne : AUCUN joueur n'avait ses options, et
+  // le bloc restait affiché en clair pour tout le monde.
+  const groupes = [
+    { name: "Yuna", chips: ["tenir bon", "arracher sa main"] },
+    { name: "Yumi", chips: ["la cuisiner", "lui glisser un marché"] },
+  ];
+
+  it("reconnaît un prénom dans un nom complet", () => {
+    expect(matchCharacterName(groupes, "Yuna Thao")!.chips).toEqual([
+      "tenir bon",
+      "arracher sa main",
+    ]);
+  });
+
+  it("traverse les surnoms entre guillemets", () => {
+    expect(
+      matchCharacterName(groupes, "Yumi « Croc-Léger » Takahashi")!.chips,
+    ).toEqual(["la cuisiner", "lui glisser un marché"]);
+  });
+
+  it("préfère l'égalité exacte quand elle existe", () => {
+    const deux = [
+      { name: "Yuna", chips: ["abrégé"] },
+      { name: "Yuna Thao", chips: ["exact"] },
+    ];
+    expect(matchCharacterName(deux, "Yuna Thao")!.chips).toEqual(["exact"]);
+  });
+
+  it("rend la main plutôt que de se tromper de joueur", () => {
+    // Deux personnages au même prénom : donner les options de l'un à l'autre
+    // serait pire que de n'en donner aucune.
+    const jumeaux = [
+      { name: "Yuna Thao", chips: ["a"] },
+      { name: "Yuna Vasquez", chips: ["b"] },
+    ];
+    expect(matchCharacterName(jumeaux, "Yuna")).toBeNull();
+    expect(extractActionChipsFor("x", "Yuna")).toEqual([]);
+  });
+
+  it("bout en bout : chacun ses options malgré l'abrégé", () => {
+    const scene = [
+      "La membrane palpite.",
+      "",
+      "Yuna :",
+      "- tenir bon",
+      "- arracher sa main",
+      "",
+      "Yumi :",
+      "- la cuisiner",
+      "- lui glisser un marché",
+    ].join("\n");
+    expect(extractActionChipsFor(scene, "Yuna Thao")).toEqual([
+      "tenir bon",
+      "arracher sa main",
+    ]);
+    expect(
+      extractActionChipsFor(scene, "Yumi « Croc-Léger » Takahashi"),
+    ).toEqual(["la cuisiner", "lui glisser un marché"]);
   });
 });

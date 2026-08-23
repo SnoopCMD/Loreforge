@@ -4110,15 +4110,18 @@ function myCharacterName() {
   return (moi && moi.character_name) || (S.character && S.character.name) || null;
 }
 
-function renderChoices(gmEl, gmText) {
-  if (!gmEl || S.status !== "playing") return;
-  // Mes options seulement : à une table, le MJ propose un bloc par personnage.
-  const choices = extractActionChipsFor(gmText, myCharacterName());
+/**
+ * Retire de la prose le bloc d'options — le mien comme celui des autres.
+ *
+ * Vaut aussi pour les tours DÉJÀ JOUÉS qu'on relit après un rechargement :
+ * sans ça, chaque joueur relisait la liste de courses de toute la table à
+ * chaque tour de l'historique.
+ */
+function stripChoiceBlock(gmEl, gmText) {
+  if (!gmEl) return [];
   const groupes = extractActionGroups(gmText);
-  if (!groupes.length) return;
+  if (!groupes.length) return [];
 
-  // Le bloc d'options quitte la prose EN ENTIER — le mien comme celui des
-  // autres : la scène doit finir sur le récit, pas sur une liste de courses.
   // On ne retire que ce qu'on a réellement reconnu, jamais un dialogue.
   const labels = new Set(groupes.flatMap((g) => g.chips));
   const noms = new Set(
@@ -4142,6 +4145,15 @@ function renderChoices(gmEl, gmText) {
     }
     break;
   }
+  return groupes;
+}
+
+function renderChoices(gmEl, gmText) {
+  if (!gmEl || S.status !== "playing") return;
+  const groupes = stripChoiceBlock(gmEl, gmText);
+  if (!groupes.length) return;
+  // Mes options seulement : à une table, le MJ propose un bloc par personnage.
+  const choices = extractActionChipsFor(gmText, myCharacterName());
   if (!choices.length) return;
   const wrap = document.createElement("div");
   wrap.className = "choices";
@@ -5438,6 +5450,10 @@ async function enterSession(id) {
       const writer = newGmWriter();
       writer.write(entry.text);
       writer.end();
+      // Les options d'un tour passé ne sont plus jouables : elles quittent le
+      // fil comme elles l'ont fait en direct. Le dernier tour, lui, retrouve
+      // ses boutons juste après la boucle.
+      stripChoiceBlock(writer.el, entry.text);
       lastGmEl = writer.el;
       lastGmText = entry.text;
     }
