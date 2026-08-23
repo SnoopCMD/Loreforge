@@ -11,11 +11,54 @@ import { ensureSections } from "./classify";
 import {
   appendCanonizedSection,
   appendToAxisSection,
+  listSections,
   regenerateCanon,
 } from "./sections";
+import { weaveCanonized } from "./canonize";
 import { suggestFromComment } from "../richness/suggest";
+import type { Env } from "../env";
+import type { BibleRow } from "./db";
 
 const STATUSES = ["pending", "accepted", "rejected"] as const;
+
+/**
+ * Tisse un élément canonisé dans les sections qu'il touche et écrit le
+ * résultat. Renvoie null si le tissage n'a pas abouti (modèle indisponible,
+ * sortie inexploitable, aucune section candidate) — l'appelant se replie alors
+ * sur l'ajout en fin de section. Le canon est régénéré par l'appelant.
+ */
+async function weaveIntoSections(
+  env: Env,
+  bible: BibleRow,
+  axis: string,
+  contentMd: string,
+): Promise<{ summary: string; sections: string[] } | null> {
+  try {
+    const sections = await listSections(env.DB, bible.id);
+    const woven = await weaveCanonized(
+      env.ANTHROPIC_API_KEY!,
+      bible.title,
+      axis,
+      contentMd,
+      sections,
+    );
+    const now = Date.now();
+    await env.DB.batch(
+      woven.edits.map((e) =>
+        env.DB.prepare(
+          `UPDATE bible_sections SET content_md = ?, updated_at = ? WHERE id = ?`,
+        ).bind(e.content_md, now, e.section_id),
+      ),
+    );
+    return {
+      summary: woven.summary,
+      sections: woven.edits.map((e) => e.title),
+    };
+  } catch (err) {
+    console.error(`[canon] tissage de l'élément canonisé (${axis}) :`, err);
+    return null;
+  }
+}
 const MAX_COMMENT_CHARS = 2000;
 const MAX_PASSAGE_CHARS = 4000;
 
@@ -272,18 +315,25 @@ proposals.post("/:id/proposals/:pid", async (c) => {
 
   // Canonisation via les sections (invariant : canon_md est dérivé). Les
   // sections sont initialisées si besoin (heuristique, sans appel IA), puis
-  // l'ajout rejoint la section de base de son axe (Personnages, Géographie…)
-  // — repli « Canonisé en session » si elle a été supprimée — et le canon est
-  // régénéré.
+  // l'élément est TISSÉ dans les sections qu'il touche : il complète le texte
+  // en place et tranche les notes ouvertes qu'il vient combler, au lieu d'être
+  // recopié en fin de section. Repli sur l'ancien ajout (section de l'axe, ou
+  // « Canonisé en session » si elle a été supprimée) quand le modèle est
+  // indisponible — une acceptation ne perd jamais son texte.
   await ensureSections(c.env.DB, bible, { useAi: false });
-  const routed = await appendToAxisSection(
-    c.env.DB,
-    bible.id,
-    row.axis,
-    row.content_md,
-  );
-  if (!routed) {
-    await appendCanonizedSection(c.env.DB, bible.id, row.axis, row.content_md);
+  const woven = c.env.ANTHROPIC_API_KEY
+    ? await weaveIntoSections(c.env, bible, row.axis, row.content_md)
+    : null;
+  if (!woven) {
+    const routed = await appendToAxisSection(
+      c.env.DB,
+      bible.id,
+      row.axis,
+      row.content_md,
+    );
+    if (!routed) {
+      await appendCanonizedSection(c.env.DB, bible.id, row.axis, row.content_md);
+    }
   }
   const merged = await regenerateCanon(c.env.DB, bible.id, bible.title);
   await c.env.DB.prepare(
@@ -325,5 +375,13 @@ proposals.post("/:id/proposals/:pid", async (c) => {
   }
   // Réindex Vectorize (M6) en tâche de fond — no-op sous le seuil RAG.
   c.executionCtx.waitUntil(reindexBible(c.env, bible.id, merged));
-  return c.json({ proposal: { ...row, status: "accepted" }, canon_md: merged });
+  return c.json({
+    proposal: { ...row, status: "accepted" },
+    canon_md: merged,
+    // De quoi dire à l'auteur OÙ son élément a atterri, et s'il a été fondu
+    // dans le texte ou seulement ajouté en fin de section.
+    woven: woven
+      ? { summary: woven.summary, sections: woven.sections }
+      : null,
+  });
 });

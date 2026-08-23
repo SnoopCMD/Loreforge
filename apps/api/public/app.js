@@ -2113,6 +2113,22 @@ function proposalItem(p, bibleId, { onAccepted } = {}) {
     }
   });
 
+  /** Dit dans quelle(s) section(s) l'élément canonisé a été fondu. */
+  const showLanding = (woven) => {
+    const note = document.createElement("p");
+    note.className = "msg prop-landing";
+    if (woven && woven.sections && woven.sections.length) {
+      note.textContent =
+        "Fondu dans : " + woven.sections.join(", ") +
+        (woven.summary ? " — " + woven.summary : "");
+    } else {
+      note.textContent =
+        "Réécriture indisponible — ajouté en fin de section, à relire.";
+      note.classList.add("error");
+    }
+    div.appendChild(note);
+  };
+
   const accept = document.createElement("button");
   accept.textContent = "Canoniser";
   const reject = document.createElement("button");
@@ -2133,6 +2149,9 @@ function proposalItem(p, bibleId, { onAccepted } = {}) {
     }
     const status = res.ok ? body.proposal.status : body.status;
     setDecided(status);
+    // Tissé dans le texte, l'élément ne saute plus aux yeux en fin de section :
+    // on dit où il a atterri, sinon l'auteur ne sait pas ce qui a bougé.
+    if (res.ok && status === "accepted") showLanding(body.woven);
     if (status === "accepted" && onAccepted) onAccepted(res.ok ? body.canon_md : null);
   };
   accept.addEventListener("click", () => decide("accept"));
@@ -2154,8 +2173,8 @@ async function loadProposals(bibleId) {
   for (const p of proposals) {
     list.appendChild(
       proposalItem(p, bibleId, {
-        // L'accept a rejoint la section « Canonisé en session » : on recharge
-        // le plan de travail pour refléter le nouvel état serveur.
+        // L'accept a réécrit une ou plusieurs sections : on recharge le plan
+        // de travail pour refléter le nouvel état serveur.
         onAccepted(canonMd) { if (canonMd !== null) loadWorkspace(); },
       }),
     );

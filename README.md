@@ -114,6 +114,34 @@ curl -X POST http://localhost:8787/api/bibles/<id>/gaps/<gapId>/apply \
 `PATCH /api/bibles/<id>/gaps/<gapId>` `{ "resolved": false }` rouvre une lacune
 marquée comblée à tort (le drapeau seul ; le texte déjà écrit reste).
 
+### Boucle canon : une invention acceptée entre dans le texte
+
+Même principe pour la canonisation. Accepter une proposition ne recopie plus
+son texte en fin de section derrière un « Canonisé en session : » — un bloc à
+part, souvent posé loin de la note qu'il venait justement combler. L'élément
+est **tissé** : le modèle réécrit les sections qu'il touche pour l'y fondre, et
+tranche sur place les notes ouvertes (« À développer… », « Piste… ») auxquelles
+il répond.
+
+```sh
+curl -X POST http://localhost:8787/api/bibles/<id>/proposals/<pid> \
+  -H 'content-type: application/json' -H 'cookie: lf_session=<token>' \
+  -d '{"action":"accept"}'
+# → { "proposal": {...}, "canon_md": "…",
+#     "woven": { "summary": "…", "sections": ["Géographie & lieux"] } }
+```
+
+`woven` dit dans quelle(s) section(s) l'élément a été fondu — l'interface
+l'affiche sous la proposition, sans quoi la modification serait invisible.
+`woven: null` signale le repli (modèle indisponible, ou réécriture refusée par
+les garde-fous) : l'ancien chemin s'applique alors, ajout marqué en fin de
+section de l'axe, ou section « Canonisé en session » si celle de l'axe a été
+supprimée. Une acceptation ne perd jamais son texte.
+
+La mécanique commune aux deux flux — choix des sections candidates, appel du
+modèle, validation de la sortie et garde-fous anti-perte — vit dans
+`apps/api/src/bibles/weave.ts` ; chaque flux n'apporte que son cadrage.
+
 ### Session d'écriture assistée
 
 Depuis le détail d'une bible, le bouton **✍️ Session d'écriture** ouvre un

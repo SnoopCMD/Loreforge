@@ -6,6 +6,8 @@ import { afterEach, beforeAll, describe, expect, it } from "vitest";
 import {
   assertAnthropicMockConsumed,
   installAnthropicMock,
+  lastAnthropicPrompt,
+  mockAnthropicError,
   mockAnthropicStream,
   mockAnthropicText,
 } from "./anthropic-mock";
@@ -53,6 +55,18 @@ async function createBible(cookie: string): Promise<string> {
   });
   const { id } = (await res.json()) as { id: string };
   return id;
+}
+
+async function sectionsOf(
+  cookie: string,
+  bibleId: string,
+): Promise<Array<{ id: string; title: string; axis: string | null; content_md: string }>> {
+  const res = await get(cookie, `/api/bibles/${bibleId}/sections`);
+  return (
+    (await res.json()) as {
+      sections: Array<{ id: string; title: string; axis: string | null; content_md: string }>;
+    }
+  ).sections;
 }
 
 interface Proposal {
@@ -134,7 +148,7 @@ describe("boucle canon", () => {
     ).toHaveLength(2);
   });
 
-  it("accept fusionne dans canon_md, reject marque sans toucher au canon", async () => {
+  it("accept tisse l'élément dans la section, reject marque sans toucher au canon", async () => {
     const cookie = await login("canon2@example.com");
     const bibleId = await createBible(cookie);
     await playSessionWithInventions(cookie, bibleId);
@@ -144,6 +158,22 @@ describe("boucle canon", () => {
     ).json()) as { proposals: Proposal[] };
     const [geo, chars] = proposals;
 
+    const geoSection = (await sectionsOf(cookie, bibleId)).find(
+      (s) => s.axis === "geography",
+    )!;
+    // Le modèle réécrit le corps de la section : l'élément y est fondu.
+    mockAnthropicText(
+      JSON.stringify({
+        summary: "Vhal entre dans la géographie.",
+        edits: [
+          {
+            section_id: geoSection.id,
+            content_md:
+              "Les lieux du monde s'organisent autour des failles. La cité-pont de Vhal en enjambe une, et sert de péage entre les deux rives.",
+          },
+        ],
+      }),
+    );
     const accepted = await post(
       cookie,
       `/api/bibles/${bibleId}/proposals/${geo.id}`,
@@ -153,15 +183,15 @@ describe("boucle canon", () => {
     const acceptedBody = (await accepted.json()) as {
       proposal: Proposal;
       canon_md: string;
+      woven: { summary: string; sections: string[] } | null;
     };
     expect(acceptedBody.proposal.status).toBe("accepted");
-    // L'ajout rejoint la section de base de son axe, marqué comme canonisé —
-    // pas de section fourre-tout tant que la base existe.
+    // Tissé dans la section de l'axe : pas de bloc à part, pas de marqueur
+    // « Canonisé en session », pas de section fourre-tout.
+    expect(acceptedBody.woven?.sections).toEqual(["Géographie & lieux"]);
     expect(acceptedBody.canon_md).toContain("## Géographie & lieux");
-    expect(acceptedBody.canon_md).toContain(
-      "**Canonisé en session :** La cité-pont de Vhal",
-    );
-    expect(acceptedBody.canon_md).not.toContain("## Canonisé en session");
+    expect(acceptedBody.canon_md).toContain("sert de péage entre les deux rives");
+    expect(acceptedBody.canon_md).not.toContain("Canonisé en session");
 
     const rejected = await post(
       cookie,
@@ -213,6 +243,7 @@ describe("boucle canon", () => {
       await get(cookie, `/api/bibles/${bibleId}/proposals`)
     ).json()) as { proposals: Proposal[] };
     const geo = proposals.find((p) => p.axis === "geography")!;
+    mockAnthropicError(401, "clé invalide");
     const accepted = await post(
       cookie,
       `/api/bibles/${bibleId}/proposals/${geo.id}`,
@@ -225,7 +256,7 @@ describe("boucle canon", () => {
     expect(canon_md).toContain("cité-pont de Vhal");
   });
 
-  it("édition avant validation : accept avec content_md remplace le texte canonisé", async () => {
+  it("édition avant validation : c'est le texte de l'auteur qui part au tissage", async () => {
     const cookie = await login("edit5@example.com");
     const bibleId = await createBible(cookie);
     await playSessionWithInventions(cookie, bibleId);
@@ -233,6 +264,20 @@ describe("boucle canon", () => {
       await get(cookie, `/api/bibles/${bibleId}/proposals`)
     ).json()) as { proposals: Proposal[] };
 
+    const geoSection = (await sectionsOf(cookie, bibleId)).find(
+      (s) => s.axis === "geography",
+    )!;
+    mockAnthropicText(
+      JSON.stringify({
+        summary: "",
+        edits: [
+          {
+            section_id: geoSection.id,
+            content_md: "Vhal, RÉÉCRITE par l'auteur, enjambe la faille.",
+          },
+        ],
+      }),
+    );
     const accepted = await post(cookie, `/api/bibles/${bibleId}/proposals/${proposals[0].id}`, {
       action: "accept",
       content_md: "La cité-pont de Vhal, RÉÉCRITE par l'auteur.",
@@ -240,6 +285,80 @@ describe("boucle canon", () => {
     expect(accepted.status).toBe(200);
     const { canon_md } = (await accepted.json()) as { canon_md: string };
     expect(canon_md).toContain("RÉÉCRITE par l'auteur");
+    // Le texte édité est bien celui soumis au modèle, pas la version d'origine.
+    expect(lastAnthropicPrompt()).toContain("La cité-pont de Vhal, RÉÉCRITE par l'auteur.");
+  });
+
+  it("modèle indisponible : repli sur l'ajout en fin de section, rien n'est perdu", async () => {
+    const cookie = await login("weavefail@example.com");
+    const bibleId = await createBible(cookie);
+    await playSessionWithInventions(cookie, bibleId);
+    const { proposals } = (await (
+      await get(cookie, `/api/bibles/${bibleId}/proposals`)
+    ).json()) as { proposals: Proposal[] };
+    const geo = proposals.find((p) => p.axis === "geography")!;
+
+    mockAnthropicError(401, "clé invalide");
+    const accepted = await post(
+      cookie,
+      `/api/bibles/${bibleId}/proposals/${geo.id}`,
+      { action: "accept" },
+    );
+    expect(accepted.status).toBe(200);
+    const body = (await accepted.json()) as {
+      canon_md: string;
+      woven: unknown;
+    };
+    expect(body.woven).toBeNull();
+    // L'ancien chemin : marqué, en fin de section de l'axe. Le texte survit.
+    expect(body.canon_md).toContain("**Canonisé en session :** La cité-pont de Vhal");
+  });
+
+  it("réécriture amputée : refusée, repli plutôt que perte de la section", async () => {
+    const cookie = await login("weavecut@example.com");
+    const bibleId = await createBible(cookie);
+    await playSessionWithInventions(cookie, bibleId);
+
+    // Une section de l'axe bien fournie : la réduire à trois mots serait une
+    // amputation, pas une intégration.
+    const geoSection = (await sectionsOf(cookie, bibleId)).find(
+      (s) => s.axis === "geography",
+    )!;
+    const filled = await SELF.fetch(
+      `${BASE}/api/bibles/${bibleId}/sections/${geoSection.id}`,
+      {
+        method: "PUT",
+        headers: { "content-type": "application/json", cookie },
+        body: JSON.stringify({ content_md: "Un lieu détaillé. ".repeat(60) }),
+      },
+    );
+    expect(filled.status).toBe(200);
+
+    const { proposals } = (await (
+      await get(cookie, `/api/bibles/${bibleId}/proposals`)
+    ).json()) as { proposals: Proposal[] };
+    const geo = proposals.find((p) => p.axis === "geography")!;
+
+    mockAnthropicText(
+      JSON.stringify({
+        summary: "",
+        edits: [{ section_id: geoSection.id, content_md: "Vhal existe." }],
+      }),
+    );
+    const accepted = await post(
+      cookie,
+      `/api/bibles/${bibleId}/proposals/${geo.id}`,
+      { action: "accept" },
+    );
+    expect(accepted.status).toBe(200);
+    const { canon_md, woven } = (await accepted.json()) as {
+      canon_md: string;
+      woven: unknown;
+    };
+    expect(woven).toBeNull();
+    // La section garde son texte, et l'élément rejoint sa fin.
+    expect(canon_md).toContain("Un lieu détaillé.");
+    expect(canon_md).toContain("**Canonisé en session :** La cité-pont de Vhal");
   });
 
   it("from-comment : un retour sur un passage crée une proposition source=comment", async () => {
