@@ -87,6 +87,33 @@ npx wrangler secret put ANTHROPIC_API_KEY   # production
 
 L'interface (servie sur `/`) affiche le radar 5 axes et les zones floues.
 
+#### Combler une zone floue
+
+Une lacune se comble en RÉÉCRIVANT les sections qu'elle touche, jamais en
+empilant un paragraphe de plus à leur suite : la réponse de l'auteur est fondue
+dans le texte existant, à l'endroit qui la porte.
+
+```sh
+# 1. proposer — le modèle reçoit le corps intégral des sections candidates
+#    et en renvoie la version réécrite. Rien n'est écrit.
+curl -X POST http://localhost:8787/api/bibles/<id>/gaps/<gapId>/fill \
+  -H 'content-type: application/json' -H 'cookie: lf_session=<token>' \
+  -d '{"answer":"Pas de stockage : tout dépend de l’endurance du lanceur."}'
+# → { "summary": "…", "edits": [ { "section_id", "title", "content_md",
+#                                  "previous_md", "mode": "rewrite" } ] }
+# (modèle indisponible → "degraded": true et mode "append" : la réponse est
+#  proposée en fin de section plutôt que perdue)
+
+# 2. appliquer — le corps relu par l'auteur REMPLACE celui de la section ;
+#    le canon est régénéré, réindexé, et la lacune passe à comblée.
+curl -X POST http://localhost:8787/api/bibles/<id>/gaps/<gapId>/apply \
+  -H 'content-type: application/json' -H 'cookie: lf_session=<token>' \
+  -d '{"edits":[{"section_id":"<sec>","content_md":"…"}]}'
+```
+
+`PATCH /api/bibles/<id>/gaps/<gapId>` `{ "resolved": false }` rouvre une lacune
+marquée comblée à tort (le drapeau seul ; le texte déjà écrit reste).
+
 ### Session d'écriture assistée
 
 Depuis le détail d'une bible, le bouton **✍️ Session d'écriture** ouvre un

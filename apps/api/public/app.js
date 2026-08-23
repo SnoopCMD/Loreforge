@@ -1370,17 +1370,27 @@ function renderGaps(gaps) {
   }
 }
 
-// ── Panneau d'une zone floue (génère une proposition, insère dans la section) ──
+// ── Panneau d'une zone floue ───────────────────────────────────────────────
+//
+// Combler une lacune, ce n'est pas empiler un paragraphe de plus : la réponse
+// de l'auteur est FONDUE dans les sections qu'elle touche. Le serveur en
+// propose la réécriture intégrale (/fill), l'auteur la relit et la corrige,
+// puis /apply remplace les corps concernés et marque la lacune comblée.
 
 let activeGap = null;
+let gapEdits = null; // réécritures proposées, en attente de verdict
 
 function closeGapPanel() {
   $("gap-modal").classList.add("hidden");
   activeGap = null;
+  gapEdits = null;
+  $("gap-edits").innerHTML = "";
 }
 
 function openGapPanel(gap) {
   activeGap = gap;
+  gapEdits = null;
+  $("gap-edits").innerHTML = "";
   $("gap-axis").textContent = "Axe " + (AXIS_LABELS[gap.axis] || gap.axis);
   $("gap-axis").className = "axis-badge";
   $("gap-why").textContent = gap.description;
@@ -1389,14 +1399,17 @@ function openGapPanel(gap) {
   ta.value = "";
   $("gap-msg").textContent = hasSection
     ? ""
-    : "Aucune section rattachée à cet axe — créez-en une d'abord.";
+    : "Aucune section rattachée à cet axe — la réécriture visera les autres sections.";
   $("gap-msg").className = "msg";
   $("gap-goto").disabled = !hasSection;
+  $("gap-reopen").classList.toggle("hidden", !gap.resolved);
   $("gap-insert").disabled = true;
+  $("gap-insert").textContent = "Réécrire les sections";
   $("gap-modal").classList.remove("hidden");
   ta.focus();
 }
 
+/** Rouvre une lacune marquée comblée (le PATCH persiste le drapeau). */
 async function setGapResolved(gap, resolved) {
   await api("/bibles/" + currentBible.id + "/gaps/" + encodeURIComponent(gap.id), {
     method: "PATCH",
@@ -1413,8 +1426,17 @@ $("gap-modal").addEventListener("click", (e) => {
   if (e.target === $("gap-modal")) closeGapPanel();
 });
 $("gap-answer").addEventListener("input", () => {
-  $("gap-insert").disabled = !$("gap-answer").value.trim() ||
-    !WS.sections.find((s) => activeGap && s.axis === activeGap.axis);
+  $("gap-insert").disabled = !$("gap-answer").value.trim();
+});
+// Une lacune comblée à tort se rouvre : le drapeau seul est remis à zéro,
+// le texte déjà écrit dans les sections reste (il s'édite dans l'éditeur).
+$("gap-reopen").addEventListener("click", async () => {
+  if (!activeGap) return;
+  const gap = activeGap;
+  $("gap-reopen").disabled = true;
+  await setGapResolved(gap, false);
+  $("gap-reopen").disabled = false;
+  $("gap-reopen").classList.add("hidden");
 });
 $("gap-goto").addEventListener("click", () => {
   if (!activeGap) return;
@@ -1422,24 +1444,145 @@ $("gap-goto").addEventListener("click", () => {
   closeGapPanel();
   openSectionForAxis(gap.axis);
 });
-// Ajoute la réponse de l'auteur à la section de l'axe (append, jamais d'écrasement),
-// sauvegarde, puis marque la lacune comblée.
+// Demande au serveur la réécriture des sections concernées. Rien n'est écrit :
+// les propositions s'affichent sous le panneau, éditables, jusqu'à validation.
 $("gap-insert").addEventListener("click", async () => {
   if (!activeGap) return;
   const gap = activeGap;
-  const text = $("gap-answer").value.trim();
-  const section = WS.sections.find((s) => s.axis === gap.axis);
-  if (!text || !section) return;
+  const answer = $("gap-answer").value.trim();
+  if (!answer) return;
   $("gap-insert").disabled = true;
-  $("gap-msg").innerHTML = spin("Ajout à la bible…");
+  $("gap-msg").innerHTML = spin("Réécriture des sections concernées…");
+  $("gap-msg").className = "msg";
+  $("gap-edits").innerHTML = "";
 
-  const base = (section.content_md || "").trim();
-  section.content_md = base ? base + "\n\n" + text : text;
-  await saveWsSection(section.id);
-  await setGapResolved(gap, true);
-  closeGapPanel();
-  selectSection(section.id); // montre la section enrichie
+  const res = await api(
+    "/bibles/" + currentBible.id + "/gaps/" + encodeURIComponent(gap.id) + "/fill",
+    jsonPost({ answer }),
+  );
+  $("gap-insert").disabled = false;
+  if (!res.ok) {
+    const body = await res.json().catch(() => ({}));
+    $("gap-msg").textContent =
+      body.error === "not_configured"
+        ? "Réécriture indisponible (clé API absente)."
+        : body.error === "no_section"
+          ? "Aucune section à réécrire — créez-en une d'abord."
+          : "La réécriture a échoué. Réessayez.";
+    $("gap-msg").className = "msg error";
+    return;
+  }
+  const body = await res.json();
+  gapEdits = (body.edits || []).map((e) => ({
+    section_id: e.section_id,
+    title: e.title,
+    content_md: e.content_md,
+    previous_md: e.previous_md || "",
+    mode: e.mode || "rewrite",
+  }));
+  $("gap-msg").textContent = body.summary || "";
+  $("gap-msg").className = body.degraded ? "msg error" : "msg";
+  renderGapEdits();
 });
+
+/** Cartes de relecture : une par section réécrite, corps éditable + avant/après. */
+function renderGapEdits() {
+  const host = $("gap-edits");
+  host.innerHTML = "";
+  if (!gapEdits) return;
+  if (gapEdits.length === 0) {
+    host.innerHTML =
+      '<p class="msg">Aucune section à réécrire pour cette réponse.</p>';
+    return;
+  }
+
+  const head = document.createElement("p");
+  head.className = "msg";
+  head.textContent =
+    "Relisez : ces corps REMPLACENT ceux des sections. Corrigez ce qui doit l'être, puis appliquez.";
+  host.appendChild(head);
+
+  gapEdits.forEach((edit, i) => {
+    const card = document.createElement("div");
+    card.className = "wr-draft";
+
+    const bar = document.createElement("div");
+    bar.className = "row spread wr-draft-bar";
+    const name = document.createElement("strong");
+    name.textContent = edit.title;
+    const drop = document.createElement("button");
+    drop.type = "button";
+    drop.className = "ghost";
+    drop.textContent = "Retirer";
+    drop.addEventListener("click", () => {
+      gapEdits.splice(i, 1);
+      renderGapEdits();
+    });
+    bar.append(name, drop);
+
+    const ta = document.createElement("textarea");
+    ta.className = "ws-editor wr-draft-body";
+    ta.value = edit.content_md;
+    ta.addEventListener("input", () => { edit.content_md = ta.value; });
+
+    const before = document.createElement("details");
+    before.className = "gap-before";
+    const sum = document.createElement("summary");
+    sum.textContent = "Voir la version actuelle";
+    const pre = document.createElement("pre");
+    pre.textContent = edit.previous_md.trim() || "(section vide)";
+    before.append(sum, pre);
+
+    card.append(bar, ta, before);
+    host.appendChild(card);
+  });
+
+  const actions = document.createElement("div");
+  actions.className = "row wr-draft-actions";
+  const apply = document.createElement("button");
+  apply.type = "button";
+  apply.id = "gap-apply";
+  apply.textContent =
+    "Appliquer à " + gapEdits.length +
+    (gapEdits.length > 1 ? " sections" : " section");
+  apply.addEventListener("click", applyGapEdits);
+  const msg = document.createElement("span");
+  msg.className = "msg";
+  msg.id = "gap-apply-msg";
+  actions.append(apply, msg);
+  host.appendChild(actions);
+}
+
+/** Écrit les réécritures relues, puis marque la lacune comblée. */
+async function applyGapEdits() {
+  if (!activeGap || !gapEdits || gapEdits.length === 0) return;
+  const gap = activeGap;
+  const edits = gapEdits
+    .map((e) => ({ section_id: e.section_id, content_md: e.content_md.trim() }))
+    .filter((e) => e.content_md !== "");
+  if (edits.length === 0) return;
+
+  $("gap-apply").disabled = true;
+  $("gap-apply-msg").innerHTML = spin("Écriture dans la bible…");
+  const res = await api(
+    "/bibles/" + currentBible.id + "/gaps/" + encodeURIComponent(gap.id) + "/apply",
+    jsonPost({ edits }),
+  );
+  if (!res.ok) {
+    $("gap-apply-msg").textContent = "L'écriture a échoué.";
+    $("gap-apply-msg").className = "msg error";
+    $("gap-apply").disabled = false;
+    return;
+  }
+  const body = await res.json();
+  const target = edits[0].section_id;
+  const local = currentGaps.find((x) => x.id === gap.id);
+  if (local) local.resolved = true;
+  renderGaps(currentGaps);
+  closeGapPanel();
+  await loadWorkspace(); // l'éditeur reflète les sections réécrites
+  if (body.applied) selectSection(target);
+}
 
 /** Ouvre la section de base rattachée à un axe (pour combler une lacune). */
 function openSectionForAxis(axis) {

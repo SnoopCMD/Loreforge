@@ -612,13 +612,16 @@
       <h3 id="gap-title">Zone floue</h3>
     </div>
     <p class="gap-why" id="gap-why"></p>
-    <label class="gap-proposal-label" for="gap-answer">Votre réponse (ajoutée à la section, puis enrichit la bible)</label>
+    <label class="gap-proposal-label" for="gap-answer">Votre réponse (réécrite dans la ou les sections concernées)</label>
     <textarea id="gap-answer" class="ws-editor" rows="7" placeholder="Rédigez ici ce qui manque — noms, faits, règles…"></textarea>
     <p class="msg" id="gap-msg"></p>
     <div class="row gap-actions">
       <button class="ghost" id="gap-goto">Ouvrir la section</button>
-      <button id="gap-insert">Ajouter à la bible</button>
+      <button class="ghost hidden" id="gap-reopen">Rouvrir la zone floue</button>
+      <button id="gap-insert">Réécrire les sections</button>
     </div>
+    <!-- Réécritures proposées : une carte par section, relues avant écriture. -->
+    <div id="gap-edits"></div>
   </div>
 </div>
 
