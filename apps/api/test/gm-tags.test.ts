@@ -222,3 +222,66 @@ describe("stripGmTags / extractGmEvents", () => {
     });
   });
 });
+
+describe("un « > » dans un attribut ne casse plus la balise", () => {
+  // Relevé en session : le MJ a écrit « appliqué surface -> contact » dans
+  // bonuses. Ce '>' fermait la balise aux yeux du parseur — plus aucun jet
+  // n'était demandé, et le balisage brut s'affichait au milieu de la fiction.
+  const TAG =
+    '<roll reason="sentir la corruption du sceau" character="Yuna Thao" ' +
+    'difficulty="normal" stance="disadvantage" dice="2" ' +
+    'bonuses="ability: sigils sur une surface, appliqué surface -> contact" ' +
+    'skills="sigils"/>';
+
+  it("demande bien le jet, et ne montre rien au joueur", () => {
+    const parser = new GmStreamParser();
+    const a = parser.feed("Sous sa main, la pierre se refroidit. " + TAG);
+    const b = parser.flush();
+    const texte = a.text + b.text;
+    const events = [...a.events, ...b.events];
+
+    expect(texte).toBe("Sous sa main, la pierre se refroidit. ");
+    expect(texte).not.toContain("<roll");
+    expect(events).toHaveLength(1);
+    expect(events[0]).toMatchObject({
+      type: "roll_request",
+      character: "Yuna Thao",
+    });
+  });
+
+  it("tient aussi quand la balise arrive en plusieurs morceaux", () => {
+    const parser = new GmStreamParser();
+    let texte = "";
+    const events: unknown[] = [];
+    for (const bout of [TAG.slice(0, 40), TAG.slice(40, 150), TAG.slice(150)]) {
+      const r = parser.feed(bout);
+      texte += r.text;
+      events.push(...r.events);
+    }
+    const f = parser.flush();
+    texte += f.text;
+    events.push(...f.events);
+
+    expect(texte).toBe("");
+    expect(events).toHaveLength(1);
+  });
+
+  it("jette une balise connue mais malformée plutôt que de l'afficher", () => {
+    const parser = new GmStreamParser();
+    const a = parser.feed('Il avance. <souffle delta="pas un nombre"/> Puis s\'arrête.');
+    const b = parser.flush();
+    const texte = a.text + b.text;
+
+    expect(texte).not.toContain("<souffle");
+    expect(texte).not.toContain("delta=");
+    expect(texte).toContain("Il avance.");
+    expect(texte).toContain("Puis s\'arrête.");
+  });
+
+  it("laisse passer un « < » ordinaire de la prose", () => {
+    const parser = new GmStreamParser();
+    const a = parser.feed("Le sceau fait moins de 3 < 5 empans.");
+    const b = parser.flush();
+    expect(a.text + b.text).toBe("Le sceau fait moins de 3 < 5 empans.");
+  });
+});

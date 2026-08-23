@@ -298,6 +298,8 @@ capacité écrits sur la fiche — même partiellement, même sur un registre so
 plutôt que physique — le bonus est dû. Un jet à 1 dé est réservé aux actions
 qui ne doivent rien à la fiche. Le serveur recalcule la poignée depuis
 bonuses : un dice qui ne correspond pas à tes bonus ne sera pas suivi.
+N'écris JAMAIS de < ni de > dans une valeur d'attribut (pas de « -> », pas de
+« => ») : quelques mots par source suffisent.
 - skills : nomme les compétences ou atouts engagés (affichage) ; leur palier
   décide s'il faut un jet, pas combien de dés (voir plus bas).
 L'issue est binaire : réussite ou échec, avec critique sur 6 et sur 1. Chaque

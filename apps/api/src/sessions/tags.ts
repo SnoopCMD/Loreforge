@@ -71,28 +71,45 @@ export interface ParsedChunk {
 // retenir indéfiniment le flux sur une fausse balise).
 const MAX_TAG_LEN = 400;
 
+/**
+ * Un pas dans le corps d'une balise : soit une valeur entre guillemets, soit
+ * un caractère ordinaire.
+ *
+ * Sauter les attributs avec `[^>]*` paraissait suffisant — jusqu'à ce que le
+ * MJ écrive « appliqué surface -> contact » dans `bonuses`. Ce '>' fermait la
+ * balise aux yeux du parseur : plus AUCUN jet n'était demandé, et le balisage
+ * brut s'affichait en clair au milieu de la fiction. Un '>' entre guillemets
+ * appartient à la valeur, pas à la balise.
+ */
+const A = '(?:"[^"]*"|[^>"])';
+
 const OPEN_INVENTION = /^<invention\s+axis="([^"]*)"\s*>/;
 // term obligatoire ; kind optionnel, dans n'importe quel ordre.
-const OPEN_LORE =
-  /^<lore(?=\s)(?=[^>]*\bterm="([^"]*)")(?:[^>]*\bkind="([^"]*)")?[^>]*>/;
+const OPEN_LORE = new RegExp(
+  `^<lore(?=\\s)(?=${A}*\\bterm="([^"]*)")(?:${A}*\\bkind="([^"]*)")?${A}*>`,
+);
 // Attributs libres, dans n'importe quel ordre : reason (obligatoire de fait),
 // difficulty, stance, dice, skills. Tout attribut inconnu est ignoré.
-const ROLL = /^<roll(?=\s)([^>]*?)\/>/;
+const ROLL = new RegExp(`^<roll(?=\\s)(${A}*?)/>`);
 const ATTR = /(\w+)="([^"]*)"/g;
 // delta obligatoire ; character optionnel (table), dans n'importe quel ordre.
-const SOUFFLE =
-  /^<souffle(?=\s)(?=[^>]*\bdelta="([+-]?\d+)")(?:[^>]*\bcharacter="([^"]*)")?[^>]*\/>/;
+const SOUFFLE = new RegExp(
+  `^<souffle(?=\\s)(?=${A}*\\bdelta="([+-]?\\d+)")(?:${A}*\\bcharacter="([^"]*)")?${A}*/>`,
+);
 const SCENE_BREAK = /^<scene_break\s*\/>/;
 // name et tier obligatoires ; note et character optionnels, ordre libre.
 // Tous les attributs sont capturés par lookahead : consommer `note` puis
 // `character` en séquence perdait `character` dès qu'il était écrit en
 // premier — et le MJ écrit ses balises dans l'ordre qui lui chante.
-const SKILL =
-  /^<skill(?=\s)(?=[^>]*\bname="([^"]*)")(?=[^>]*\btier="([^"]*)")(?=(?:[^>]*\bnote="([^"]*)")?)(?=(?:[^>]*\bcharacter="([^"]*)")?)[^>]*\/>/;
+const SKILL = new RegExp(
+  `^<skill(?=\\s)(?=${A}*\\bname="([^"]*)")(?=${A}*\\btier="([^"]*)")` +
+    `(?=(?:${A}*\\bnote="([^"]*)")?)(?=(?:${A}*\\bcharacter="([^"]*)")?)${A}*/>`,
+);
 const FAIT = /^<fait\s+texte="([^"]*)"\s*\/>/;
 // value obligatoire ; order optionnel (séquentiel), ordre libre.
-const TURN_MODE =
-  /^<turn_mode(?=\s)(?=[^>]*\bvalue="([^"]*)")(?:[^>]*\border="([^"]*)")?[^>]*\/>/;
+const TURN_MODE = new RegExp(
+  `^<turn_mode(?=\\s)(?=${A}*\\bvalue="([^"]*)")(?:${A}*\\border="([^"]*)")?${A}*/>`,
+);
 const CLOSE_INVENTION = "</invention>";
 const CLOSE_LORE = "</lore>";
 
@@ -107,13 +124,23 @@ const TAG_NAMES = [
   "turn_mode",
 ];
 
+/** Y a-t-il un '>' HORS guillemets ? Dedans, il appartient à la valeur. */
+function fermeHorsGuillemets(body: string): boolean {
+  let dansGuillemets = false;
+  for (const c of body) {
+    if (c === '"') dansGuillemets = !dansGuillemets;
+    else if (c === ">" && !dansGuillemets) return true;
+  }
+  return false;
+}
+
 /** Le début de buffer (commençant par '<') peut-il encore devenir une balise ? */
 function couldBeTag(buf: string): boolean {
   const body = buf.slice(1);
   for (const name of TAG_NAMES) {
     if (name.startsWith(body)) return true; // ex. "<inv"
     // Nom complet, attributs en cours : plausible tant que '>' absent.
-    if (body.startsWith(name) && !body.includes(">")) return true;
+    if (body.startsWith(name) && !fermeHorsGuillemets(body)) return true;
   }
   return false;
 }
@@ -127,6 +154,12 @@ function partialSuffixLen(s: string, tag: string): number {
   return 0;
 }
 
+/** Nom de balise connu en tête, quelle que soit la suite. */
+function nomDeBalise(buf: string): boolean {
+  const body = buf.slice(1);
+  return TAG_NAMES.some((name) => body.startsWith(name));
+}
+
 type TagMatch = {
   length: number;
   event?: GmTagEvent;
@@ -134,7 +167,7 @@ type TagMatch = {
   openLore?: { term: string; kind: string };
 };
 
-function matchTag(buf: string): TagMatch | "incomplete" | null {
+function matchTag(buf: string): TagMatch | "incomplete" | "cassee" | null {
   let m: RegExpMatchArray | null;
   if ((m = buf.match(OPEN_INVENTION))) {
     return { length: m[0].length, openInvention: m[1] };
@@ -200,7 +233,15 @@ function matchTag(buf: string): TagMatch | "incomplete" | null {
       .filter(Boolean);
     return { length: m[0].length, event: { type: "turn_mode", value, order } };
   }
-  if (buf.length <= MAX_TAG_LEN && couldBeTag(buf)) return "incomplete";
+  if (couldBeTag(buf)) {
+    // Encore en cours d'écriture : on attend la suite du flux. Passé la borne,
+    // c'est qu'elle ne se refermera jamais.
+    return buf.length <= MAX_TAG_LEN ? "incomplete" : "cassee";
+  }
+  // Nom de balise connu, mais forme invalide (guillemet manquant, attribut
+  // tronqué...). Une narration ne commence jamais par « roll » ou « souffle » :
+  // c'est du balisage raté, et le joueur ne doit PAS le lire.
+  if (nomDeBalise(buf)) return "cassee";
   return null;
 }
 
@@ -208,6 +249,8 @@ export class GmStreamParser {
   private buf = "";
   private invention: { axis: string; content: string } | null = null;
   private lore: { term: string; kind: string; content: string } | null = null;
+  /** Balise ratée en cours : on la jette jusqu'à sa fermeture. */
+  private jetee = false;
 
   /** Ingère un delta de streaming, rend le texte sûr et les événements. */
   feed(chunk: string): ParsedChunk {
@@ -225,6 +268,17 @@ export class GmStreamParser {
     const events: GmTagEvent[] = [];
 
     while (this.buf.length > 0) {
+      if (this.jetee) {
+        const fin = this.buf.indexOf(">");
+        if (fin < 0) {
+          this.buf = "";
+          break;
+        }
+        this.buf = this.buf.slice(fin + 1);
+        this.jetee = false;
+        continue;
+      }
+
       if (this.invention) {
         const close = this.buf.indexOf(CLOSE_INVENTION);
         if (close >= 0) {
@@ -278,6 +332,12 @@ export class GmStreamParser {
         if (!final) break; // attendre la suite du flux
         text += "<";
         this.buf = this.buf.slice(1);
+        continue;
+      }
+      if (match === "cassee") {
+        // Jetée, jamais montrée : mieux vaut perdre une balise que déverser du
+        // balisage dans la fiction — c'est ce qui est arrivé en session.
+        this.jetee = true;
         continue;
       }
       if (match === null) {

@@ -12,6 +12,7 @@ import {
   paletteCssVars,
   paletteVar,
   patchIsMine,
+  playerEntryText,
   choiceLabel,
   extractActionChipsFor,
   extractActionGroups,
@@ -406,5 +407,32 @@ describe("options par personnage — chacun reçoit les siennes", () => {
     const dialogue = ["— Ne regarde pas.", "— Trop tard."].join("\n");
     expect(extractActionGroups(dialogue)).toEqual([]);
     expect(extractActionChipsFor(dialogue, "Mira")).toEqual([]);
+  });
+});
+
+describe("playerEntryText — le joueur relit ses phrases, pas le prompt", () => {
+  it("retire l'en-tête et la consigne destinés au MJ", () => {
+    const stocke = [
+      "== ACTIONS DU TOUR ==",
+      "Yuna Thao : je touche le sceau",
+      "",
+      "Yumi Takahashi : je le taquine un peu",
+      "",
+      "Résous ces actions dans une seule narration, en donnant sa place à chacun.",
+    ].join("\n");
+
+    expect(playerEntryText(stocke)).toBe(
+      "Yuna Thao : je touche le sceau\n\nYumi Takahashi : je le taquine un peu",
+    );
+  });
+
+  it("ne touche pas à une saisie solo", () => {
+    expect(playerEntryText("j'avance vers la faille")).toBe(
+      "j'avance vers la faille",
+    );
+  });
+
+  it("rend vide un tour de continuation, qui n'a rien à montrer", () => {
+    expect(playerEntryText("")).toBe("");
   });
 });

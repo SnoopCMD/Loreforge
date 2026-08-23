@@ -9,6 +9,7 @@ import {
   choiceLabel, createSpeechSegmenter, esc, extractActionChipsFor,
   extractActionGroups, labelFor, mdInline,
   mdToHtml, normalizeRoll, paletteCssVars, paletteVar, patchIsMine,
+  playerEntryText,
   rollBonusText, rollPoolSize, stripLore,
 } from "/core.js";
 import { openSseStream, openTableSocket } from "/transport.js";
@@ -3572,9 +3573,12 @@ function showSceneOverlay(title) {
 // — Rendu du fil —
 
 function addPlayerEntry(text) {
+  const propre = playerEntryText(text);
+  // Un tour de continuation après un jet n'a rien à montrer.
+  if (propre === "") return;
   const div = document.createElement("div");
   div.className = "player chunk";
-  div.textContent = text;
+  div.textContent = propre;
   $("feed").appendChild(div);
   scrollFeed(true);
 }

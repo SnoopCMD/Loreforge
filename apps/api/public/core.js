@@ -195,6 +195,27 @@ export const GENERIC_FIELDS = [
   { key: "hook", label: "Accroche narrative", type: "text", required: false, options: [], suggestions: [], hint: "Ce que le personnage veut, fuit ou cache." },
 ];
 
+// ── Ce que le joueur relit de son propre tour ────────────────────────────
+
+/**
+ * Le texte d'un tour, tel qu'il doit s'AFFICHER.
+ *
+ * À une table, ce qui est stocké est le message destiné au MJ : un en-tête
+ * « == ACTIONS DU TOUR == » et la consigne de résolution encadrent les actions.
+ * C'est l'échafaudage du prompt, pas la partie — le relire dans le fil donnait
+ * aux joueurs le mode d'emploi du narrateur au lieu de leurs propres phrases.
+ */
+export function playerEntryText(raw) {
+  const texte = String(raw ?? "");
+  if (!texte.startsWith("== ACTIONS DU TOUR ==")) return texte;
+  return texte
+    .split(/\r?\n/)
+    .slice(1)
+    .filter((ligne) => !/^Résous ces actions/.test(ligne.trim()))
+    .join("\n")
+    .trim();
+}
+
 // ── Adressage de l'état par personnage (table partagée) ──────────────────
 
 /**
