@@ -509,7 +509,9 @@ describe("lot 7.2 — clôture d'acte et reprise", () => {
       await state.storage.put("turn_count_stored", 34 * 2);
     });
 
-    mockAnthropicStream(["Le tour de trop. Que fais-tu ?"]);
+    mockAnthropicStream([
+      "Le tour de trop.\n- J'avance encore\n- Je fais demi-tour",
+    ]);
     mockAnthropicText("# Acte forcé\n\n- résumé de clôture forcée");
     const events = await readSse(
       await post(cookie, `/api/sessions/${sessionId}/turn`, {
@@ -798,7 +800,9 @@ describe("M7 — défauts relevés en relecture", () => {
       await state.storage.put("turn_count_stored", 34 * 2);
     });
 
-    mockAnthropicStream(["Le dernier tour de l'acte. Que fais-tu ?"]);
+    mockAnthropicStream([
+      "Le dernier tour de l'acte.\n- Je pousse la porte\n- Je recule",
+    ]);
     mockAnthropicText("# Acte plein\n\n- résumé");
     const events = await readSse(
       await post(cookie, `/api/sessions/${sessionId}/turn`, {

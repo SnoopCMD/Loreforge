@@ -260,11 +260,11 @@ describe("buildTurnContext (état volatile par tour)", () => {
 });
 
 describe("turnEndsOpen (garde-fou §7)", () => {
-  it("accepte une question dans les 2 dernières phrases", () => {
-    expect(turnEndsOpen("La porte grince. Que fais-tu ?")).toBe(true);
+  it("refuse une question seule : elle ne donne aucun bouton au joueur", () => {
+    expect(turnEndsOpen("La porte grince. Que fais-tu ?")).toBe(false);
     expect(
       turnEndsOpen("Tu hésites. La brume avance. Oses-tu la traverser ?"),
-    ).toBe(true);
+    ).toBe(false);
   });
 
   it("accepte une fin sur ≥ 2 options listées", () => {
@@ -281,12 +281,18 @@ describe("turnEndsOpen (garde-fou §7)", () => {
     expect(turnEndsOpen("Une seule option.\n- Avancer")).toBe(false);
   });
 
-  it("une question trop en amont ne suffit pas", () => {
+  it("une question trop en amont ne suffit pas non plus", () => {
     expect(
       turnEndsOpen(
         "Tu te demandes où aller ? Tu marches. Le silence retombe sur la salle.",
       ),
     ).toBe(false);
+  });
+
+  it("accepte le bloc même quand une question le précède", () => {
+    expect(
+      turnEndsOpen("Que fais-tu ?\n- Je pousse la porte\n- Je recule"),
+    ).toBe(true);
   });
 });
 

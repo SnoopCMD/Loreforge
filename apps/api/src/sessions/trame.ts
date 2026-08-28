@@ -31,9 +31,15 @@ const TRAMES_OUTPUT_SCHEMA = {
   required: ["trames"],
   properties: {
     trames: {
+      // Les sorties structurées n'acceptent minItems qu'à 0 ou 1 et ignorent
+      // maxItems (cf. MOODBOARD_OUTPUT_SCHEMA) : un schéma exigeant deux
+      // éléments est REFUSÉ par l'API, et l'appel échouait avant même de
+      // générer quoi que ce soit. Le « exactement deux » est porté par le
+      // prompt et vérifié par parseTrames.
       type: "array",
-      minItems: TRAME_SUGGESTIONS,
-      maxItems: TRAME_SUGGESTIONS,
+      minItems: 1,
+      description:
+        "Exactement deux fils rouges, différents l'un de l'autre, une phrase chacun.",
       items: { type: "string" },
     },
   },
@@ -55,8 +61,8 @@ export function buildTramePrompt(input: TrameContext): string {
       : input.canonMd;
   const format = FORMATS[input.format] ?? input.format;
   const qui = input.characters.length
-    ? `Personnages à la table : ${input.characters.join(", ")}. Les deux fils rouges doivent leur donner quelque chose à faire.`
-    : "Les personnages ne sont pas encore choisis : reste ouvert sur qui les incarnera.";
+    ? `Personnages incarnés à cette table : ${input.characters.join(", ")}. Chacun des deux fils rouges doit donner à CES personnages une raison d'agir — une place dans l'histoire, pas un rôle de spectateur.`
+    : "Personne n'est encore assis : écris des fils rouges qu'un personnage encore à créer pourra épouser, sans présumer de qui il sera.";
 
   return `Propose ${TRAME_SUGGESTIONS} fils rouges possibles pour une partie de jeu de rôle qui démarre dans l'univers « ${input.bibleTitle} ».
 

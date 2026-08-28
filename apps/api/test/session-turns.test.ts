@@ -166,14 +166,14 @@ describe("lot 8.5 — le solo ne subit aucune latence ajoutée", () => {
       format: "oneshot",
     });
     const { session_id } = (await createRes.json()) as { session_id: string };
-    mockAnthropicStream(["Scène 1. Que fais-tu ?"]);
+    mockAnthropicStream(["Scène 1.\n- Je pousse la porte\n- J'écoute"]);
     await (
       await post(cookie, `/api/sessions/${session_id}/setup`, { answers: [] })
     ).text();
 
     const capture = captureAnthropicBody();
     try {
-      mockAnthropicStream(["Suite. Que fais-tu ?"]);
+      mockAnthropicStream(["Suite.\n- Je continue\n- Je m'arrête"]);
       await (
         await post(cookie, `/api/sessions/${session_id}/turn`, {
           player_input: "je pousse la porte",
@@ -209,7 +209,10 @@ describe("lot 8.5 — régime simultané", () => {
     const capture = captureAnthropicBody();
     let texte = "";
     try {
-      mockAnthropicStream(["Kaelen force, Mira couvre. Que faites-vous ?"]);
+      mockAnthropicStream([
+        "Kaelen force, Mira couvre.\n\nKaelen :\n- Je pousse plus fort\n" +
+          "- Je m'arrête\n\nMira :\n- Je surveille le couloir\n- Je recule",
+      ]);
       texte = await (
         await post(joueur, `/api/sessions/${sessionId}/turn`, {
           player_input: "je couvre le couloir",

@@ -7,7 +7,7 @@ import {
   GENERIC_FIELDS, OUTCOME_LABELS, PALETTE_KEYS, PALETTE_LABELS, STANCE_LABELS,
   STATUS_LABELS,
   choiceLabel, createSpeechSegmenter, esc, extractActionChipsFor,
-  extractActionGroups, labelFor, mdInline,
+  extractActionGroups, labelFor, mdInline, plainLabel,
   mdToHtml, normalizeRoll, paletteCssVars, paletteVar, patchIsMine,
   playerEntryText,
   rollBonusText, rollPoolSize, stripLore,
@@ -3669,11 +3669,14 @@ $("trame-suggest").addEventListener("click", async () => {
   btn.disabled = false;
   if (!res.ok) {
     const err = await res.json().catch(() => ({}));
+    const raisons = {
+      trame_ai_not_configured: "Les suggestions ne sont pas configurées côté serveur.",
+      empty_bible: "Cette bible n’a pas encore de canon — importez ou rédigez son contenu d’abord.",
+      trame_suggest_failed: "Le MJ n’a rien trouvé cette fois — réessayez, ou écrivez la vôtre.",
+    };
     box.innerHTML = "";
     $("setup-msg").textContent =
-      err.error === "trame_ai_not_configured"
-        ? "Les suggestions ne sont pas configurées côté serveur."
-        : "Aucune piste pour l’instant — écrivez la vôtre.";
+      raisons[err.error] || "Aucune piste pour l’instant — écrivez la vôtre.";
     $("setup-msg").className = "msg";
     return;
   }
@@ -4420,8 +4423,10 @@ function stripChoiceBlock(gmEl, gmText) {
   const groupes = extractActionGroups(gmText);
   if (!groupes.length) return [];
 
-  // On ne retire que ce qu'on a réellement reconnu, jamais un dialogue.
-  const labels = new Set(groupes.flatMap((g) => g.chips));
+  // On ne retire que ce qu'on a réellement reconnu, jamais un dialogue. La
+  // comparaison se fait sur le texte NU : le flux brut porte encore ses
+  // astérisques quand le paragraphe rendu, lui, les a déjà changés en <b>.
+  const labels = new Set(groupes.flatMap((g) => g.chips).map(plainLabel));
   const noms = new Set(
     groupes
       .filter((g) => g.name)
@@ -4437,7 +4442,7 @@ function stripChoiceBlock(gmEl, gmText) {
   for (let i = paras.length - 1; i >= 0; i--) {
     const texte = paras[i].textContent;
     const label = choiceLabel(texte);
-    if ((label !== null && labels.has(label)) || estEntete(texte)) {
+    if ((label !== null && labels.has(plainLabel(label))) || estEntete(texte)) {
       paras[i].remove();
       continue;
     }

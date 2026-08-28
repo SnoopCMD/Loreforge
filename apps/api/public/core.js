@@ -405,6 +405,23 @@ export function choiceLabel(line) {
   return m ? m[1].replace(/\s*[;.]$/, "") : null;
 }
 
+/**
+ * Le texte NU d'une option : sans marqueurs Markdown, sans lore, espaces
+ * normalisés. Indispensable pour comparer une option extraite du flux BRUT
+ * (« - Tu inspectes la bobine *"C.O.R."* ? ») au paragraphe déjà RENDU dans
+ * le DOM, dont textContent a perdu les astérisques. Sans ça, toute option
+ * portant du gras ou de l'italique échappait au retrait et s'affichait deux
+ * fois : une fois dans le récit, une fois en bloc de suggestions.
+ */
+export function plainLabel(s) {
+  return stripLore(String(s))
+    .replace(/\*\*([^*]+)\*\*/g, "$1")
+    .replace(/\*([^*]+)\*/g, "$1")
+    .replace(/_([^_]+)_/g, "$1")
+    .replace(/\s+/g, " ")
+    .trim();
+}
+
 /** En-tête d'un bloc d'options : « Mira : » — court, sans ponctuation. */
 const NAME_HEADER = /^([^:\n]{1,40}?)\s*:$/;
 

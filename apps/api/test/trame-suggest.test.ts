@@ -169,7 +169,7 @@ describe("buildTramePrompt", () => {
       format: "oneshot",
       characters: [],
     });
-    expect(prompt).toContain("pas encore choisis");
+    expect(prompt).toContain("Personne n'est encore assis");
     expect(prompt).toContain("one-shot");
   });
 
@@ -181,6 +181,6 @@ describe("buildTramePrompt", () => {
       characters: ["Kael", "Mira"],
     });
     expect(prompt).toContain("Kael, Mira");
-    expect(prompt).not.toContain("pas encore choisis");
+    expect(prompt).not.toContain("Personne n'est encore assis");
   });
 });

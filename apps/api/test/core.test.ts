@@ -17,6 +17,7 @@ import {
   extractActionChipsFor,
   extractActionGroups,
   matchCharacterName,
+  plainLabel,
   rollBonusText,
   rollPoolSize,
   // @ts-expect-error — module JS servi tel quel au front, sans types.
@@ -408,6 +409,35 @@ describe("options par personnage — chacun reçoit les siennes", () => {
     const dialogue = ["— Ne regarde pas.", "— Trop tard."].join("\n");
     expect(extractActionGroups(dialogue)).toEqual([]);
     expect(extractActionChipsFor(dialogue, "Mira")).toEqual([]);
+  });
+});
+
+// Le front retire du récit les lignes d'options avant de les rendre en
+// boutons. La comparaison se faisait sur le texte BRUT du flux d'un côté et
+// sur le texte RENDU du DOM de l'autre : dès qu'une option portait du gras ou
+// de l'italique, les deux ne coïncidaient plus, rien n'était retiré, et le
+// joueur voyait ses options deux fois — dans le récit puis en boutons.
+describe("plainLabel — comparer le flux brut au DOM déjà rendu", () => {
+  it("efface les marqueurs que le rendu a déjà consommés", () => {
+    expect(plainLabel("Tu inspectes la bobine *\"C.O.R.\"* ?")).toBe(
+      'Tu inspectes la bobine "C.O.R." ?',
+    );
+    expect(plainLabel("**Il donne les noms** — une piste")).toBe(
+      "Il donne les noms — une piste",
+    );
+    expect(plainLabel("un _souffle_ tissé")).toBe("un souffle tissé");
+  });
+
+  it("fait coïncider l'option du flux et le texte du paragraphe rendu", () => {
+    const brut = "Je sens s'il y a quelque chose d'*informé* dedans ?";
+    const rendu = "Je sens s'il y a quelque chose d'informé dedans ?"; // textContent
+    expect(plainLabel(brut)).toBe(plainLabel(rendu));
+  });
+
+  it("normalise les espaces sans toucher au texte", () => {
+    expect(plainLabel("  Je recule   dans la ruelle  ")).toBe(
+      "Je recule dans la ruelle",
+    );
   });
 });
 

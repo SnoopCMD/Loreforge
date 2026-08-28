@@ -359,11 +359,24 @@ pour le joueur — ne le recopie jamais, n'y fais jamais référence expliciteme
 
 == STYLE DE NARRATION ==
 - Scènes courtes et cinématiques.
-- RÈGLE NON NÉGOCIABLE — fin de tour : chaque tour DOIT se terminer soit par
-  une question ouverte explicite adressée au joueur, soit par 2-3 options
-  concrètes numérotées ou à puces. JAMAIS sur une simple description ou une
-  scène qui « retombe » sans relance. La seule exception est une action risquée
-  suspendue sur <roll .../> (l'issue devient alors la relance).
+- RÈGLE NON NÉGOCIABLE — fin de tour : chaque tour DOIT se terminer par un
+  bloc de 2-3 options à puces, et par rien d'autre après. JAMAIS sur une
+  simple description, jamais sur une scène qui « retombe », jamais sur une
+  question ouverte seule. La seule exception est une action risquée suspendue
+  sur <roll .../> : l'issue du jet fait la relance, et le bloc revient au tour
+  suivant.
+- UNE OPTION EST UNE RÉPONSE DU JOUEUR, écrite comme il l'écrirait lui-même :
+  à la PREMIÈRE PERSONNE et au présent. « Je pose la fiole sur le comptoir et
+  je demande qui l'a vendue. » Jamais « Tu poses la fiole… » (c'est toi qui
+  parles alors, pas lui), jamais un infinitif (« Poser la fiole »).
+- UNE OPTION NE CONCERNE QUE LE PERSONNAGE JOUEUR. Ce qu'un PNJ décide, dit,
+  concède ou révèle ne se propose pas : « Il donne les noms des contrôleurs »
+  ou « Elle hésite avant de répondre » ne sont PAS des options — ce sont des
+  issues, et c'est à toi de les narrer une fois que le joueur aura agi. Le
+  joueur ne joue qu'un seul personnage : le sien.
+- N'écris les options QU'UNE FOIS, dans ce bloc final. Ne les annonce pas dans
+  la prose qui précède, même reformulées : elles s'afficheraient deux fois,
+  une fois dans le récit et une fois en boutons.
 - Fais vivre les PNJ canon avec leurs motivations écrites.
 - Jamais de contradiction avec le canon ni avec les faits établis en session.
 - Réponds en français, uniquement la narration (plus les balises prévues).`;
@@ -412,9 +425,14 @@ Kaelen :
 
 Le nom seul suivi de deux-points, puis ses options à puces : chaque joueur ne
 reçoit QUE le bloc à son nom. Écris ce nom EXACTEMENT comme le CONTEXTE DU TOUR
-te le donne — c'est lui qui décide à qui vont les options. Une seule liste commune obligerait chacun à
-chercher sa ligne parmi celles des autres. Une question ouverte adressée à
-toute la table reste possible à la place — mais jamais un mélange des deux.
+te le donne — c'est lui qui décide à qui vont les options. Une seule liste
+commune obligerait chacun à chercher sa ligne parmi celles des autres.
+
+Les trois règles du solo tiennent ici aussi, et n'admettent pas d'exception :
+première personne (« J'écoute derrière la porte »), actions du personnage
+nommé UNIQUEMENT — jamais la réaction d'un PNJ — et rien de tout cela annoncé
+dans la prose qui précède. Un bloc par personnage pouvant agir, à chaque tour :
+une question ouverte ne remplace pas les blocs.
 
 == RÉGIME DE TOUR ==
 C'est TOI qui décides comment le tour se résout, parce que tu es le seul à
@@ -567,7 +585,8 @@ export function buildSetupMessage(
 ${qa || "(pas de questions de mise en place)"}
 
 Ouvre la scène 1 : pose le décor, introduis le personnage joueur, termine
-par une question ouverte ou 2-3 options concrètes.`;
+par un bloc de 2-3 options à puces à la première personne, comme à chaque
+tour.`;
 }
 
 // ── Garde-fou de fin de tour (§7) ─────────────────────────────────────────
@@ -576,33 +595,36 @@ par une question ouverte ou 2-3 options concrètes.`;
 const OPTION_LINE = /^(?:[-–—•*]|\d{1,2}[.)])\s+\S/;
 
 /**
- * Le tour se termine-t-il « ouvert » ? Vrai si les 2 dernières phrases posent
- * une question, OU si la narration se clôt sur ≥ 2 options listées. Sert de
- * filet serveur : sinon on relance le modèle pour une vraie relance.
+ * Le tour se termine-t-il sur un vrai bloc d'options ? Sert de filet serveur :
+ * sinon on relance le modèle pour obtenir le bloc manquant.
  * Reçoit la narration VISIBLE (balises déjà retirées).
+ *
+ * Une question ouverte ne suffit plus. Elle suffisait avant, et le joueur se
+ * retrouvait un tour sur deux sans aucun bouton — face à un « Que fais-tu ? »
+ * qu'il fallait rédiger de zéro sur un téléphone.
  */
 export function turnEndsOpen(narration: string): boolean {
   const text = narration.trim();
   if (!text) return true; // rien à relancer (cas d'erreur amont)
 
-  // Bloc d'options en fin de narration.
+  // Bloc d'options en fin de narration : la seule fin de tour acceptée.
   const lines = text.split(/\r?\n/).map((l) => l.trim()).filter(Boolean);
   let opts = 0;
   for (let i = lines.length - 1; i >= 0; i--) {
     if (OPTION_LINE.test(lines[i])) opts++;
     else break;
   }
-  if (opts >= 2) return true;
-
-  // Point d'interrogation dans les 2 dernières phrases.
-  const sents = text.match(/[^.!?…]+[.!?…]+|\S[^.!?…]*$/g) ?? [text];
-  return sents.slice(-2).join(" ").includes("?");
+  return opts >= 2;
 }
 
 /** Second appel court quand un tour retombe fermé (filet, invisible au joueur). */
-export const RELANCE_MESSAGE = `Termine ce tour par une question ouverte ou 2-3 options concrètes pour le
-joueur, sans répéter la scène ni la narration précédente. Réponds uniquement
-avec cette relance (1 à 3 phrases), sans aucune balise.`;
+export const RELANCE_MESSAGE = `Termine ce tour par un bloc de 2-3 options à puces, sans répéter la scène ni
+la narration précédente. Chaque option est une réponse du joueur, à la première
+personne et au présent (« Je recule vers la ruelle »), et ne décrit qu'une
+action de SON personnage — jamais la réaction d'un PNJ. À une table, un bloc
+par personnage pouvant agir, précédé de son nom seul suivi de deux-points.
+Réponds uniquement avec ces options, sans phrase d'introduction et sans
+aucune balise.`;
 
 /** Dernier message utilisateur avant résumé de fin de session. */
 export const SUMMARY_MESSAGE = `La session est terminée. Rédige un résumé structuré en Markdown avec les
