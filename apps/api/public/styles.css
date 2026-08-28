@@ -1945,9 +1945,11 @@ body::after {
   }
   .session-screen .narration .player { font-size: 14.5px; }
 
-  .table-rail, .table-wait { margin: 3.1rem 1rem 0; }
-  .table-rail:not(.hidden) ~ .session-screen .narration,
-  .table-wait:not(.hidden) ~ .session-screen .narration { padding-top: 0.8rem; }
+  /* Le rail de table reste en tête de fil ; « qui attend-on ? » vit
+     désormais dans la barre de jeu, au ras de la saisie. */
+  .table-rail { margin: 3.1rem 1rem 0; }
+  .table-rail:not(.hidden) ~ .session-screen .narration { padding-top: 0.8rem; }
+  .playbar .table-wait { padding: 0.6rem 0.2rem 0; font-size: 0.85rem; }
 
   /* La saisie devient une pilule ; la fiche tient dans un bouton rond. */
   .playbar {
