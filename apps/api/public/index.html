@@ -37,6 +37,27 @@
   </nav>
 </div>
 
+<!-- Barre d'onglets mobile (langage « 1b ») : la navigation tient dans le
+     pouce hors session. « Moi » rouvre le drawer du compte. -->
+<nav class="tabbar hidden" id="tabbar" aria-label="Navigation principale">
+  <a class="tab" id="tab-play" href="#/play">
+    <svg viewBox="0 0 20 20" width="18" height="18" aria-hidden="true"><polygon points="5,3 17,10 5,17" fill="none" stroke="currentColor" stroke-width="1.6"/></svg>
+    <span>Jouer</span>
+  </a>
+  <a class="tab" id="tab-library" href="#/library">
+    <svg viewBox="0 0 20 20" width="18" height="18" aria-hidden="true"><rect x="3" y="3" width="5" height="14" fill="none" stroke="currentColor" stroke-width="1.6"/><rect x="11" y="3" width="5" height="14" fill="none" stroke="currentColor" stroke-width="1.6"/></svg>
+    <span>Bibles</span>
+  </a>
+  <a class="tab" id="tab-table" href="#/join">
+    <svg viewBox="0 0 20 20" width="18" height="18" aria-hidden="true"><circle cx="7" cy="8" r="3" fill="none" stroke="currentColor" stroke-width="1.6"/><circle cx="13" cy="12" r="3" fill="none" stroke="currentColor" stroke-width="1.6"/></svg>
+    <span>Table</span>
+  </a>
+  <button class="tab" id="tab-me" type="button" aria-controls="mobile-menu" aria-expanded="false">
+    <svg viewBox="0 0 20 20" width="18" height="18" aria-hidden="true"><circle cx="10" cy="10" r="7" fill="none" stroke="currentColor" stroke-width="1.6"/></svg>
+    <span>Moi</span>
+  </button>
+</nav>
+
 <!-- ── Landing ─────────────────────────────────────────────────────────── -->
 <section id="screen-landing" class="hidden">
   <div class="hero">
@@ -325,6 +346,13 @@
     <div id="character-fiche"></div>
   </div>
 
+  <!-- Mobile : le verbe de la bible est « Jouer », pas « Analyser ». La barre
+       reprend les deux gestes utiles sans faire remonter la page. -->
+  <div class="bible-actionbar" id="bible-actionbar">
+    <button type="button" id="bible-play-btn">Jouer</button>
+    <button type="button" class="ghost" id="bible-write-btn">✍️ Écrire</button>
+  </div>
+
 </section>
 
 <!-- ── Choix du personnage : deux portes (SPEC §6bis) ──────────────────── -->
@@ -436,11 +464,19 @@
 <!-- ── Écran de session ────────────────────────────────────────────────── -->
 <section id="screen-session" class="hidden">
   <!-- Mini-barre mobile : nom de scène + orbes toujours visibles (§8.3). -->
-  <div class="mini-band" id="mini-band" aria-hidden="true">
-    <span class="mini-scene" id="mini-scene"></span>
-    <span class="mini-orbs" id="mini-orbs"></span>
+  <div class="mini-band" id="mini-band">
+    <span class="mini-left">
+      <span class="mini-act mono" id="mini-act" aria-hidden="true"></span>
+      <span class="mini-scene" id="mini-scene"></span>
+    </span>
+    <span class="mini-right">
+      <span class="mini-orbs" id="mini-orbs" aria-hidden="true"></span>
+      <button type="button" class="mini-more" id="mini-more"
+        aria-controls="session-tools" aria-expanded="false"
+        aria-label="Outils de la session">⋯</button>
+    </span>
   </div>
-  <div class="row spread session-head">
+  <div class="row spread session-head" id="session-tools">
     <span id="session-bible" class="msg"></span>
     <span class="row">
       <button class="ghost hidden" id="voice-toggle" aria-pressed="false"
@@ -492,8 +528,12 @@
     </div>
     <div class="action-chips" id="action-chips"></div>
     <div class="inner">
-      <textarea id="player-input" rows="1" placeholder="Que fais-tu ?" aria-label="Votre action"></textarea>
-      <button id="send-btn">Agir</button>
+      <button type="button" class="fiche-round" id="fiche-round"
+        aria-controls="table-rail" title="Fiche &amp; Souffle">C</button>
+      <span class="input-pill">
+        <textarea id="player-input" rows="1" placeholder="Que fais-tu ?" aria-label="Votre action"></textarea>
+        <button id="send-btn"><span class="send-label">Agir</span><span class="send-arrow" aria-hidden="true">↑</span></button>
+      </span>
     </div>
   </div>
 </section>

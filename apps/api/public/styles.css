@@ -1733,3 +1733,267 @@ button.palette-card:hover { border-color: var(--arcane); }
 @media (prefers-reduced-motion: reduce) {
   .player-chip, .table-rail { transition: none; }
 }
+
+/* ═══════════════════════════════════════════════════════════════════════
+   Langage mobile « 1b » — le chrome s'efface, tout le reste est un geste.
+
+   Trois partis pris repris du design : un fond nébuleux qui dérive derrière
+   toute l'application, une seule barre d'état au lieu d'une barre d'outils,
+   et une navigation entièrement dans le pouce (onglets bas, pilule de
+   saisie, bouton rond vers la fiche).
+   ═══════════════════════════════════════════════════════════════════════ */
+
+/* ── Fond nébuleux (toutes tailles) ───────────────────────────────────── */
+
+body::before, body::after {
+  content: ""; position: fixed; inset: -15%; z-index: -1; pointer-events: none;
+}
+body::before {
+  background: radial-gradient(38% 30% at 25% 20%, rgba(124, 58, 237, 0.36), transparent 70%);
+  animation: lf-drift 26s ease-in-out infinite;
+}
+body::after {
+  background: radial-gradient(34% 26% at 78% 72%, rgba(103, 232, 249, 0.14), transparent 70%);
+  animation: lf-drift2 34s ease-in-out infinite;
+}
+@keyframes lf-drift {
+  0%, 100% { transform: none; }
+  50% { transform: translate3d(4%, 3%, 0) scale(1.08); }
+}
+@keyframes lf-drift2 {
+  0%, 100% { transform: none; }
+  50% { transform: translate3d(-5%, -4%, 0) scale(1.1); }
+}
+
+/* ── Onglets bas : invisibles tant qu'on n'est pas en petit écran ──────── */
+
+.tabbar { display: none; }
+
+/* ── Playbar : structure commune (le mobile la transforme en pilule) ──── */
+
+.playbar .input-pill { flex: 1; display: flex; gap: 0.6rem; align-items: flex-end; min-width: 0; }
+.fiche-round { display: none; }
+.send-arrow { display: none; }
+
+/* ── Barre d'action de la bible : mobile seulement ────────────────────── */
+
+.bible-actionbar { display: none; }
+
+/* ═══ Sous 820px : la déclinaison « 1b » ═══════════════════════════════ */
+
+@media (max-width: 820px) {
+
+  /* — Coquille : plus de barre haute, la navigation passe sous le pouce — */
+
+  .topbar { display: none; }
+
+  .tabbar {
+    position: fixed; left: 0; right: 0; bottom: 0; z-index: 45;
+    display: flex;
+    background: rgba(18, 8, 31, 0.94);
+    backdrop-filter: blur(8px);
+    border-top: 1px solid rgba(103, 232, 249, 0.18);
+    padding: 0.5rem 0.35rem calc(0.6rem + env(safe-area-inset-bottom, 0px));
+  }
+  .tabbar.hidden { display: none !important; }
+  .tab {
+    flex: 1; min-width: 0; min-height: 48px;
+    display: flex; flex-direction: column; align-items: center; gap: 0.3rem;
+    padding: 0.2rem 0;
+    background: none; border: 0; text-decoration: none;
+    color: var(--parchment-dim); cursor: pointer;
+  }
+  .tab span {
+    font-family: Cinzel, serif; font-size: 0.56rem; font-weight: 500;
+    letter-spacing: 0.1em; text-transform: uppercase;
+  }
+  .tab.active { color: var(--spirit); }
+
+  /* Le drawer « Moi » remonte du bas, près de l'onglet qui l'ouvre. */
+  .mobile-menu .mobile-nav {
+    top: auto; left: 0; right: 0; width: auto;
+    border-radius: 18px 18px 0 0;
+    border-top: 2px solid var(--spirit);
+    padding-bottom: calc(5.5rem + env(safe-area-inset-bottom, 0px));
+    animation: sheet-in 0.22s ease both;
+  }
+  @keyframes sheet-in { from { transform: translateY(30%); opacity: 0; } to { transform: none; opacity: 1; } }
+
+  /* Rien ne doit finir sous les onglets. */
+  .app { padding: 1rem 1.05rem calc(6.5rem + env(safe-area-inset-bottom, 0px)); }
+
+  /* — Titres de page : Cinzel lisible, sans capitales criardes — */
+
+  #screen-play > .row.spread > h2,
+  #screen-library > .row.spread > h2,
+  #screen-bible > .row.spread > h2 {
+    font-family: Cinzel, serif; font-size: 1.19rem; font-weight: 500;
+    letter-spacing: 0.05em; text-transform: none;
+    color: var(--parchment); margin: 0.2rem 0 0;
+  }
+
+  /* — Bibliothèque (2a) : vignette runique, statut, une carte = une ligne — */
+
+  .bible-card, .play-card {
+    flex-wrap: nowrap; align-items: center; gap: 0.85rem;
+    padding: 0.85rem 1rem; margin-bottom: 0.6rem;
+    border-radius: 14px;
+    background: rgba(42, 21, 72, 0.75);
+    border: 1px solid var(--line);
+  }
+  .bible-card:hover { transform: none; }
+  .bible-card .left { gap: 0.85rem; flex: 1; }
+  .bible-card .title, .play-card .title {
+    display: block; font-size: 1rem;
+    overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+  }
+  .bible-card .when { font-size: 0.78rem; margin-top: 0.1rem; }
+  .bible-card .card-right { flex: none; flex-wrap: nowrap; gap: 0.4rem; }
+  .bible-card .card-delete { min-height: 36px; opacity: 0.55; }
+  .status { font-size: 0.6rem; padding: 0.15rem 0.55rem; }
+
+  .import-drop { border-radius: 14px; }
+
+  /* — Détail bible (2b) : radar réduit, lu par la liste des scores — */
+
+  #screen-bible .bible-actions { gap: 0.4rem; }
+  #screen-bible .bible-actions > #writing-btn { display: none; }
+  .workspace { padding: 0.9rem 0 0; background: transparent; }
+  #richness-block .radar-wrap svg#radar { width: 190px; height: 180px; }
+  .global-score { font-size: 2.6rem; }
+
+  /* Les zones floues gardent la métaphore de rune : bordure gauche éteinte. */
+  .rune {
+    min-height: 44px; border: 1px solid var(--line); border-left: 3px solid var(--line);
+    border-radius: 0 10px 10px 0; padding: 0.6rem 0.9rem; font-size: 0.85rem;
+  }
+
+  .bible-actionbar {
+    position: fixed; left: 0; right: 0; bottom: 0; z-index: 46;
+    display: flex; gap: 0.5rem;
+    padding: 1.6rem 0.9rem calc(0.8rem + env(safe-area-inset-bottom, 0px));
+    background: linear-gradient(transparent, var(--void) 42%);
+    pointer-events: none;
+  }
+  .bible-actionbar.hidden { display: none !important; }
+  .bible-actionbar > button { pointer-events: auto; min-height: 48px; border-radius: 999px; }
+  #bible-play-btn {
+    flex: 1;
+    font-family: Cinzel, serif; font-size: 0.78rem;
+    letter-spacing: 0.12em; text-transform: uppercase;
+  }
+  #bible-write-btn { flex: none; padding: 0 1.1rem; font-size: 0.82rem; }
+
+  /* — Section (2c) : lecture d'abord, outils discrets — */
+
+  .ws-render { font-size: 0.94rem; line-height: 1.72; }
+  .ws-toolbar { gap: 0.35rem; }
+  .ws-sec-title { font-family: Cinzel, serif; font-size: 1.3rem; }
+
+  /* ═══ Session (1b) ═══════════════════════════════════════════════════ */
+
+  /* Une seule barre de statut : acte, scène, Souffle — le reste au débord. */
+  .mini-band {
+    padding: 0.4rem 0.9rem;
+    padding-top: calc(0.4rem + env(safe-area-inset-top, 0px));
+    background: linear-gradient(rgba(18, 8, 31, 0.95), rgba(18, 8, 31, 0.72));
+    border-bottom: 0;
+    transition: opacity 0.35s ease;
+  }
+  .mini-band .mini-left, .mini-band .mini-right {
+    display: flex; align-items: center; gap: 0.5rem; min-width: 0;
+  }
+  .mini-band .mini-right { flex: none; }
+  .mini-act { font-size: 0.6rem; letter-spacing: 0.14em; color: var(--arcane); flex: none; }
+  .mini-band .mini-scene { font-size: 0.69rem; color: rgba(243, 237, 228, 0.72); letter-spacing: 0.14em; }
+  .mini-more {
+    background: none; border: 0; padding: 0 0.15rem 0 0.6rem;
+    min-height: 34px; min-width: 30px;
+    color: var(--parchment-dim); font-size: 0.9rem; line-height: 1;
+  }
+  /* Le chrome s'efface pendant la lecture, revient au moindre geste. */
+  #screen-session.chrome-dim .mini-band { opacity: 0.14; }
+
+  /* La barre d'outils devient une feuille dépliée par « ⋯ ». */
+  #screen-session .session-head {
+    position: fixed; top: 0; left: 0; right: 0; z-index: 41;
+    max-width: none; max-height: 82vh; overflow-y: auto;
+    display: flex; flex-direction: column; align-items: stretch; gap: 0.6rem;
+    padding: calc(2.9rem + env(safe-area-inset-top, 0px)) 1rem 1rem;
+    background: var(--nebula);
+    border-radius: 0 0 18px 18px;
+    border-bottom: 1px solid var(--line);
+    box-shadow: 0 14px 40px rgba(0, 0, 0, 0.55);
+    transform: translateY(-102%);
+    transition: transform 0.25s ease;
+  }
+  #screen-session.tools-open .session-head { transform: none; }
+  #screen-session .session-head > .row {
+    flex-direction: column; align-items: stretch; gap: 0.45rem; width: 100%;
+  }
+  #screen-session .session-head button { width: 100%; text-align: center; }
+  /* Le bouton rond de la playbar rend celui-ci inutile. */
+  #screen-session .session-head #rail-toggle { display: none; }
+
+  /* Le récit occupe l'écran : pas de gouttière de conteneur, 24px de marge. */
+  .session-screen { padding: 0; gap: 0; }
+  .session-screen .narration {
+    max-width: none;
+    font-size: 15.5px; line-height: 1.78;
+    padding: 3.3rem 1.5rem calc(9rem + env(safe-area-inset-bottom, 0px));
+    color: rgba(243, 237, 228, 0.92);
+  }
+  .session-screen .narration .player { font-size: 14.5px; }
+
+  .table-rail, .table-wait { margin: 3.1rem 1rem 0; }
+  .table-rail:not(.hidden) ~ .session-screen .narration,
+  .table-wait:not(.hidden) ~ .session-screen .narration { padding-top: 0.8rem; }
+
+  /* La saisie devient une pilule ; la fiche tient dans un bouton rond. */
+  .playbar {
+    padding: 0 0.85rem calc(0.75rem + env(safe-area-inset-bottom, 0px));
+    background: linear-gradient(transparent, var(--void) 42%);
+  }
+  .playbar .action-chips { max-width: none; margin: 0; padding: 0.9rem 0 0.6rem; }
+  .playbar .action-chips .chip {
+    min-height: 40px; font-size: 0.78rem; border-radius: 999px; padding: 0 0.95rem;
+  }
+  .playbar .inner { max-width: none; gap: 0.5rem; align-items: center; }
+
+  .fiche-round {
+    display: flex; align-items: center; justify-content: center;
+    flex: none; width: 48px; height: 48px; min-height: 48px; padding: 0;
+    border-radius: 50%;
+    background: rgba(42, 21, 72, 0.9);
+    border: 1px solid var(--line);
+    color: var(--parchment-dim);
+    font-family: Cinzel, serif; font-size: 0.82rem; letter-spacing: 0.04em;
+  }
+  .fiche-round.on { border-color: var(--spirit); color: var(--spirit); }
+
+  .playbar .input-pill {
+    align-items: center; gap: 0.4rem;
+    min-height: 48px; padding: 0 0.35rem 0 1.05rem;
+    border-radius: 999px;
+    background: rgba(42, 21, 72, 0.92);
+    border: 1px solid var(--line);
+  }
+  .playbar textarea {
+    background: transparent; border: 0; border-radius: 0;
+    min-height: 2.6rem; max-height: 7.5rem; padding: 0.65rem 0;
+  }
+  .playbar textarea:focus-visible { outline: 0; }
+  .playbar .input-pill:focus-within { border-color: var(--spirit); }
+  #send-btn {
+    flex: none; width: 38px; height: 38px; min-height: 38px; padding: 0;
+    border-radius: 50%; font-size: 1rem; line-height: 1;
+  }
+  .send-label { display: none; }
+  .send-arrow { display: inline; }
+
+  .jump-bottom { bottom: calc(7.4rem + env(safe-area-inset-bottom, 0px)); }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  body::before, body::after { animation: none; }
+}

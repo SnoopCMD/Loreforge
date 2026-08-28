@@ -168,6 +168,7 @@ function showScreen(id) {
   if (!SESSION_SCREENS.has(id)) closeTableSocket();
   for (const s of SCREENS) $(s).classList.toggle("hidden", s !== id);
   $("topbar").classList.toggle("hidden", id === "screen-landing");
+  syncMobileChrome(id);
   clearInterval(pollTimer);
   pollTimer = null;
   if (typeof stopVoice === "function") stopVoice();
@@ -329,6 +330,7 @@ function menuOpen() {
 function toggleMenu(open) {
   $("mobile-menu").classList.toggle("hidden", !open);
   $("menu-btn").setAttribute("aria-expanded", String(open));
+  $("tab-me").setAttribute("aria-expanded", String(open));
   if (open) $("mobile-menu").querySelector("a").focus();
   else $("menu-btn").focus();
 }
@@ -344,6 +346,7 @@ document.addEventListener("keydown", (e) => {
 window.addEventListener("hashchange", () => {
   $("mobile-menu").classList.add("hidden");
   $("menu-btn").setAttribute("aria-expanded", "false");
+  $("tab-me").setAttribute("aria-expanded", "false");
 });
 $("menu-logout-btn").addEventListener("click", () => {
   toggleMenu(false);
@@ -4299,6 +4302,8 @@ function renderOrbs(container, { withLabel = true } = {}) {
 }
 
 function updateRail() {
+  renderMiniAct();
+  renderFicheRound();
   renderOrbs($("souffle-orbs"));
   // Mini-barre d'état mobile : les orbes restent visibles en permanence.
   renderOrbs($("mini-orbs"), { withLabel: false });
@@ -4329,6 +4334,7 @@ function updateRail() {
 }
 
 $("rail-toggle").addEventListener("click", () => {
+  toggleSessionTools(false);
   const layout = $("session-layout");
   if (matchMedia("(max-width: 820px)").matches) {
     layout.classList.toggle("rail-open");
@@ -5953,5 +5959,119 @@ function wireFeedback(bibleId, sessionId, list) {
 if ("serviceWorker" in navigator) {
   navigator.serviceWorker.register("/sw.js").catch(() => { /* non bloquant */ });
 }
+
+// ── Coquille mobile « 1b » ───────────────────────────────────────────────
+//
+// Le design mobile déplace toute la navigation sous le pouce : onglets bas
+// hors session, barre d'action propre à la bible, et en session une seule
+// barre d'état dont le « ⋯ » déplie les outils. Rien ici ne change le
+// comportement du bureau — seules la visibilité et l'état actif sont pilotés.
+
+/** Onglet actif pour un écran donné ("" = aucun, comme l'accueil). */
+const TAB_OF_SCREEN = {
+  "screen-play": "tab-play",
+  "screen-embark": "tab-play",
+  "screen-quiz": "tab-play",
+  "screen-forge": "tab-play",
+  "screen-library": "tab-library",
+  "screen-join": "tab-table",
+};
+
+// Écrans où la navigation par onglets n'a pas sa place : la partie (on ne
+// quitte pas une table par mégarde) et la bible, qui a sa propre barre.
+const NO_TABBAR = new Set([
+  "screen-landing", "screen-setup", "screen-lobby", "screen-session",
+  "screen-end", "screen-bible",
+]);
+
+function syncMobileChrome(id) {
+  $("tabbar").classList.toggle("hidden", NO_TABBAR.has(id));
+  const active = TAB_OF_SCREEN[id] || "";
+  for (const tab of $("tabbar").querySelectorAll(".tab")) {
+    tab.classList.toggle("active", tab.id === active);
+  }
+  $("bible-actionbar").classList.toggle("hidden", id !== "screen-bible");
+  // La feuille d'outils ne survit pas à un changement d'écran.
+  $("screen-session").classList.remove("tools-open", "chrome-dim");
+  $("mini-more").setAttribute("aria-expanded", "false");
+}
+
+$("tab-me").addEventListener("click", () => {
+  toggleMenu(!menuOpen());
+  $("tab-me").setAttribute("aria-expanded", String(menuOpen()));
+});
+
+// ── Bible : jouer ou écrire, sans remonter la page ───────────────────────
+
+$("bible-play-btn").addEventListener("click", () => {
+  const parts = location.hash.split("/");
+  const id = parts[1] === "bible" ? parts[2] : null;
+  if (id) location.hash = "#/bible/" + id + "/embark";
+});
+$("bible-write-btn").addEventListener("click", () => { $("writing-btn").click(); });
+
+// ── Session : la barre d'état et ses gestes ──────────────────────────────
+
+const ROMAN = ["I", "II", "III", "IV", "V", "VI", "VII", "VIII", "IX", "X"];
+
+/** Numéro de l'acte en cours, en chiffres romains (au-delà de X, en chiffres). */
+function actNumeral(index) {
+  return ROMAN[index] || String(index + 1);
+}
+
+function renderMiniAct() {
+  $("mini-act").textContent = actNumeral(S.actIndex);
+}
+
+/** Initiale du personnage sur le bouton rond — « C » à défaut, comme la fiche. */
+function renderFicheRound() {
+  const name = S.character && S.character.name ? S.character.name.trim() : "";
+  const btn = $("fiche-round");
+  btn.textContent = name ? name.slice(0, 1).toUpperCase() : "☾";
+  btn.setAttribute("aria-label",
+    name ? "Fiche de " + name + " & Souffle" : "Fiche & Souffle");
+}
+
+function toggleSessionTools(open) {
+  $("screen-session").classList.toggle("tools-open", open);
+  $("mini-more").setAttribute("aria-expanded", String(open));
+  // Les outils dépliés ont besoin du chrome : on annule l'effacement.
+  if (open) $("screen-session").classList.remove("chrome-dim");
+}
+
+$("mini-more").addEventListener("click", () => {
+  toggleSessionTools(!$("screen-session").classList.contains("tools-open"));
+});
+// Toucher le récit referme la feuille — c'est le geste attendu.
+$("feed").addEventListener("pointerdown", () => {
+  if ($("screen-session").classList.contains("tools-open")) toggleSessionTools(false);
+});
+
+// Le bouton rond de la playbar ouvre la fiche : même geste que « Fiche &
+// Souffle » du bureau, mais toujours atteignable.
+$("fiche-round").addEventListener("click", () => {
+  $("rail-toggle").click();
+  $("fiche-round").classList.toggle(
+    "on", $("session-layout").classList.contains("rail-open"));
+});
+
+// Le chrome s'efface dès qu'on descend dans le récit, revient si on remonte.
+let lastChromeY = 0;
+window.addEventListener("scroll", () => {
+  const screen = $("screen-session");
+  if (screen.classList.contains("hidden") || screen.classList.contains("tools-open")) return;
+  const y = window.scrollY;
+  const down = y > lastChromeY + 6;
+  const up = y < lastChromeY - 6;
+  if (down && y > 60) screen.classList.add("chrome-dim");
+  else if (up || y <= 60) screen.classList.remove("chrome-dim");
+  if (down || up) lastChromeY = y;
+}, { passive: true });
+
+// Toucher la barre d'état la rallume sans rien ouvrir.
+$("mini-band").addEventListener("pointerdown", () => {
+  $("screen-session").classList.remove("chrome-dim");
+});
+
 
 boot();
