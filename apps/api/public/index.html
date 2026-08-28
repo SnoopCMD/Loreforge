@@ -492,6 +492,7 @@
       <button class="ghost" id="follow-toggle" aria-pressed="true"
         title="Faire défiler le fil automatiquement pendant la narration">⇣ Suivi</button>
       <button class="ghost" id="rail-toggle">Fiche &amp; Souffle</button>
+      <a class="session-leave" href="#/">← Accueil</a>
     </span>
   </div>
   <!-- Table : présence et Souffle de chacun, masqué en solo (§8.3). -->
@@ -499,6 +500,8 @@
   <div class="session-screen" id="session-layout">
     <div class="narration" id="feed" aria-live="polite"></div>
     <aside class="session-rail">
+      <button type="button" class="rail-grab" id="rail-close"
+        aria-label="Fermer la fiche &amp; le Souffle"></button>
       <div class="rail-inner">
         <div class="souffle" id="souffle-orbs" role="img" aria-label="Points de Souffle"></div>
         <div class="rail-stats" id="rail-stats"></div>
@@ -516,6 +519,7 @@
       </div>
     </aside>
   </div>
+  <div class="rail-scrim hidden" id="rail-scrim"></div>
   <button class="jump-bottom hidden" id="jump-bottom">⬇ Reprendre le fil</button>
   <div class="playbar" id="playbar">
     <!-- Qui l'on attend, JUSTE au-dessus de la saisie : en tête de page, sous

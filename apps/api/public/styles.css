@@ -1999,3 +1999,60 @@ body::after {
 @media (prefers-reduced-motion: reduce) {
   body::before, body::after { animation: none; }
 }
+
+/* ── Correctifs de la coquille mobile ─────────────────────────────────────
+   Deux sorties manquaient : celle du tiroir « Fiche & Souffle », qui se pose
+   par-dessus le bouton rond l'ayant ouvert, et celle des écrans où la barre
+   d'onglets avait été retirée sans rien mettre à la place. */
+
+.rail-grab { display: none; }
+.rail-scrim { display: none; }
+.session-leave { display: none; }
+
+@media (max-width: 820px) {
+
+  /* La poignée du tiroir devient un vrai bouton : c'est elle qu'on touche
+     pour refermer, le bouton rond étant recouvert dès l'ouverture. */
+  .session-rail::before { display: none; }
+  .rail-grab {
+    display: block; width: 100%; min-height: 34px; padding: 0.55rem 0 0.75rem;
+    background: none; border: 0; cursor: pointer;
+  }
+  .rail-grab::after {
+    content: ""; display: block; width: 3rem; height: 4px;
+    margin: 0 auto; border-radius: 99px;
+    background: var(--parchment-dim); opacity: 0.5;
+  }
+  .rail-grab:hover::after, .rail-grab:focus-visible::after {
+    background: var(--spirit); opacity: 1;
+  }
+  .session-rail { padding-top: 0.2rem; }
+
+  /* Le fond : toucher le récit derrière le tiroir le referme. */
+  .rail-scrim {
+    display: block; position: fixed; inset: 0; z-index: 39;
+    background: rgba(18, 8, 31, 0.55);
+    backdrop-filter: blur(2px);
+  }
+  .rail-scrim.hidden { display: none !important; }
+
+  /* En session, la porte de sortie vit avec les autres outils, derrière « ⋯ ». */
+  .session-leave {
+    display: flex; align-items: center; justify-content: center;
+    width: 100%; min-height: 44px;
+    border: 1px solid var(--line); border-radius: 8px;
+    color: var(--parchment-dim); text-decoration: none;
+    font-weight: 600;
+  }
+  .session-leave:hover { border-color: var(--spirit); color: var(--spirit); }
+
+  /* La barre d'action de la bible ne remplace plus les onglets : elle se pose
+     juste au-dessus, et les deux cohabitent. */
+  .bible-actionbar {
+    bottom: calc(4.3rem + env(safe-area-inset-bottom, 0px));
+    padding: 1.6rem 0.9rem 0.6rem;
+  }
+  body.has-actionbar .app {
+    padding-bottom: calc(11rem + env(safe-area-inset-bottom, 0px));
+  }
+}

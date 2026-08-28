@@ -4340,9 +4340,29 @@ $("rail-toggle").addEventListener("click", () => {
   toggleSessionTools(false);
   const layout = $("session-layout");
   if (matchMedia("(max-width: 820px)").matches) {
-    layout.classList.toggle("rail-open");
+    setRailOpen(!layout.classList.contains("rail-open"));
   } else {
     layout.classList.toggle("rail-hidden");
+  }
+});
+
+/**
+ * Le tiroir « Fiche & Souffle » en petit écran. Il se pose PAR-DESSUS la barre
+ * de jeu : le bouton rond qui l'a ouvert passe dessous et devient
+ * intouchable. Sans poignée, sans fond cliquable et sans Échap, la seule
+ * sortie était de recharger la page.
+ */
+function setRailOpen(open) {
+  $("session-layout").classList.toggle("rail-open", open);
+  $("rail-scrim").classList.toggle("hidden", !open);
+  $("fiche-round").classList.toggle("on", open);
+}
+
+$("rail-close").addEventListener("click", () => setRailOpen(false));
+$("rail-scrim").addEventListener("click", () => setRailOpen(false));
+document.addEventListener("keydown", (e) => {
+  if (e.key === "Escape" && $("session-layout").classList.contains("rail-open")) {
+    setRailOpen(false);
   }
 });
 
@@ -5978,16 +5998,19 @@ const TAB_OF_SCREEN = {
   "screen-embark": "tab-play",
   "screen-quiz": "tab-play",
   "screen-forge": "tab-play",
+  "screen-setup": "tab-play",
+  "screen-lobby": "tab-play",
+  "screen-end": "tab-play",
   "screen-library": "tab-library",
+  "screen-bible": "tab-library",
   "screen-join": "tab-table",
 };
 
-// Écrans où la navigation par onglets n'a pas sa place : la partie (on ne
-// quitte pas une table par mégarde) et la bible, qui a sa propre barre.
-const NO_TABBAR = new Set([
-  "screen-landing", "screen-setup", "screen-lobby", "screen-session",
-  "screen-end", "screen-bible",
-]);
+// Écrans sans onglets : l'accueil déconnecté, et la partie — on ne quitte pas
+// une table d'un pouce distrait (la sortie est derrière le « ⋯ »). Partout
+// ailleurs les onglets restent : sans eux, revenir en arrière demandait le
+// bouton du navigateur.
+const NO_TABBAR = new Set(["screen-landing", "screen-session"]);
 
 function syncMobileChrome(id) {
   $("tabbar").classList.toggle("hidden", NO_TABBAR.has(id));
@@ -5996,8 +6019,10 @@ function syncMobileChrome(id) {
     tab.classList.toggle("active", tab.id === active);
   }
   $("bible-actionbar").classList.toggle("hidden", id !== "screen-bible");
+  document.body.classList.toggle("has-actionbar", id === "screen-bible");
   // La feuille d'outils ne survit pas à un changement d'écran.
   $("screen-session").classList.remove("tools-open", "chrome-dim");
+  setRailOpen(false);
   $("mini-more").setAttribute("aria-expanded", "false");
 }
 
@@ -6054,11 +6079,7 @@ $("feed").addEventListener("pointerdown", () => {
 
 // Le bouton rond de la playbar ouvre la fiche : même geste que « Fiche &
 // Souffle » du bureau, mais toujours atteignable.
-$("fiche-round").addEventListener("click", () => {
-  $("rail-toggle").click();
-  $("fiche-round").classList.toggle(
-    "on", $("session-layout").classList.contains("rail-open"));
-});
+$("fiche-round").addEventListener("click", () => { $("rail-toggle").click(); });
 
 // Le chrome s'efface dès qu'on descend dans le récit, revient si on remonte.
 let lastChromeY = 0;
